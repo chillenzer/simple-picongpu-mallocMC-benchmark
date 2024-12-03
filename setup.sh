@@ -26,6 +26,8 @@ function clone() {
   WD=$(pwd -P)
 
   git clone $URL $DEST
+
+  # Yes, we could the following directly in the `clone` command but we'd have to look up the syntax.
   cd $DEST
   git checkout $HASH
   git submodule init
@@ -37,6 +39,7 @@ function clone() {
 function clone_src() {
   mkdir -p src
   clone $PICONGPU_URL $PICONGPU_SRC $PICONGPU_HASH
+  # We patch in our custom version including Gallatin.
   rm -rf $MALLOCMC_SRC
   clone $MALLOCMC_URL $MALLOCMC_SRC $MALLOCMC_HASH
 }
@@ -84,11 +87,14 @@ function build() {
   done
 }
 
+function prepare_environment() {
+  sed -i 's|PICSRC=.*|PICSRC='"$PICONGPU_SRC"'|g' $PROFILE
+  source $PROFILE
+}
+
 function main() {
   clone_src
-  cp $PROFILE tmp.profile
-  sed -i 's|PICSRC=.*|PICSRC='"$PICONGPU_SRC"'|g' tmp.profile
-  source tmp.profile
+  prepare_environment
   prepare_inputs
   build
 }
