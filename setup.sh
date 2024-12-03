@@ -48,9 +48,18 @@ function create_input() {
   SRC=$1
   DEST=$2
   ALGO=$3
+  EXAMPLE=$4
 
   pic-create $SRC $DEST
-  cp $PARAM_DIR/${ALGO}.param $DEST/include/picongpu/param/mallocMC.param
+  if [ -n "$(ls -A $PARAM_DIR/${ALGO}/*.param)" ]; then
+    cp $PARAM_DIR/${ALGO}/*.param $DEST/include/picongpu/param/
+  fi
+  if [ -n "$(ls -A $PARAM_DIR/${EXAMPLE}/*.param)" ]; then
+    cp $PARAM_DIR/${EXAMPLE}/*.param $DEST/include/picongpu/param/
+  fi
+  if [ -n "$(ls -A $PARAM_DIR/${EXAMPLE}/${ALGO}/*.param)" ]; then
+    cp $PARAM_DIR/${EXAMPLE}/${ALGO}/*.param $DEST/include/picongpu/param/
+  fi
 }
 
 function prepare_inputs() {
@@ -58,7 +67,7 @@ function prepare_inputs() {
   for example in ${EXAMPLES[@]}; do
     mkdir -p build/$example
     for algorithm in ${ALGORITHMS[@]}; do
-      create_input $PICONGPU_SRC/share/picongpu/examples/$example build/$example/$algorithm $algorithm
+      create_input $PICONGPU_SRC/share/picongpu/examples/$example build/$example/$algorithm $algorithm $example
     done
   done
 }
