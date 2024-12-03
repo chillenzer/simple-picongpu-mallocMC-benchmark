@@ -5,8 +5,7 @@ set -x
 
 FOLDER=$1
 FLAGSFILE=$2
-OUTPUT=$3
-PROFILE=$4
+PROFILE=$3
 declare -a FLAGS
 
 OUTPUT=$(pwd -P)/$OUTPUT
@@ -20,7 +19,7 @@ while IFS="" read -r line || [ -n "$line" ]; do
 done <"$FLAGSFILE"
 
 for FLAG in "${FLAGS[@]}"; do
-  bin/picongpu $FLAG >(tee -a ${OUTPUT}.log) 2> >(tee -a ${OUTPUT}.err >&2)
+  bin/picongpu $FLAG
 done
 
 cd $WD
