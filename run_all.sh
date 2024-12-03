@@ -1,7 +1,5 @@
 #!/bin/bash
 
-set -e
-
 PROFILE=$1
 FLAGSFOLDER=$(pwd -P)/$2
 

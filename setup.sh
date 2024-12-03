@@ -51,13 +51,13 @@ function create_input() {
   EXAMPLE=$4
 
   pic-create $SRC $DEST
-  if [ -n "$(ls -A $PARAM_DIR/${ALGO}/*.param)" ]; then
+  if [ -d "$PARAM_DIR/${ALGO}" ] && [ -n "$(ls -A $PARAM_DIR/${ALGO}/*.param 2>/dev/null)" ]; then
     cp $PARAM_DIR/${ALGO}/*.param $DEST/include/picongpu/param/
   fi
-  if [ -n "$(ls -A $PARAM_DIR/${EXAMPLE}/*.param)" ]; then
+  if [ -d "$PARAM_DIR/${EXAMPLE}" ] && [ -n "$(ls -A $PARAM_DIR/${EXAMPLE}/*.param 2>/dev/null)" ]; then
     cp $PARAM_DIR/${EXAMPLE}/*.param $DEST/include/picongpu/param/
   fi
-  if [ -n "$(ls -A $PARAM_DIR/${EXAMPLE}/${ALGO}/*.param)" ]; then
+  if [ -d "$PARAM_DIR/${EXAMPLE}/${ALGO}" ] && [ -n "$(ls -A $PARAM_DIR/${EXAMPLE}/${ALGO}/*.param 2>/dev/null)" ]; then
     cp $PARAM_DIR/${EXAMPLE}/${ALGO}/*.param $DEST/include/picongpu/param/
   fi
 }
