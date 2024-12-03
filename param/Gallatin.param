@@ -1,0 +1,46 @@
+/* Copyright 2013-2023 Axel Huebl, Felix Schmitt, Heiko Burau, Rene Widera,
+ *                     Carlchristian Eckert
+ *
+ * This file is part of PIConGPU.
+ *
+ * PIConGPU is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * PIConGPU is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with PIConGPU.
+ * If not, see <http://www.gnu.org/licenses/>.
+ */
+
+/** @file
+ *
+ * Fine-tuning of the particle heap for GPUs: When running on GPUs, we use a
+ * high-performance parallel "new" allocator (mallocMC) which can be
+ * parametrized here.
+ */
+
+#pragma once
+
+#include <pmacc/alpakaHelper/acc.hpp>
+
+#include <mallocMC/mallocMC.hpp>
+
+namespace picongpu {
+/** Define a new allocator
+ *
+ * This is an allocator resembling the behaviour of the ScatterAlloc
+ * algorithm.
+ */
+using DeviceHeap = mallocMC::Allocator<
+    pmacc::Acc<DIM1>, mallocMC::CreationPolicies::Gallatin<>,
+    mallocMC::DistributionPolicies::Noop, mallocMC::OOMPolicies::ReturnNull,
+    mallocMC::ReservePoolPolicies::AlpakaBuf<pmacc::Acc<DIM1>>,
+    mallocMC::AlignmentPolicies::Shrink<>>;
+
+} // namespace picongpu
