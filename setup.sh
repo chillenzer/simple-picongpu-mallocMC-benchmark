@@ -54,15 +54,15 @@ function create_input() {
   EXAMPLE=$4
 
   pic-create $SRC $DEST
-  if [ -d "$PARAM_DIR/${ALGO}" ] && [ -n "$(ls -A $PARAM_DIR/${ALGO}/*.param 2>/dev/null)" ]; then
-    cp $PARAM_DIR/${ALGO}/*.param $DEST/include/picongpu/param/
-  fi
-  if [ -d "$PARAM_DIR/${EXAMPLE}" ] && [ -n "$(ls -A $PARAM_DIR/${EXAMPLE}/*.param 2>/dev/null)" ]; then
-    cp $PARAM_DIR/${EXAMPLE}/*.param $DEST/include/picongpu/param/
-  fi
-  if [ -d "$PARAM_DIR/${EXAMPLE}/${ALGO}" ] && [ -n "$(ls -A $PARAM_DIR/${EXAMPLE}/${ALGO}/*.param 2>/dev/null)" ]; then
-    cp $PARAM_DIR/${EXAMPLE}/${ALGO}/*.param $DEST/include/picongpu/param/
-  fi
+  find $PARAM_DIR/* -type f \
+    -wholename "$PARAM_DIR/${ALGO}/"'*'".param" \
+    -exec cp -v {} $DEST/include/picongpu/param/ \;
+  find $PARAM_DIR/* -type f \
+    -wholename "$PARAM_DIR/${EXAMPLE}/"'*'".param" \
+    -exec cp -v {} $DEST/include/picongpu/param/ \;
+  find $PARAM_DIR/* -type f \
+    -wholename "$PARAM_DIR/${EXAMPLE}/${ALGO}/"'*'".param" \
+    -exec cp -v {} $DEST/include/picongpu/param/ \;
 }
 
 function prepare_inputs() {
