@@ -16,7 +16,10 @@ ALGORITHMS=("FlatterScatter" "ScatterAlloc" "Gallatin")
 
 MALLOCMC_SRC=$(pwd -P)/$MALLOCMC_SRC
 PICONGPU_SRC=$(pwd -P)/$PICONGPU_SRC
-FLAGS="-DCMAKE_CXX_FLAGS=-I${MALLOCMC_SRC}/thirdParty/gallatin/include -DCMAKE_CUDA_FLAGS=-I${MALLOCMC_SRC}/thirdParty/gallatin/include -Dalpaka_CXX_STANDARD=20"
+# Nasty little bug here: GCC has a constexpr std::source_location but nvcc does not.
+# So, Boost gets confused and tries to use std::source_location constexpr.
+CXX_FLAGS="-I${MALLOCMC_SRC}/thirdParty/gallatin/include -DBOOST_DISABLE_CURRENT_LOCATION"
+FLAGS="-DCMAKE_CXX_FLAGS=\"$CXX_FLAGS\" -DCMAKE_CUDA_FLAGS=\"$CXX_FLAGS\" -Dalpaka_CXX_STANDARD=20"
 
 function clone() {
   URL=$1
