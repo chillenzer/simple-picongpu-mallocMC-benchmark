@@ -8,6 +8,8 @@ FLAGSFILE=$2
 PROFILE=$3
 declare -a FLAGS
 
+source $(pwd -P)/$PROFILE
+
 OUTPUT=$(pwd -P)/$OUTPUT
 mkdir -p $(dirname ${OUTPUT})
 
