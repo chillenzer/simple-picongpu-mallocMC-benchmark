@@ -6,9 +6,7 @@ FLAGSFOLDER=$(pwd -P)/$2
 EXAMPLES=("KelvinHelmholtz" "FoilLCT")
 ALGORITHMS=("FlatterScatter" "ScatterAlloc" "Gallatin")
 
-mkdir -p output
 for example in ${EXAMPLES[@]}; do
-  mkdir -p output/$example
   for algorithm in ${ALGORITHMS[@]}; do
     echo "=============================="
     echo "Running example: $example"
