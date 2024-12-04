@@ -214,10 +214,11 @@ def plot_foil(results):
         .loc(axis=1)[:, ["mean", "std"]]
         .stack(0)
         .unstack(1)
-        .plot.bar(y="mean")
+        .plot.bar(y="mean", yerr="std")
     )
     ax.set_ylabel("Main loop runtime in s")
     ax.tick_params(axis="x", labelrotation=0)
+    ax.get_figure().tight_layout()
     ax.get_figure().savefig("figures/foil.pdf")
 
 
