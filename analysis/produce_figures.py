@@ -145,10 +145,7 @@ def make_dict_of_frames(iterable):
                     ["objs", "keys"],
                     reduce(
                         lambda acc, new: (acc[0] + [new[2]], acc[1] + [new[1]]),
-                        filter(
-                            lambda x: x[0] == key,
-                            iterable,
-                        ),
+                        filter(lambda x: x[0] == key, iterable),
                         ([], []),
                     ),
                 )
