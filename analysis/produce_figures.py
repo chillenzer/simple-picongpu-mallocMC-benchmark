@@ -51,6 +51,8 @@ def parse_header(header):
     parsed = parse.parse(
         "Running example: {example}\nUsing algorithm: {algorithm}", header.strip()
     )
+    if parsed is None:
+        return None
     return parsed["example"], parsed["algorithm"]
 
 
@@ -100,8 +102,9 @@ def parse_full(file):
     with file.open("r") as f:
         text = f.read()
     return {
-        parse_header(header): parse_log(log)
+        key: parse_log(log)
         for header, log in pairs(text.split("==============================")[1:])
+        if (key := parse_header(header)) is not None
     }
 
 
@@ -117,21 +120,26 @@ def read_data(cluster):
     files = cluster.glob("*")
     tmp = [parse_full(file) for file in files]
     data = {
-        key: (
-            pd.concat(
-                map(
-                    lambda x: pd.Series(x.get(key, None)).to_frame().astype(float), tmp
-                ),
-                axis=1,
-            )
-            .T.describe()
-            .T
-        )
+        key: (pd.concat(frames, axis=1).T.describe().T)
         for key in reduce(set.union, map(dict.keys, tmp), set())
+        if len(
+            (
+                frames := list(
+                    filter(
+                        lambda series: not series.dropna(how="all").empty,
+                        map(
+                            lambda x: pd.Series(x.get(key, None))
+                            .to_frame()
+                            .astype(float),
+                            tmp,
+                        ),
+                    )
+                )
+            )
+        )
+        > 0
     }
-    khi = extract(data, "KelvinHelmholtz")
-    foil = extract(data, "FoilLCT")
-    return {"khi": khi, "foil": foil}
+    return {"khi": extract(data, "KelvinHelmholtz"), "foil": extract(data, "FoilLCT")}
 
 
 def make_dict_of_frames(iterable):
@@ -145,7 +153,7 @@ def make_dict_of_frames(iterable):
                     ["objs", "keys"],
                     reduce(
                         lambda acc, new: (acc[0] + [new[2]], acc[1] + [new[1]]),
-                        filter(lambda x: x[0] == key, iterable),
+                        filter(lambda x: x[0] == key and not x[2].empty, iterable),
                         ([], []),
                     ),
                 )
