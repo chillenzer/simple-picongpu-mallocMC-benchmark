@@ -103,7 +103,7 @@ def parse_full(file):
         text = f.read()
     return {
         key: parse_log(log)
-        for header, log in pairs(text.split("==============================")[1:])
+        for header, log in pairs(text.split("==============================\n")[1:])
         if (key := parse_header(header)) is not None
     }
 
@@ -176,7 +176,7 @@ def normalise_cluster(results, name):
         .set_index("volume", drop=True)
         .loc(axis=1)[:, ["mean", "std"]]
     )
-    normalised = cluster.loc(axis=1)["ScatterAlloc", ["mean"]].to_numpy() / cluster - 1
+    normalised = cluster.loc(axis=1)["ScatterAlloc", ["mean"]].to_numpy() / cluster
 
     # linear error propagation
     normalised.loc(axis=1)[:, "std"] = (
@@ -192,8 +192,12 @@ def normalise_cluster(results, name):
 def plot_khi(results):
     fig, ax = plt.subplots()
     algorithms = sorted(results.droplevel(1, axis=1).columns.unique())
-    for cluster, fillstyle in zip(["hal", "hemera"], ["full", "none"]):
-        normalised = normalise_cluster(results, cluster)
+    for cluster, fillstyle in zip(["hal", "hemera", "lumi"], ["full", "none", "left"]):
+        try:
+            normalised = normalise_cluster(results, cluster)
+        except KeyError:
+            print(f"No valid data found for KHI on {cluster}!")
+            continue
         for i, algorithm in enumerate(algorithms):
             tmp = normalised.loc(axis=1)[algorithm].reset_index(drop=False)
             errorbar(
@@ -207,7 +211,6 @@ def plot_khi(results):
                 **STYLE[algorithm],
             )
     ax.set_xscale("log", base=2)
-    ax.yaxis.set_major_formatter(ticker.PercentFormatter(xmax=1))
     ax.set_ylabel("Speedup to ScatterAlloc")
     ax.set_xlabel("Grid volume in number of cells")
     ax.legend()
@@ -218,11 +221,17 @@ def plot_khi(results):
 def plot_foil(results):
     ax = (
         results.droplevel([1, 2], axis=0)
-        .rename({"hal": "NVIDIA A30", "hemera": "NVIDIA A100"}, axis=0)
+        .rename(
+            {"hal": "NVIDIA A30", "hemera": "NVIDIA A100", "lumi": "AMD MI250X"}, axis=0
+        )
         .loc(axis=1)[:, ["mean", "std"]]
         .stack(0, future_stack=True)
         .unstack(1)
-        .plot.bar(y="mean", yerr="std")
+        .plot.bar(
+            y="mean",
+            yerr="std",
+            color={key: val["color"] for key, val in STYLE.items()},
+        )
     )
     ax.set_ylabel("Main loop runtime in s")
     ax.tick_params(axis="x", labelrotation=0)
