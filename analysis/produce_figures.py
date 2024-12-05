@@ -220,7 +220,7 @@ def plot_foil(results):
         results.droplevel([1, 2], axis=0)
         .rename({"hal": "NVIDIA A30", "hemera": "NVIDIA A100"}, axis=0)
         .loc(axis=1)[:, ["mean", "std"]]
-        .stack(0)
+        .stack(0, future_stack=True)
         .unstack(1)
         .plot.bar(y="mean", yerr="std")
     )
