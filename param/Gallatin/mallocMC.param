@@ -40,7 +40,7 @@ namespace picongpu {
 using DeviceHeap = mallocMC::Allocator<
     pmacc::Acc<DIM1>, mallocMC::CreationPolicies::GallatinCuda<>,
     mallocMC::DistributionPolicies::Noop, mallocMC::OOMPolicies::ReturnNull,
-    mallocMC::ReservePoolPolicies::AlpakaBuf<pmacc::Acc<DIM1>>,
+    mallocMC::ReservePoolPolicies::Noop,
     mallocMC::AlignmentPolicies::Shrink<>>;
 
 } // namespace picongpu
