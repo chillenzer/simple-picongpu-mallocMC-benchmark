@@ -49,7 +49,8 @@ OUTPUT = Path("output")
 
 def parse_header(header):
     parsed = parse.parse(
-        "Running example: {example}\nUsing algorithm: {algorithm}", header.strip()
+        "Running example: {example}\nUsing algorithm: {algorithm}",
+        header.strip("=").strip(),
     )
     if parsed is None:
         return None
@@ -103,7 +104,7 @@ def parse_full(file):
         text = f.read()
     return {
         key: parse_log(log)
-        for header, log in pairs(text.split("==============================\n")[1:])
+        for header, log in pairs(text.split("\n==============================\n"))
         if (key := parse_header(header)) is not None
     }
 
