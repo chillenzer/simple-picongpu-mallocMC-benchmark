@@ -180,17 +180,28 @@ def normalise_cluster(results, name):
     normalised = cluster.loc(axis=1)["ScatterAlloc", ["mean"]].to_numpy() / cluster
 
     # linear error propagation
-    normalised.loc(axis=1)[:, "std"] = (
+    term1 = (
         cluster.loc(axis=1)["ScatterAlloc", ["std"]].to_numpy()
         / cluster.loc(axis=1)[:, "mean"].to_numpy()
-        + cluster.loc(axis=1)["ScatterAlloc", ["mean"]].to_numpy()
-        / cluster.loc(axis=1)[:, "mean"].to_numpy() ** 2
-        * cluster.loc(axis=1)[:, "std"].to_numpy()
     )
+    # this one stays a data frame
+    term2 = (
+        cluster.loc(axis=1)["ScatterAlloc", ["mean"]].to_numpy()
+        / cluster.loc(axis=1)[:, "mean"].to_numpy() ** 2
+        * cluster.loc(axis=1)[:, "std"]
+    )
+
+    # it's convenient to use pandas' fillna,
+    # so we do multiple assignments to create separate data frames
+    # to `fillna` individually
+    normalised.loc(axis=1)[:, "std"] = term1
+    normalised.loc(axis=1)[:, "std"] = normalised.loc(axis=1)[:, "std"].fillna(0)
+    normalised.loc(axis=1)[:, "std"] += term2.fillna(0)
     return normalised
 
 
 def plot_khi(results):
+    print(results)
     fig, ax = plt.subplots()
     algorithms = sorted(results.droplevel(1, axis=1).columns.unique())
     for cluster, fillstyle in zip(["hal", "hemera", "lumi"], ["full", "none", "left"]):
