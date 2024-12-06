@@ -262,6 +262,17 @@ def plot_khi(results):
 def plot_foil(results):
     print("FoilLCT results:\n===========================")
     print(results)
+    print()
+    print("Speedup to ScatterAlloc:")
+    clusters = results.droplevel([1, 2], axis=0).index.unique()
+    print(
+        pd.concat(
+            [normalise_cluster(results, cluster) for cluster in clusters],
+            keys=clusters,
+        )
+        .drop("ScatterAlloc", axis=1)
+        .droplevel(1, axis=0)
+    )
     ax = (
         results.droplevel([1, 2], axis=0)
         .loc(axis=1)[:, ["mean", "std"]]
