@@ -201,23 +201,27 @@ def normalise_cluster(results, name):
 
 
 def plot_khi(results):
+    print("KHI results:\n===========================")
     print(results)
     fig, ax = plt.subplots()
     algorithms = sorted(results.droplevel(1, axis=1).columns.unique())
-    for cluster, fillstyle in zip(["hal", "hemera", "lumi"], ["full", "none", "left"]):
+    devices = sorted(results.droplevel([1, 2, 3], axis=0).index.unique())
+    for device, fillstyle in zip(
+        devices, ["full", "none", "left", "right", "bottom", "top"]
+    ):
         try:
-            normalised = normalise_cluster(results, cluster)
+            normalised = normalise_cluster(results, device)
         except KeyError:
-            print(f"No valid data found for KHI on {cluster}!")
+            print(f"No valid data found for KHI on {device}!")
             continue
-        for i, algorithm in enumerate(algorithms):
+        for algorithm in algorithms:
             tmp = normalised.loc(axis=1)[algorithm].reset_index(drop=False)
             errorbar(
                 ax,
                 tmp["volume"],
                 tmp["mean"],
                 tmp["std"],
-                label=f"{cluster}: {algorithm}",
+                label=f"{device}: {algorithm}",
                 fillstyle=fillstyle,
                 capsize=3,
                 **STYLE[algorithm],
@@ -231,11 +235,10 @@ def plot_khi(results):
 
 
 def plot_foil(results):
+    print("FoilLCT results:\n===========================")
+    print(results)
     ax = (
         results.droplevel([1, 2], axis=0)
-        .rename(
-            {"hal": "NVIDIA A30", "hemera": "NVIDIA A100", "lumi": "AMD MI250X"}, axis=0
-        )
         .loc(axis=1)[:, ["mean", "std"]]
         .stack(0, future_stack=True)
         .unstack(1)
@@ -252,10 +255,26 @@ def plot_foil(results):
 
 
 def main():
-    results = make_dict_of_frames(
-        (key, cluster.name, val)
-        for cluster in OUTPUT.glob("*")
-        for key, val in read_data(cluster).items()
+    results = dict(
+        map(
+            lambda x: print(x)
+            or (
+                x[0],
+                x[1].rename(
+                    {
+                        "hal": "NVIDIA A30",
+                        "hemera": "NVIDIA A100",
+                        "lumi": "AMD MI250X",
+                    },
+                    axis=0,
+                ),
+            ),
+            make_dict_of_frames(
+                (key, cluster.name, val)
+                for cluster in OUTPUT.glob("*")
+                for key, val in read_data(cluster).items()
+            ).items(),
+        )
     )
     plot_khi(results["khi"])
     plot_foil(results["foil"])
