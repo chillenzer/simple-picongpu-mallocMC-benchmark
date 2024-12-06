@@ -45,6 +45,11 @@ STYLE = {
     for algorithm in ["FlatterScatter", "Gallatin", "ScatterAlloc"]
 }
 OUTPUT = Path("output")
+SIZE_OF_PARTICLE = 30
+TYPICAL_PARTICLES_PER_CELL = 25
+NUMBER_OF_SPECIES = 2
+
+MEMORY_PER_CELL = SIZE_OF_PARTICLE * TYPICAL_PARTICLES_PER_CELL * NUMBER_OF_SPECIES
 
 
 def parse_header(header):
@@ -173,8 +178,12 @@ def errorbar(ax, x, y, yerr, **kwargs):
 def normalise_cluster(results, name):
     cluster = results.loc(axis=0)[name]
     cluster = (
-        cluster.assign(volume=np.prod(cluster.index.to_frame().values, axis=1))
-        .set_index("volume", drop=True)
+        cluster.assign(
+            memory=np.prod(cluster.index.to_frame().values, axis=1)
+            * MEMORY_PER_CELL
+            / 1024**3
+        )
+        .set_index("memory", drop=True)
         .loc(axis=1)[:, ["mean", "std"]]
     )
     normalised = cluster.loc(axis=1)["ScatterAlloc", ["mean"]].to_numpy() / cluster
@@ -205,7 +214,10 @@ def plot_khi(results):
     print(results)
     fig, ax = plt.subplots()
     algorithms = sorted(results.droplevel(1, axis=1).columns.unique())
+    # This is our baseline
+    algorithms.remove("ScatterAlloc")
     devices = sorted(results.droplevel([1, 2, 3], axis=0).index.unique())
+    scaling_factor = 3
     for device, fillstyle in zip(
         devices, ["full", "none", "left", "right", "bottom", "top"]
     ):
@@ -216,19 +228,32 @@ def plot_khi(results):
             continue
         for algorithm in algorithms:
             tmp = normalised.loc(axis=1)[algorithm].reset_index(drop=False)
-            errorbar(
-                ax,
-                tmp["volume"],
-                tmp["mean"],
-                tmp["std"],
-                label=f"{device}: {algorithm}",
-                fillstyle=fillstyle,
-                capsize=3,
-                **STYLE[algorithm],
-            )
+            if not tmp["mean"].isna().all():
+                errorbar(
+                    ax,
+                    tmp["memory"] / scaling_factor,
+                    tmp["mean"],
+                    tmp["std"],
+                    label=f"{device}: {algorithm}",
+                    fillstyle=fillstyle,
+                    capsize=3,
+                    **STYLE[algorithm],
+                )
+    ax.axhline(1, color=STYLE["ScatterAlloc"]["color"], label="ScatterAlloc")
+
     ax.set_xscale("log", base=2)
+
+    def adjust_for_scaling_factor_formatter(x, pos):
+        # return rf"${scaling_factor} \times 2^" "{" f"{int(np.round(np.log2(x)))}" "}$"
+        return f"{scaling_factor * x}"
+
+    # Set the custom formatter for the x-axis tick labels
+    ax.xaxis.set_major_formatter(plt.FuncFormatter(adjust_for_scaling_factor_formatter))
+    #    ax.xaxis.set_major_formatter(
+    #        plt.FuncFormatter(lambda x, pos: f"2^{int(np.log2(x))}")
+    #    )
     ax.set_ylabel("Speedup to ScatterAlloc")
-    ax.set_xlabel("Grid volume in number of cells")
+    ax.set_xlabel("Estimated particle memory consumption in GB")
     ax.legend()
     fig.tight_layout()
     fig.savefig("figures/khi.pdf")
