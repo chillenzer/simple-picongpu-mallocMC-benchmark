@@ -293,14 +293,14 @@ def plot_foil(results):
 def main():
     results = dict(
         map(
-            lambda x: print(x)
-            or (
+            lambda x: (
                 x[0],
                 x[1].rename(
                     {
                         "hal": "NVIDIA A30",
                         "hemera": "NVIDIA A100",
                         "lumi": "AMD MI250X",
+                        "jedi": "NVIDIA GH200",
                     },
                     axis=0,
                 ),
