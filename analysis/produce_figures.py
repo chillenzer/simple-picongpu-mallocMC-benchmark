@@ -51,6 +51,8 @@ NUMBER_OF_SPECIES = 2
 
 MEMORY_PER_CELL = SIZE_OF_PARTICLE * TYPICAL_PARTICLES_PER_CELL * NUMBER_OF_SPECIES
 
+REFERENCE_ALGORITHM = "ScatterAlloc"
+
 
 def parse_header(header):
     parsed = parse.parse(
@@ -209,31 +211,34 @@ def normalise_cluster(results, name):
     return normalised
 
 
+def memory(results):
+    return np.prod(results.index.to_frame().values, axis=1) * MEMORY_PER_CELL / 1024**3
+
+
 def plot_khi(results):
-    print("KHI results:\n===========================")
-    print(results)
     fig, ax = plt.subplots()
     algorithms = sorted(results.droplevel(1, axis=1).columns.unique())
-    # This is our baseline
-    algorithms.remove("ScatterAlloc")
     devices = sorted(results.droplevel([1, 2, 3], axis=0).index.unique())
     scaling_factor = 3
     for device, fillstyle in zip(
         devices, ["full", "none", "left", "right", "bottom", "top"]
     ):
-        try:
-            normalised = normalise_cluster(results, device)
-        except KeyError:
-            print(f"No valid data found for KHI on {device}!")
-            continue
         for algorithm in algorithms:
-            tmp = normalised.loc(axis=1)[algorithm].reset_index(drop=False)
+            try:
+                tmp = results.loc(axis=0)[device].loc(axis=1)[algorithm]
+            except KeyError:
+                continue
             if not tmp["mean"].isna().all():
+                x = memory(tmp)
+                arg = np.argsort(x)
+                x = x[arg] / scaling_factor
+                y = tmp["50%"].to_numpy()[arg]
+                yerr = np.abs(tmp[["25%", "75%"]].to_numpy()[arg] - y.reshape(-1, 1)).T
                 errorbar(
                     ax,
-                    tmp["memory"] / scaling_factor,
-                    tmp["mean"],
-                    tmp["std"],
+                    x[x >= 3 / scaling_factor - 0.1],
+                    y[x >= 3 / scaling_factor - 0.1],
+                    yerr[:, x >= 3 / scaling_factor - 0.1],
                     label=f"{device}: {algorithm}",
                     fillstyle=fillstyle,
                     capsize=3,
@@ -245,7 +250,7 @@ def plot_khi(results):
 
     def adjust_for_scaling_factor_formatter(x, pos):
         # return rf"${scaling_factor} \times 2^" "{" f"{int(np.round(np.log2(x)))}" "}$"
-        return f"{scaling_factor * x}"
+        return f"{int(scaling_factor * x)}"
 
     # Set the custom formatter for the x-axis tick labels
     ax.xaxis.set_major_formatter(plt.FuncFormatter(adjust_for_scaling_factor_formatter))
@@ -260,29 +265,21 @@ def plot_khi(results):
 
 
 def plot_foil(results):
-    print("FoilLCT results:\n===========================")
-    print(results)
-    print()
-    print("Speedup to ScatterAlloc:")
-    clusters = results.droplevel([1, 2], axis=0).index.unique()
-    print(
-        pd.concat(
-            [normalise_cluster(results, cluster) for cluster in clusters],
-            keys=clusters,
-        )
-        .drop("ScatterAlloc", axis=1)
-        .droplevel(1, axis=0)
-    )
-    ax = (
+    tmp = (
         results.droplevel([1, 2], axis=0)
-        .loc(axis=1)[:, ["mean", "std"]]
+        .loc(axis=1)[:, ["50%", "25%", "75%"]]
         .stack(0, future_stack=True)
         .unstack(1)
-        .plot.bar(
-            y="mean",
-            yerr="std",
-            color={key: val["color"] for key, val in STYLE.items()},
-        )
+    )
+    values = tmp.loc(axis=1)[["50%"]]
+    errors = tmp.loc(axis=1)[["25%", "75%"]]
+    errors.loc(axis=1)["25%"] -= values.to_numpy()
+    errors.loc(axis=1)["75%"] -= values.to_numpy()
+
+    ax = values.plot.bar(
+        y="50%",
+        yerr=errors,
+        color={key: val["color"] for key, val in STYLE.items()},
     )
     ax.set_ylabel("Main loop runtime in s")
     ax.tick_params(axis="x", labelrotation=0)
@@ -290,8 +287,8 @@ def plot_foil(results):
     ax.get_figure().savefig("figures/foil.pdf")
 
 
-def main():
-    results = dict(
+def statistical_timings():
+    return dict(
         map(
             lambda x: (
                 x[0],
@@ -312,8 +309,95 @@ def main():
             ).items(),
         )
     )
-    plot_khi(results["khi"])
-    plot_foil(results["foil"])
+
+
+def divide_dicts(d1, d2):
+    return {key: d1[key] / d2[key] for key in set(d1.keys()).intersection(d2.keys())}
+
+
+def compute_speedup(timings, ref_algorithm):
+    ref = {
+        example: times
+        for (example, algo), times in timings.items()
+        if algo == ref_algorithm
+    }
+    return {
+        key: divide_dicts(ref[key[0]], val)
+        for key, val in timings.items()
+        if key[1] != ref_algorithm and key[0] in ref
+    }
+
+
+def read_speedups(cluster):
+    files = cluster.glob("*")
+    tmp = [compute_speedup(parse_full(file), REFERENCE_ALGORITHM) for file in files]
+    algorithms = reduce(set.union, map(dict.keys, tmp), set())
+    data = {
+        key: (pd.concat(frames, axis=1).T.describe().T)
+        for key in algorithms
+        if len(
+            (
+                frames := list(
+                    filter(
+                        lambda series: not series.dropna(how="all").empty,
+                        map(
+                            lambda x: pd.Series(x.get(key, None))
+                            .to_frame()
+                            .astype(float),
+                            tmp,
+                        ),
+                    )
+                )
+            )
+        )
+        > 0
+    }
+    return {"khi": extract(data, "KelvinHelmholtz"), "foil": extract(data, "FoilLCT")}
+
+
+def statistical_speedups():
+    return dict(
+        map(
+            lambda x: (
+                x[0],
+                x[1].rename(
+                    {
+                        "hal": "NVIDIA A30",
+                        "hemera": "NVIDIA A100",
+                        "lumi": "AMD MI250X",
+                        "jedi": "NVIDIA GH200",
+                    },
+                    axis=0,
+                ),
+            ),
+            make_dict_of_frames(
+                (key, cluster.name, val)
+                for cluster in OUTPUT.glob("*")
+                for key, val in read_speedups(cluster).items()
+            ).items(),
+        )
+    )
+
+
+def print_results(results, name):
+    print("+++++++++++++++++++++++++++++++++++")
+    print(name)
+    print("+++++++++++++++++++++++++++++++++++")
+    print()
+    for key, val in results.items():
+        print(key)
+        print("===================================")
+        print(val)
+        print()
+
+
+def main():
+    timings = statistical_timings()
+    print_results(timings, "Timings")
+    speedups = statistical_speedups()
+    print_results(speedups, "Speedups")
+    plot_khi(speedups["khi"])
+    plot_foil(timings["foil"])
 
 
 if __name__ == "__main__":
