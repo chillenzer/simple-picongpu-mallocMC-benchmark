@@ -164,6 +164,7 @@ def read_timings():
         timings.stack()
         .reset_index(drop=False)
         .rename({0: "runtime in seconds"}, axis=1)
+        .set_index("benchmark", drop=True)
     )
 
 
@@ -207,8 +208,10 @@ def normalise_cluster(results, name):
     return normalised
 
 
-def memory(results):
-    return np.prod(results.index.to_frame().values, axis=1) * MEMORY_PER_CELL / 1024**3
+def memory(grid_sizes):
+    return np.around(
+        np.prod(grid_sizes, axis=1) * MEMORY_PER_CELL / 1024**3, decimals=0
+    ).astype(int)
 
 
 def plot_khi(results):
@@ -262,7 +265,8 @@ def plot_khi(results):
 
 def statistical_timings(timings):
     return (
-        timings.set_index(
+        timings.reset_index(drop=False)
+        .set_index(
             [
                 "hardware",
                 "benchmark",
@@ -296,9 +300,16 @@ def compute_speedup(timings, ref_algorithm):
 
 
 def compute_baselines(timings):
-    stats = statistical_timings(timings)
-    return stats.groupby(stats.index.names[:-1], axis=0).apply(
-        lambda x: x.xs("ScatterAlloc", level=-1)["50%"]
+    return timings.groupby(
+        ["hardware", "benchmark", "grid_x", "grid_y", "grid_z"],
+        axis=0,
+    ).apply(
+        lambda x: np.percentile(
+            x.set_index("algorithm", append=False, drop=True)["runtime in seconds"][
+                "ScatterAlloc"
+            ],
+            50,
+        )
     )
 
 
@@ -311,21 +322,50 @@ def print_results(results, name):
 
 
 def plot_foil(timings):
+    plt.figure()
     ax = sns.barplot(
         timings, x="hardware", y="runtime in seconds", hue="algorithm", errorbar="pi"
     )
     ax.get_figure().savefig("figures/foil.pdf")
 
 
+def plot_khi(timings):
+    plt.figure()
+    mem_label = "estimated particle memory consumption in GB"
+    baselines = compute_baselines(timings)
+    timings = (
+        timings.reset_index(drop=False)
+        .set_index(
+            baselines.index.names + ["algorithm", "run_id"], append=False, drop=True
+        )
+        .unstack(["algorithm", "run_id"])
+        .div(baselines, axis=0)
+        .stack(["algorithm", "run_id"])
+        .reset_index(drop=False)
+    )
+    timings[mem_label] = memory(timings[["grid_x", "grid_y", "grid_z"]])
+    timings = timings.rename({"runtime in seconds": "relative runtime"}, axis=1)
+    ax = sns.catplot(
+        timings,
+        kind="violin",
+        x="hardware",
+        y="relative runtime",
+        hue="algorithm",
+        col=mem_label,
+        sharey=True,
+        legend_out=False,
+    )
+    ax.refline(y=1)
+    ax.set(ylim=(0.95, 1.05))
+    ax.savefig("figures/khi.pdf")
+
+
 def main():
     timings = read_timings()
     stats = statistical_timings(timings)
     print_results(stats, "Timings")
-    baselines = compute_baselines(timings)
-    plot_foil(timings.set_index("benchmark").loc(axis=0)["FoilLCT"])
-    #    print_results(speedups, "Speedups")
-    #    plot_khi(speedups["khi"])
-    #    plot_foil(timings["foil"])
+    plot_foil(timings.loc(axis=0)["FoilLCT"])
+    plot_khi(timings.loc(axis=0)["KelvinHelmholtz"])
 
 
 if __name__ == "__main__":
