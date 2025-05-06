@@ -10,6 +10,7 @@ import parse
 from functools import reduce
 from itertools import cycle
 import seaborn as sns
+from scipy.stats import kruskal
 
 
 def fresh_markers():
@@ -41,6 +42,7 @@ HARDWARE = {
     "lumi": "AMD MI250X (1 GCD)",
     "jedi": "NVIDIA GH200",
 }
+MEM_LABEL = "estimated particle memory consumption in GB"
 
 
 def generate_new_style():
@@ -129,14 +131,6 @@ def parse_full(file):
     )
 
 
-def extract(data, example):
-    khi = {key[1]: data[key] for key in filter(lambda key: key[0] == example, data)}
-    keys = list(khi.keys())
-    if len(keys) > 0:
-        return pd.concat([khi[key] for key in keys], axis=1, keys=keys)
-    return pd.DataFrame()
-
-
 def read_data(cluster):
     files = list(cluster.glob("*"))
     return pd.concat([parse_full(file) for file in files], axis=1)
@@ -168,99 +162,8 @@ def read_timings():
     )
 
 
-def errorbar(ax, x, y, yerr, **kwargs):
-    points = ax.errorbar(x, y, yerr, linestyle="none", **kwargs)
-    ax.plot(x, y, alpha=0.3, color=points.lines[0].get_color())
-    return points
-
-
-def normalise_cluster(results, name):
-    cluster = results.loc(axis=0)[name]
-    cluster = (
-        cluster.assign(
-            memory=np.prod(cluster.index.to_frame().values, axis=1)
-            * MEMORY_PER_CELL
-            / 1024**3
-        )
-        .set_index("memory", drop=True)
-        .loc(axis=1)[:, ["mean", "std"]]
-    )
-    normalised = cluster.loc(axis=1)["ScatterAlloc", ["mean"]].to_numpy() / cluster
-
-    # linear error propagation
-    term1 = (
-        cluster.loc(axis=1)["ScatterAlloc", ["std"]].to_numpy()
-        / cluster.loc(axis=1)[:, "mean"].to_numpy()
-    )
-    # this one stays a data frame
-    term2 = (
-        cluster.loc(axis=1)["ScatterAlloc", ["mean"]].to_numpy()
-        / cluster.loc(axis=1)[:, "mean"].to_numpy() ** 2
-        * cluster.loc(axis=1)[:, "std"]
-    )
-
-    # it's convenient to use pandas' fillna,
-    # so we do multiple assignments to create separate data frames
-    # to `fillna` individually
-    normalised.loc(axis=1)[:, "std"] = term1
-    normalised.loc(axis=1)[:, "std"] = normalised.loc(axis=1)[:, "std"].fillna(0)
-    normalised.loc(axis=1)[:, "std"] += term2.fillna(0)
-    return normalised
-
-
 def memory(grid_sizes):
-    return np.around(
-        np.prod(grid_sizes, axis=1) * MEMORY_PER_CELL / 1024**3, decimals=0
-    ).astype(int)
-
-
-def plot_khi(results):
-    fig, ax = plt.subplots()
-    algorithms = sorted(results.droplevel(1, axis=1).columns.unique())
-    devices = sorted(results.droplevel([1, 2, 3], axis=0).index.unique())
-    scaling_factor = 3
-    for device, fillstyle in zip(
-        devices, ["full", "none", "left", "right", "bottom", "top"]
-    ):
-        for algorithm in algorithms:
-            try:
-                tmp = results.loc(axis=0)[device].loc(axis=1)[algorithm]
-            except KeyError:
-                continue
-            if not tmp["mean"].isna().all():
-                x = memory(tmp)
-                arg = np.argsort(x)
-                x = x[arg] / scaling_factor
-                y = tmp["50%"].to_numpy()[arg]
-                yerr = np.abs(tmp[["25%", "75%"]].to_numpy()[arg] - y.reshape(-1, 1)).T
-                errorbar(
-                    ax,
-                    x[x >= 3 / scaling_factor - 0.1],
-                    y[x >= 3 / scaling_factor - 0.1],
-                    yerr[:, x >= 3 / scaling_factor - 0.1],
-                    label=f"{device}: {algorithm}",
-                    fillstyle=fillstyle,
-                    capsize=3,
-                    **STYLE[algorithm],
-                )
-    ax.axhline(1, color=STYLE["ScatterAlloc"]["color"], label="ScatterAlloc")
-
-    ax.set_xscale("log", base=2)
-
-    def adjust_for_scaling_factor_formatter(x, pos):
-        # return rf"${scaling_factor} \times 2^" "{" f"{int(np.round(np.log2(x)))}" "}$"
-        return f"{int(scaling_factor * x)}"
-
-    # Set the custom formatter for the x-axis tick labels
-    ax.xaxis.set_major_formatter(plt.FuncFormatter(adjust_for_scaling_factor_formatter))
-    #    ax.xaxis.set_major_formatter(
-    #        plt.FuncFormatter(lambda x, pos: f"2^{int(np.log2(x))}")
-    #    )
-    ax.set_ylabel("Speedup to ScatterAlloc")
-    ax.set_xlabel("Estimated particle memory consumption in GB")
-    ax.legend()
-    fig.tight_layout()
-    fig.savefig("figures/khi.pdf")
+    return np.ceil(np.prod(grid_sizes, axis=1) * MEMORY_PER_CELL / 1024**3).astype(int)
 
 
 def statistical_timings(timings):
@@ -282,28 +185,8 @@ def statistical_timings(timings):
     )
 
 
-def divide_dicts(d1, d2):
-    return {key: d1[key] / d2[key] for key in set(d1.keys()).intersection(d2.keys())}
-
-
-def compute_speedup(timings, ref_algorithm):
-    ref = {
-        example: times
-        for (example, algo), times in timings.items()
-        if algo == ref_algorithm
-    }
-    return {
-        key: divide_dicts(ref[key[0]], val)
-        for key, val in timings.items()
-        if key[1] != ref_algorithm and key[0] in ref
-    }
-
-
 def compute_baselines(timings):
-    return timings.groupby(
-        ["hardware", "benchmark", "grid_x", "grid_y", "grid_z"],
-        axis=0,
-    ).apply(
+    return timings.groupby(["hardware", MEM_LABEL], axis=0).apply(
         lambda x: np.percentile(
             x.set_index("algorithm", append=False, drop=True)["runtime in seconds"][
                 "ScatterAlloc"
@@ -327,45 +210,71 @@ def plot_foil(timings):
         timings, x="hardware", y="runtime in seconds", hue="algorithm", errorbar="pi"
     )
     ax.get_figure().savefig("figures/foil.pdf")
+    return compute_significance(
+        timings.assign(**{MEM_LABEL: 1}), "runtime in seconds"
+    ).droplevel(MEM_LABEL)
 
 
 def plot_khi(timings):
     plt.figure()
-    mem_label = "estimated particle memory consumption in GB"
-    baselines = compute_baselines(timings)
     timings = (
+        timings.assign(**{MEM_LABEL: memory(timings[["grid_x", "grid_y", "grid_z"]])})
+        .reset_index(drop=True)
+        .drop(["grid_x", "grid_y", "grid_z"], axis=1)
+    )
+    baselines = compute_baselines(timings)
+    timings["relative runtime"] = (
         timings.reset_index(drop=False)
         .set_index(
             baselines.index.names + ["algorithm", "run_id"], append=False, drop=True
         )
         .unstack(["algorithm", "run_id"])
-        .div(baselines, axis=0)
+        .div(baselines, axis=0)["runtime in seconds"]
         .stack(["algorithm", "run_id"])
-        .reset_index(drop=False)
+        .reset_index(drop=True)
     )
-    timings[mem_label] = memory(timings[["grid_x", "grid_y", "grid_z"]])
-    timings = timings.rename({"runtime in seconds": "relative runtime"}, axis=1)
     ax = sns.catplot(
         timings,
         kind="violin",
         x="hardware",
         y="relative runtime",
         hue="algorithm",
-        col=mem_label,
+        col=MEM_LABEL,
         sharey=True,
         legend_out=False,
     )
     ax.refline(y=1)
     ax.set(ylim=(0.95, 1.05))
     ax.savefig("figures/khi.pdf")
+    metadata = pd.concat(
+        [baselines, compute_significance(timings, "relative runtime")],
+        keys=["reference runtime in seconds", "kruskal p-value"],
+        axis=1,
+    )
+    return metadata
+
+
+def compute_significance(timings, name):
+    return (
+        timings.set_index(["algorithm", "run_id"])
+        .groupby(["hardware", MEM_LABEL])
+        .apply(
+            lambda x: kruskal(
+                *x[[]].unstack("run_id").to_numpy(),
+                nan_policy="omit",
+            ).pvalue
+        )
+    )
 
 
 def main():
     timings = read_timings()
     stats = statistical_timings(timings)
     print_results(stats, "Timings")
-    plot_foil(timings.loc(axis=0)["FoilLCT"])
-    plot_khi(timings.loc(axis=0)["KelvinHelmholtz"])
+    foil_metadata = plot_foil(timings.loc(axis=0)["FoilLCT"])
+    print(foil_metadata)
+    khi_metadata = plot_khi(timings.loc(axis=0)["KelvinHelmholtz"])
+    print(khi_metadata)
 
 
 if __name__ == "__main__":
