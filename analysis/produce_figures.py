@@ -38,7 +38,7 @@ COLOR = fresh_colours()
 HARDWARE = {
     "hal": "NVIDIA A30",
     "hemera": "NVIDIA A100",
-    "lumi": "AMD MI250X",
+    "lumi": "AMD MI250X (1 GCD)",
     "jedi": "NVIDIA GH200",
 }
 
@@ -160,7 +160,11 @@ def read_timings():
         .sort_index()
     )
     timings.columns.names = ["run_id"]
-    return timings.stack().reset_index(drop=False).rename({0: "runtime"}, axis=1)
+    return (
+        timings.stack()
+        .reset_index(drop=False)
+        .rename({0: "runtime in seconds"}, axis=1)
+    )
 
 
 def errorbar(ax, x, y, yerr, **kwargs):
@@ -307,16 +311,9 @@ def print_results(results, name):
 
 
 def plot_foil(timings):
-    ax = sns.violinplot(
-        timings,
-        x="hardware",
-        y="runtime",
-        hue="algorithm",
-        gap=5.0,
-        fill=False,
-        inner="point",
+    ax = sns.barplot(
+        timings, x="hardware", y="runtime in seconds", hue="algorithm", errorbar="pi"
     )
-    ax.set_ylim(0, None)
     ax.get_figure().savefig("figures/foil.pdf")
 
 
