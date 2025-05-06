@@ -34,6 +34,12 @@ def fresh_colours():
 
 MARKER = fresh_markers()
 COLOR = fresh_colours()
+HARDWARE = {
+    "hal": "NVIDIA A30",
+    "hemera": "NVIDIA A100",
+    "lumi": "AMD MI250X",
+    "jedi": "NVIDIA GH200",
+}
 
 
 def generate_new_style():
@@ -80,10 +86,14 @@ def parse_log(log):
             "calculation  simulation time:{}= {seconds:f} sec", text
         )
         key = flags["first"][1] if flags["first"][0] == "g" else flags["second"][1]
+        if len(key) == 2:
+            key = key + (np.nan,)
         try:
             results[key] = next(runtime)["seconds"]
         except StopIteration:
             results[key] = np.nan
+    results = pd.Series(results)
+    results.index.names = ("grid_x", "grid_y", "grid_z")
     return results
 
 
@@ -109,11 +119,13 @@ def pairs(iterable):
 def parse_full(file):
     with file.open("r") as f:
         text = f.read()
-    return {
-        key: parse_log(log)
-        for header, log in pairs(text.split("\n==============================\n"))
-        if (key := parse_header(header)) is not None
-    }
+    return pd.DataFrame(
+        {
+            key: parse_log(log)
+            for header, log in pairs(text.split("\n==============================\n"))
+            if (key := parse_header(header)) is not None
+        }
+    )
 
 
 def extract(data, example):
@@ -125,50 +137,29 @@ def extract(data, example):
 
 
 def read_data(cluster):
-    files = cluster.glob("*")
-    tmp = [parse_full(file) for file in files]
-    data = {
-        key: (pd.concat(frames, axis=1).T.describe().T)
-        for key in reduce(set.union, map(dict.keys, tmp), set())
-        if len(
-            (
-                frames := list(
-                    filter(
-                        lambda series: not series.dropna(how="all").empty,
-                        map(
-                            lambda x: pd.Series(x.get(key, None))
-                            .to_frame()
-                            .astype(float),
-                            tmp,
-                        ),
-                    )
-                )
-            )
-        )
-        > 0
-    }
-    return {"khi": extract(data, "KelvinHelmholtz"), "foil": extract(data, "FoilLCT")}
+    files = list(cluster.glob("*"))
+    return pd.concat([parse_full(file) for file in files], axis=1)
 
 
-def make_dict_of_frames(iterable):
-    # make sure we don't exhaust an iterator
-    iterable = list(iterable)
-    return {
-        str(key): pd.concat(
-            **{
-                k: v
-                for k, v in zip(
-                    ["objs", "keys"],
-                    reduce(
-                        lambda acc, new: (acc[0] + [new[2]], acc[1] + [new[1]]),
-                        filter(lambda x: x[0] == key and not x[2].empty, iterable),
-                        ([], []),
-                    ),
-                )
-            }
+def read_timings():
+    clusters = list(OUTPUT.glob("*"))
+    timings = pd.concat(
+        [read_data(cluster) for cluster in clusters],
+        axis=1,
+        keys=[HARDWARE[cluster.name] for cluster in clusters],
+    )
+    names = ["hardware", "benchmark", "algorithm"]
+    timings.columns.names = names
+    timings = timings.T.reset_index(drop=False).set_index(names, append=True).T
+    timings = (
+        timings.stack(names)
+        .reorder_levels(
+            ["hardware", "benchmark", "grid_x", "grid_y", "grid_z", "algorithm"]
         )
-        for key in np.unique(list(map(lambda x: x[0], iterable)))
-    }
+        .sort_index()
+    )
+    timings.columns.names = ["run_id"]
+    return timings
 
 
 def errorbar(ax, x, y, yerr, **kwargs):
@@ -287,28 +278,8 @@ def plot_foil(results):
     ax.get_figure().savefig("figures/foil.pdf")
 
 
-def statistical_timings():
-    return dict(
-        map(
-            lambda x: (
-                x[0],
-                x[1].rename(
-                    {
-                        "hal": "NVIDIA A30",
-                        "hemera": "NVIDIA A100",
-                        "lumi": "AMD MI250X",
-                        "jedi": "NVIDIA GH200",
-                    },
-                    axis=0,
-                ),
-            ),
-            make_dict_of_frames(
-                (key, cluster.name, val)
-                for cluster in OUTPUT.glob("*")
-                for key, val in read_data(cluster).items()
-            ).items(),
-        )
-    )
+def statistical_timings(timings):
+    return timings.apply(pd.Series.describe, axis=1)
 
 
 def divide_dicts(d1, d2):
@@ -328,54 +299,10 @@ def compute_speedup(timings, ref_algorithm):
     }
 
 
-def read_speedups(cluster):
-    files = cluster.glob("*")
-    tmp = [compute_speedup(parse_full(file), REFERENCE_ALGORITHM) for file in files]
-    algorithms = reduce(set.union, map(dict.keys, tmp), set())
-    data = {
-        key: (pd.concat(frames, axis=1).T.describe().T)
-        for key in algorithms
-        if len(
-            (
-                frames := list(
-                    filter(
-                        lambda series: not series.dropna(how="all").empty,
-                        map(
-                            lambda x: pd.Series(x.get(key, None))
-                            .to_frame()
-                            .astype(float),
-                            tmp,
-                        ),
-                    )
-                )
-            )
-        )
-        > 0
-    }
-    return {"khi": extract(data, "KelvinHelmholtz"), "foil": extract(data, "FoilLCT")}
-
-
-def statistical_speedups():
-    return dict(
-        map(
-            lambda x: (
-                x[0],
-                x[1].rename(
-                    {
-                        "hal": "NVIDIA A30",
-                        "hemera": "NVIDIA A100",
-                        "lumi": "AMD MI250X",
-                        "jedi": "NVIDIA GH200",
-                    },
-                    axis=0,
-                ),
-            ),
-            make_dict_of_frames(
-                (key, cluster.name, val)
-                for cluster in OUTPUT.glob("*")
-                for key, val in read_speedups(cluster).items()
-            ).items(),
-        )
+def compute_baselines(timings):
+    stats = statistical_timings(timings)
+    return stats.groupby(stats.index.names[:-1], axis=0).apply(
+        lambda x: print(x) or x.xs("ScatterAlloc", level=-1)["50%"]
     )
 
 
@@ -383,18 +310,15 @@ def print_results(results, name):
     print("+++++++++++++++++++++++++++++++++++")
     print(name)
     print("+++++++++++++++++++++++++++++++++++")
+    print(results)
     print()
-    for key, val in results.items():
-        print(key)
-        print("===================================")
-        print(val)
-        print()
 
 
 def main():
-    timings = statistical_timings()
-    print_results(timings, "Timings")
-    speedups = statistical_speedups()
+    timings = read_timings()
+    stats = statistical_timings(timings)
+    print_results(stats, "Timings")
+    baselines = compute_baselines(timings)
     print_results(speedups, "Speedups")
     plot_khi(speedups["khi"])
     plot_foil(timings["foil"])
