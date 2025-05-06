@@ -9,6 +9,7 @@ import numpy as np
 import parse
 from functools import reduce
 from itertools import cycle
+import seaborn as sns
 
 
 def fresh_markers():
@@ -159,7 +160,7 @@ def read_timings():
         .sort_index()
     )
     timings.columns.names = ["run_id"]
-    return timings
+    return timings.stack().reset_index(drop=False).rename({0: "runtime"}, axis=1)
 
 
 def errorbar(ax, x, y, yerr, **kwargs):
@@ -255,31 +256,22 @@ def plot_khi(results):
     fig.savefig("figures/khi.pdf")
 
 
-def plot_foil(results):
-    tmp = (
-        results.droplevel([1, 2], axis=0)
-        .loc(axis=1)[:, ["50%", "25%", "75%"]]
-        .stack(0, future_stack=True)
-        .unstack(1)
-    )
-    values = tmp.loc(axis=1)[["50%"]]
-    errors = tmp.loc(axis=1)[["25%", "75%"]]
-    errors.loc(axis=1)["25%"] -= values.to_numpy()
-    errors.loc(axis=1)["75%"] -= values.to_numpy()
-
-    ax = values.plot.bar(
-        y="50%",
-        yerr=errors,
-        color={key: val["color"] for key, val in STYLE.items()},
-    )
-    ax.set_ylabel("Main loop runtime in s")
-    ax.tick_params(axis="x", labelrotation=0)
-    ax.get_figure().tight_layout()
-    ax.get_figure().savefig("figures/foil.pdf")
-
-
 def statistical_timings(timings):
-    return timings.apply(pd.Series.describe, axis=1)
+    return (
+        timings.set_index(
+            [
+                "hardware",
+                "benchmark",
+                "grid_x",
+                "grid_y",
+                "grid_z",
+                "algorithm",
+                "run_id",
+            ]
+        )
+        .unstack("run_id")
+        .apply(pd.Series.describe, axis=1)
+    )
 
 
 def divide_dicts(d1, d2):
@@ -302,7 +294,7 @@ def compute_speedup(timings, ref_algorithm):
 def compute_baselines(timings):
     stats = statistical_timings(timings)
     return stats.groupby(stats.index.names[:-1], axis=0).apply(
-        lambda x: print(x) or x.xs("ScatterAlloc", level=-1)["50%"]
+        lambda x: x.xs("ScatterAlloc", level=-1)["50%"]
     )
 
 
@@ -314,14 +306,29 @@ def print_results(results, name):
     print()
 
 
+def plot_foil(timings):
+    ax = sns.violinplot(
+        timings,
+        x="hardware",
+        y="runtime",
+        hue="algorithm",
+        gap=5.0,
+        fill=False,
+        inner="point",
+    )
+    ax.set_ylim(0, None)
+    ax.get_figure().savefig("figures/foil.pdf")
+
+
 def main():
     timings = read_timings()
     stats = statistical_timings(timings)
     print_results(stats, "Timings")
     baselines = compute_baselines(timings)
-    print_results(speedups, "Speedups")
-    plot_khi(speedups["khi"])
-    plot_foil(timings["foil"])
+    plot_foil(timings.set_index("benchmark").loc(axis=0)["FoilLCT"])
+    #    print_results(speedups, "Speedups")
+    #    plot_khi(speedups["khi"])
+    #    plot_foil(timings["foil"])
 
 
 if __name__ == "__main__":
