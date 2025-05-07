@@ -7,10 +7,10 @@ PARAM_DIR=$2
 
 MALLOCMC_URL="https://github.com/chillenzer/mallocMC"
 MALLOCMC_SRC="src/picongpu/thirdParty/mallocMC"
-MALLOCMC_HASH="origin/add-GallatinCuda"
+MALLOCMC_HASH="47e5e2830466f5e75e22d22789e22063163be218"
 PICONGPU_URL="https://github.com/ComputationalRadiationPhysics/picongpu"
 PICONGPU_SRC="src/picongpu"
-PICONGPU_HASH="dev"
+PICONGPU_HASH="19ceeb5224ac21c183a2efbff56f5ba73115335c"
 EXAMPLES=("KelvinHelmholtz" "FoilLCT")
 ALGORITHMS=("FlatterScatter" "ScatterAlloc" "Gallatin")
 
