@@ -59,7 +59,7 @@ namespace picongpu
      * algorithm.
      */
     using DeviceHeap = mallocMC::Allocator<
-        pmacc::Acc<DIM1>,
+        alpaka::AccToTag<pmacc::Acc<DIM1>>,
         mallocMC::CreationPolicies::Scatter<DeviceHeapConfig>,
         mallocMC::DistributionPolicies::Noop,
         mallocMC::OOMPolicies::ReturnNull,
