@@ -5,7 +5,7 @@ set -e
 PROFILE=$1
 PARAM_DIR=$2
 
-MALLOCMC_URL="https://github.com/chillenzer/mallocMC"
+MALLOCMC_URL="https://github.com/alpaka-group/mallocMC"
 MALLOCMC_SRC="src/picongpu/thirdParty/mallocMC"
 MALLOCMC_HASH="47e5e2830466f5e75e22d22789e22063163be218"
 PICONGPU_URL="https://github.com/ComputationalRadiationPhysics/picongpu"
@@ -42,7 +42,8 @@ function clone() {
 function clone_src() {
   mkdir -p src
   clone $PICONGPU_URL $PICONGPU_SRC $PICONGPU_HASH
-  # We patch in our custom version including Gallatin.
+
+  # We want full control over the version, so we patch in our own.
   rm -rf $MALLOCMC_SRC
   clone $MALLOCMC_URL $MALLOCMC_SRC $MALLOCMC_HASH
 }
