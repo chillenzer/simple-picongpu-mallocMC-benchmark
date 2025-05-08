@@ -223,7 +223,11 @@ def plot_foil(timings):
     plt.tight_layout()
     ax.get_figure().savefig("figures/foil.pdf")
     return compute_significance(
-        timings.assign(**{MEM_LABEL: 1}), "runtime in seconds"
+        timings.assign(**{MEM_LABEL: 1})[
+            (timings["algorithm"] == "FlatterScatter")
+            + (timings["algorithm"] == "ScatterAlloc")
+        ],
+        "runtime in seconds",
     ).droplevel(MEM_LABEL)
 
 
@@ -310,7 +314,7 @@ def compute_significance(timings, name):
         .groupby(["hardware", MEM_LABEL])
         .apply(
             lambda x: kruskal(
-                *x[[]].unstack("run_id").to_numpy(),
+                *x[["runtime in seconds"]].unstack("run_id").to_numpy(),
                 nan_policy="omit",
             ).pvalue
         )
