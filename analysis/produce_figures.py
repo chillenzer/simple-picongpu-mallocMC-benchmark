@@ -286,22 +286,25 @@ def plot_khi(timings):
     ax.set(ylim=(YMIN, YMAX))
     plt.tight_layout()
     ax.savefig("figures/khi.pdf")
+    flatter_vs_scatter = timings[
+        (timings["algorithm"] == "FlatterScatter")
+        + (timings["algorithm"] == "ScatterAlloc")
+    ]
     metadata = pd.concat(
         [
             baselines,
-            compute_significance(
-                timings[
-                    (timings["algorithm"] == "FlatterScatter")
-                    + (timings["algorithm"] == "ScatterAlloc")
-                ],
-                "relative runtime",
-            ),
-            timings.groupby(["hardware", MEM_LABEL]).sum()["outlier"],
+            flatter_vs_scatter.groupby(["hardware", MEM_LABEL]).sum()["outlier"],
+            compute_significance(flatter_vs_scatter, "relative runtime"),
+            flatter_vs_scatter[flatter_vs_scatter["algorithm"] == "FlatterScatter"]
+            .set_index(["hardware", MEM_LABEL, "run_id"])["relative runtime"]
+            .unstack("run_id")
+            .median(axis=1),
         ],
         keys=[
             "reference runtime in seconds",
-            "FlatterScatter vs. ScatterAlloc kruskal p-value",
             "outliers",
+            "kruskal p-value",
+            "relative runtime",
         ],
         axis=1,
     )
