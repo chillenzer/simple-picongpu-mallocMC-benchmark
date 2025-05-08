@@ -37,12 +37,17 @@ def fresh_colours():
 MARKER = fresh_markers()
 COLOR = fresh_colours()
 HARDWARE = {
-    "hal": "NVIDIA A30",
-    "hemera": "NVIDIA A100",
-    "lumi": "AMD MI250X (1 GCD)",
-    "jedi": "NVIDIA GH200",
+    "hal": "A30",
+    "hemera": "A100",
+    "hemera-a100": "A100",
+    "hemera-v100": "V100",
+    "lumi": "MI250X (1 GCD)",
+    "jedi": "GH200",
 }
+HARDWARE_ORDER = ["V100", "A100", "A30", "GH200", "MI250X (1 GCD)"]
+ALGORITHM_ORDER = ["ScatterAlloc", "FlatterScatter", "Gallatin"]
 MEM_LABEL = "estimated particle memory consumption in GB"
+YMIN, YMAX = 0.9, 1.1
 
 
 def generate_new_style():
@@ -207,12 +212,29 @@ def print_results(results, name):
 def plot_foil(timings):
     plt.figure()
     ax = sns.barplot(
-        timings, x="hardware", y="runtime in seconds", hue="algorithm", errorbar="pi"
+        timings,
+        x="hardware",
+        y="runtime in seconds",
+        hue="algorithm",
+        errorbar="pi",
+        order=HARDWARE_ORDER,
+        hue_order=ALGORITHM_ORDER,
     )
+    plt.tight_layout()
     ax.get_figure().savefig("figures/foil.pdf")
     return compute_significance(
         timings.assign(**{MEM_LABEL: 1}), "runtime in seconds"
     ).droplevel(MEM_LABEL)
+
+
+def outlier_mask(timings, safety_factor=1.5):
+    # according to Tukey's criterion
+    perc_25, perc_75 = timings.describe()[["25%", "75%"]]
+    interval = (
+        perc_25 - safety_factor * (perc_75 - perc_25),
+        perc_75 + safety_factor * (perc_75 - perc_25),
+    )
+    return (timings < interval[0]) + (timings > interval[1])
 
 
 def plot_khi(timings):
@@ -221,6 +243,15 @@ def plot_khi(timings):
         timings.assign(**{MEM_LABEL: memory(timings[["grid_x", "grid_y", "grid_z"]])})
         .reset_index(drop=True)
         .drop(["grid_x", "grid_y", "grid_z"], axis=1)
+    )
+    mask = timings.groupby(["hardware", "algorithm", MEM_LABEL]).apply(
+        lambda x: outlier_mask(x.set_index("run_id")["runtime in seconds"]),
+        include_groups=False,
+    )
+    timings = (
+        timings.set_index(["hardware", "algorithm", MEM_LABEL, "run_id"])
+        .assign(outlier=mask)
+        .reset_index(drop=False)
     )
     baselines = compute_baselines(timings)
     timings["relative runtime"] = (
@@ -242,13 +273,32 @@ def plot_khi(timings):
         col=MEM_LABEL,
         sharey=True,
         legend_out=False,
+        split=False,
+        hue_order=ALGORITHM_ORDER,
+        order=HARDWARE_ORDER,
+        orient="v",
     )
     ax.refline(y=1)
-    ax.set(ylim=(0.95, 1.05))
+    ax.set(ylim=(YMIN, YMAX))
+    plt.tight_layout()
     ax.savefig("figures/khi.pdf")
     metadata = pd.concat(
-        [baselines, compute_significance(timings, "relative runtime")],
-        keys=["reference runtime in seconds", "kruskal p-value"],
+        [
+            baselines,
+            compute_significance(
+                timings[
+                    (timings["algorithm"] == "FlatterScatter")
+                    + (timings["algorithm"] == "ScatterAlloc")
+                ],
+                "relative runtime",
+            ),
+            timings.groupby(["hardware", MEM_LABEL]).sum()["outlier"],
+        ],
+        keys=[
+            "reference runtime in seconds",
+            "FlatterScatter vs. ScatterAlloc kruskal p-value",
+            "outliers",
+        ],
         axis=1,
     )
     return metadata
@@ -269,12 +319,14 @@ def compute_significance(timings, name):
 
 def main():
     timings = read_timings()
+
     stats = statistical_timings(timings)
-    print_results(stats, "Timings")
     foil_metadata = plot_foil(timings.loc(axis=0)["FoilLCT"])
-    print(foil_metadata)
     khi_metadata = plot_khi(timings.loc(axis=0)["KelvinHelmholtz"])
-    print(khi_metadata)
+
+    print_results(stats, "Timings")
+    print_results(foil_metadata, "Foil Metadata")
+    print_results(khi_metadata, "KHI Metadata")
 
 
 if __name__ == "__main__":
