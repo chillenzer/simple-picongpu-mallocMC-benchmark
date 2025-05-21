@@ -218,6 +218,7 @@ def plot_foil(timings):
         timings,
         x="hardware",
         y="runtime in seconds",
+        estimator="median",
         hue="algorithm",
         errorbar="pi",
         order=HARDWARE_ORDER,
