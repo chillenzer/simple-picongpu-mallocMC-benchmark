@@ -101,6 +101,8 @@ def parse_log(log):
         except StopIteration:
             results[key] = np.nan
     results = pd.Series(results)
+    if len(results) == 0:
+        return None
     results.index.names = ("grid_x", "grid_y", "grid_z")
     return results
 
@@ -129,9 +131,10 @@ def parse_full(file):
         text = f.read()
     return pd.DataFrame(
         {
-            key: parse_log(log)
+            key: results
             for header, log in pairs(text.split("\n==============================\n"))
             if (key := parse_header(header)) is not None
+            and (results := parse_log(log)) is not None
         }
     )
 
