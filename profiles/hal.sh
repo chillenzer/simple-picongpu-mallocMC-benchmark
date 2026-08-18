@@ -48,6 +48,7 @@ spack load cmake@3.31.9
 
 spack load openpmd-api@0.17.0
 spack load boost@1.83.0
+spack load openssl@3.6.1
 
 # PIConGPU output dependencies ################################################
 #
@@ -79,3 +80,6 @@ if [ -f "$BASH_COMP_FILE" ] ; then
 else
     echo "bash completion file '$BASH_COMP_FILE' not found." >&2
 fi
+
+export LIBRARY_PATH="$(spack location -i openssl@3.6.1)/lib64:$LIBRARY_PATH"
+export LD_LIBRARY_PATH="$(spack location -i openssl@3.6.1)/lib64:$LD_LIBRARY_PATH"
