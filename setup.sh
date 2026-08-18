@@ -8,7 +8,7 @@ PARAM_DIR=$2
 # add-delay branch: FlatterScatter sleep_time support and the __nanosleep fix.
 MALLOCMC_URL="https://github.com/chillenzer/mallocMC"
 MALLOCMC_SRC="src/picongpu/thirdParty/mallocMC"
-MALLOCMC_HASH="c95991d3d635715f901c65d9cc2e6ed8b5edee72"
+MALLOCMC_HASH="54f5cb7a1b01efcc47752671343b034c1a891707"
 PICONGPU_URL="https://github.com/ComputationalRadiationPhysics/picongpu"
 PICONGPU_SRC="src/picongpu"
 PICONGPU_HASH="19ceeb5224ac21c183a2efbff56f5ba73115335c"
