@@ -11,7 +11,7 @@ MALLOCMC_SRC="src/picongpu/thirdParty/mallocMC"
 MALLOCMC_HASH="eab2da3e5fe3f4b7aaa88fcebdc12413bafb501f"
 PICONGPU_URL="https://github.com/ComputationalRadiationPhysics/picongpu"
 PICONGPU_SRC="src/picongpu"
-PICONGPU_HASH="19ceeb5224ac21c183a2efbff56f5ba73115335c"
+PICONGPU_HASH="6e7d58bb97300ac74cd7a09e13b3c03fdd3863ae"
 EXAMPLES=("KelvinHelmholtz" "FoilLCT")
 # Each sleep_time (in nanoseconds) is a compile-time template parameter of the
 # FlatterScatter heap config, so every value needs its own build.
