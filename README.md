@@ -23,7 +23,7 @@ impact of allocation latency on simulation runtime.
 | dependency | source | pinned to |
 |------------|--------|-----------|
 | PIConGPU | ComputationalRadiationPhysics/picongpu | `19ceeb52` |
-| mallocMC | chillenzer/mallocMC, `add-delay` branch (sleep_time support, `__nanosleep` fix) | `54f5cb7a` |
+| mallocMC | chillenzer/mallocMC, `add-delay` branch (sleep_time support, `__nanosleep` fix, `BOOST_LANG_*` guards compatible with PIConGPU's vendored alpaka 2.0) | `eab2da3e` |
 
 ## Repository layout
 
