@@ -4,7 +4,13 @@ PROFILE=$1
 FLAGSFOLDER=$(pwd -P)/$2
 
 EXAMPLES=("KelvinHelmholtz" "FoilLCT")
-ALGORITHMS=("FlatterScatter" "ScatterAlloc" "Gallatin")
+# Keep in sync with ALGORITHM/SLEEP_TIMES in setup.sh.
+ALGORITHM="FlatterScatter"
+SLEEP_TIMES=(0 100 1000 10000)
+ALGORITHMS=()
+for sleep_time in "${SLEEP_TIMES[@]}"; do
+  ALGORITHMS+=("${ALGORITHM}-sleep${sleep_time}")
+done
 
 for example in ${EXAMPLES[@]}; do
   for algorithm in ${ALGORITHMS[@]}; do
