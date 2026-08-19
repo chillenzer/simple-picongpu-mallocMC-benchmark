@@ -6,7 +6,7 @@ FLAGSFOLDER=$(pwd -P)/$2
 EXAMPLES=("KelvinHelmholtz" "FoilLCT")
 # Keep in sync with ALGORITHM/SLEEP_TIMES in setup.sh.
 ALGORITHM="FlatterScatter"
-SLEEP_TIMES=(0 100 1000 10000)
+SLEEP_TIMES=(0 1000 10000 50000 100000 500000)
 ALGORITHMS=()
 for sleep_time in "${SLEEP_TIMES[@]}"; do
   ALGORITHMS+=("${ALGORITHM}-sleep${sleep_time}")

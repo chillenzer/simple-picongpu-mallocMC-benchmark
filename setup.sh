@@ -16,7 +16,7 @@ EXAMPLES=("KelvinHelmholtz" "FoilLCT")
 # Each sleep_time (in nanoseconds) is a compile-time template parameter of the
 # FlatterScatter heap config, so every value needs its own build.
 ALGORITHM="FlatterScatter"
-SLEEP_TIMES=(0 100 1000 10000)
+SLEEP_TIMES=(0 1000 10000 50000 100000 500000)
 ALGORITHMS=()
 for sleep_time in "${SLEEP_TIMES[@]}"; do
   ALGORITHMS+=("${ALGORITHM}-sleep${sleep_time}")
@@ -60,7 +60,7 @@ function write_mallocmc_param() {
   DEST=$1
   SLEEP_TIME=$2
 
-  cat > $DEST/include/picongpu/param/mallocMC.param <<EOF
+  cat >$DEST/include/picongpu/param/mallocMC.param <<EOF
 /* Copyright 2013-2024 Axel Huebl, Felix Schmitt, Heiko Burau, Rene Widera,
  *                     Carlchristian Eckert, Julian Lenz
  *
