@@ -4,9 +4,7 @@ set -x
 set -e
 
 FOLDER="output/hal-sleeptimes"
-FILENAME="$FOLDER/setup_$(date --rfc-3339=seconds | sed 's/ /_/g').txt"
-
-rm -rf src build
+FILENAME="$FOLDER/run_$(date --rfc-3339=seconds | sed 's/ /_/g').txt"
 mkdir -p "$FOLDER"
 
 echo "========================" >>$FILENAME
@@ -24,4 +22,4 @@ echo "========================" >>$FILENAME
 echo "Starting setup" >>$FILENAME
 echo "========================" >>$FILENAME
 
-bash setup.sh profiles/hal.sh param/ 2>&1 | tee -a $FILENAME
+bash run_all.sh profiles/hal.sh flags/ 2>&1 | tee -a $FILENAME
