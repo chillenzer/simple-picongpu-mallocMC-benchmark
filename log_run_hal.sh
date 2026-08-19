@@ -19,7 +19,7 @@ env >>$FILENAME
 hwinfo >>$FILENAME
 
 echo "========================" >>$FILENAME
-echo "Starting setup" >>$FILENAME
+echo "Starting run" >>$FILENAME
 echo "========================" >>$FILENAME
 
 bash run_all.sh profiles/hal.sh flags/ 2>&1 | tee -a $FILENAME
