@@ -10,10 +10,11 @@ impact of allocation latency on simulation runtime.
 ## Benchmarked configuration
 
 - **Allocation policies**: `FlatterScatter` only
-- **sleep_time sweep** (nanoseconds): `0`, `100`, `1000`, `10000`
-  (see `SLEEP_TIMES` in `setup.sh` / `run_all.sh`)
-- **Examples**: `KelvinHelmholtz` (3D, 5 grid sizes, 1500 steps) and
-  `FoilLCT` (2D, 256x1280 cells, 2000 steps) — see `flags/*.flags`
+- **sleep_time sweep** (nanoseconds): `0`, `1000`, `10000`, `50000`,
+  `100000`, `500000` (see `SLEEP_TIMES` in `setup.sh` / `run_all.sh`)
+- **Examples**: `KelvinHelmholtz` (3D, 3 grid sizes 128^3, 256x128x128,
+  256x256x128, 1500 steps) and `FoilLCT` (2D, 256x1280 cells, 2000 steps)
+  — see `flags/*.flags`
 - **Variants**: each `(example, sleep_time)` pair is a separate build, since
   `sleep_time` is a compile-time template parameter of the heap config:
   `build/<Example>/FlatterScatter-sleep<N>`
