@@ -6,7 +6,8 @@ set -e
 FOLDER="output/hal-sleeptimes"
 FILENAME="$FOLDER/setup_$(date --rfc-3339=seconds | sed 's/ /_/g').txt"
 
-rm -rf src build
+# setup.sh reuses an existing src/ and build/ and only re-runs the parts that
+# are not up to date any more; delete them manually for a fully clean run.
 mkdir -p "$FOLDER"
 
 echo "========================" >>$FILENAME

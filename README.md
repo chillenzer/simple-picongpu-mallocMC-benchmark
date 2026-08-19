@@ -48,13 +48,31 @@ impact of allocation latency on simulation runtime.
 Everything runs on the HPC machine with the matching profile; the scripts
 must be invoked from the repository root.
 
-1. Build all variants (slow: one full PIConGPU build per variant, 8 total):
+1. Build all variants (slow the first time: one full PIConGPU build per
+   (example, sleep_time) variant):
 
    ```
    bash setup.sh profiles/hal.sh param
    ```
 
    `setup.sh` also patches `PICSRC=` in the given profile in place.
+
+   `setup.sh` is incremental and can be re-run at any time; it reuses
+   `src/` and `build/` and only repeats the parts that are out of date:
+
+   - `src/` is re-cloned only if the directory is not a git checkout at the
+     pinned commit; a changed pin triggers `git fetch && git checkout`.
+   - An input directory (`build/<Ex>/<Variant>/`) is regenerated when the
+     PIConGPU pin, the variant or the `param/<Ex>*` files change
+     (`.input-stamp` records this).
+   - A build (`pic-build`) is skipped when the input, the build `FLAGS`,
+     the profile and the toolchain versions (gcc/cmake/nvcc) are unchanged
+     (`.build-stamp` records this); otherwise `pic-build` runs
+     incrementally.
+
+   To force a clean state, delete `src/` and `build/` (or just a single
+   `build/<Ex>/<Variant>/` folder, or only a `.build-stamp` to re-run
+   `pic-build` for one variant).
 
 2. Run the benchmarks:
 

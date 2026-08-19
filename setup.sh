@@ -47,13 +47,36 @@ function clone() {
   cd $WD
 }
 
-function clone_src() {
+function ensure_src() {
+  DEST=$1
+  URL=$2
+  HASH=$3
+
+  if [ -d "$DEST/.git" ]; then
+    # Reuse the existing checkout: only sync when the pinned hash changed.
+    if [ "$(git -C $DEST rev-parse HEAD)" != "$HASH" ]; then
+      echo "Updating $DEST to ${HASH:0:8} ..."
+      git -C $DEST fetch --quiet
+      git -C $DEST checkout --quiet $HASH
+    fi
+    git -C $DEST submodule update --init --force --quiet
+    echo "Using $DEST @ ${HASH:0:8}."
+  else
+    if [ -e "$DEST" ]; then
+      echo "Replacing $DEST (not a git checkout) ..."
+      rm -rf $DEST
+    fi
+    echo "Cloning $DEST @ ${HASH:0:8} ..."
+    clone $URL $DEST $HASH
+  fi
+}
+
+function prepare_src() {
   mkdir -p src
-  clone $PICONGPU_URL $PICONGPU_SRC $PICONGPU_HASH
+  ensure_src $PICONGPU_SRC $PICONGPU_URL $PICONGPU_HASH
 
   # We want full control over the version, so we patch in our own.
-  rm -rf $MALLOCMC_SRC
-  clone $MALLOCMC_URL $MALLOCMC_SRC $MALLOCMC_HASH
+  ensure_src $MALLOCMC_SRC $MALLOCMC_URL $MALLOCMC_HASH
 }
 
 function write_mallocmc_param() {
@@ -120,12 +143,42 @@ EOF
   echo "Wrote $DEST/include/picongpu/param/mallocMC.param (sleep_time=$SLEEP_TIME ns)"
 }
 
+function hash_dir() {
+  # md5 over all file contents of a directory tree; prints nothing if missing.
+  if [ -d "$1" ]; then
+    find "$1" -type f -exec md5sum {} + | md5sum | awk '{print $1}'
+  fi
+}
+
+function input_fingerprint() {
+  # Everything that determines the content of an input directory:
+  # the PIConGPU pin (pic-create template), the variant (sleep_time),
+  # the example and the overlay parameter files.
+  VARIANT=$1
+  EXAMPLE=$2
+  {
+    echo "$PICONGPU_HASH"
+    echo "$VARIANT"
+    echo "$EXAMPLE"
+    hash_dir $PARAM_DIR/$EXAMPLE
+    hash_dir $PARAM_DIR/$EXAMPLE/$VARIANT
+  } | md5sum | awk '{print $1}'
+}
+
 function create_input() {
   SRC=$1
   DEST=$2
   VARIANT=$3
   EXAMPLE=$4
 
+  FINGERPRINT=$(input_fingerprint $VARIANT $EXAMPLE)
+  if [ -f $DEST/.input-stamp ] && [ "$(cat $DEST/.input-stamp)" = "$FINGERPRINT" ]; then
+    echo "Input $DEST is up to date; keeping."
+    return 0
+  fi
+
+  echo "Preparing input $DEST ..."
+  rm -rf $DEST
   pic-create $SRC $DEST
   write_mallocmc_param $DEST ${VARIANT##*-sleep}
   find $PARAM_DIR/* -type f \
@@ -134,6 +187,8 @@ function create_input() {
   find $PARAM_DIR/* -type f \
     -wholename "$PARAM_DIR/${EXAMPLE}/${VARIANT}/"'*'".param" \
     -exec cp -v {} $DEST/include/picongpu/param/ \;
+  echo "$FINGERPRINT" >$DEST/.input-stamp
+  echo "Prepared input $DEST."
 }
 
 function prepare_inputs() {
@@ -146,18 +201,52 @@ function prepare_inputs() {
   done
 }
 
+function toolchain_fingerprint() {
+  # Toolchain versions as loaded by the profile. A change here (for example
+  # after updating the profile) invalidates all builds.
+  for TOOL in gcc cmake nvcc; do
+    if command -v $TOOL >/dev/null 2>&1; then
+      echo "$TOOL: $($TOOL --version 2>/dev/null | sed -n 1p)"
+    fi
+  done
+  return 0
+}
+
+function build_fingerprint() {
+  # Everything that determines whether the build is still valid:
+  # the input (via its stamp), the build flags, the profile and the toolchain.
+  DEST=$1
+  {
+    if [ -f $DEST/.input-stamp ]; then
+      cat $DEST/.input-stamp
+    else
+      echo "missing-input-stamp"
+    fi
+    echo "$FLAGS"
+    md5sum $PROFILE | awk '{print $1}'
+    toolchain_fingerprint
+  } | md5sum | awk '{print $1}'
+}
+
 function build_from_input() {
   DEST=$1
 
   WD=$(pwd -P)
 
+  FINGERPRINT=$(build_fingerprint $DEST)
+  if [ -f "$DEST/.build-stamp" ] && [ "$(cat $DEST/.build-stamp)" = "$FINGERPRINT" ] \
+    && [ -x "$DEST/bin/picongpu" ]; then
+    echo "Build $DEST is up to date; skipping."
+    return 0
+  fi
+
   cd $DEST
-  HERE=$(pwd -P)
   export CMAKE_PREFIX_PATH=$MALLOCMC_SRC:$CMAKE_PREFIX_PATH
   # A little bit dirty, mallocMC's CMakeLists.txt is not exactly clean:
   pic-build -c "$FLAGS"
 
   cd $WD
+  echo "$FINGERPRINT" >$DEST/.build-stamp
 }
 
 function build() {
@@ -176,7 +265,7 @@ function prepare_environment() {
 }
 
 function main() {
-  clone_src
+  prepare_src
   prepare_environment
   prepare_inputs
   build
