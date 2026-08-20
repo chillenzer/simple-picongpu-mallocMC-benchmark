@@ -4,8 +4,10 @@ This repository benchmarks the runtime of PIConGPU simulations compiled with
 different configurations of the [mallocMC](https://github.com/chillenzer/mallocMC)
 device allocator. The current setup benchmarks the **FlatterScatter** creation
 policy while sweeping the mallocMC heap option `sleep_time` (the nanosecond
-delay injected via `__nanosleep` into every allocation request) to study the
-impact of allocation latency on simulation runtime.
+delay injected into every allocation request, implemented in mallocMC as a
+busy-wait on the 64-bit device global timer - the `__nanosleep` intrinsic's
+wake-up guarantee turned out too weak and produced step-like sweeps) to study
+the impact of allocation latency on simulation runtime.
 
 ## Benchmarked configuration
 
@@ -27,7 +29,7 @@ impact of allocation latency on simulation runtime.
 | dependency | source | pinned to |
 |------------|--------|-----------|
 | PIConGPU | ComputationalRadiationPhysics/picongpu | `6e7d58bb` |
-| mallocMC | chillenzer/mallocMC, `add-delay` branch (`__nanosleep` fix, `BOOST_LANG_*` guards compatible with PIConGPU's vendored alpaka 2.0, run-time delay via the `MALLOCMC_SLEEP_TIME` environment variable) | `381795a1` |
+| mallocMC | chillenzer/mallocMC, `add-delay` branch (`BOOST_LANG_*` guards compatible with PIConGPU's vendored alpaka 2.0, run-time delay via the `MALLOCMC_SLEEP_TIME` environment variable, delay injected as a busy-wait on the device global timer) | `53fdbc8f` |
 
 ## Repository layout
 
@@ -118,8 +120,8 @@ bash run_folder.sh build/FoilLCT flags/FoilLCT.flags profiles/hal.sh 10000
 
 - **sleep_time values**: edit `SLEEP_TIMES` in `run_all.sh`. The delay is
   applied at run time via `MALLOCMC_SLEEP_TIME`, so changing the sweep
-  requires no rebuild (`__nanosleep` supports at most ~1 ms; values above
-  are capped by mallocMC).
+  requires no rebuild (values above 1 ms are capped by mallocMC; the cap is a
+  safety limit, not a hardware limit of the busy-wait).
 - **Grids / steps / other picongpu flags**: edit `flags/<Example>.flags`
   (one command line per run).
 - **Allocator configuration**: `write_mallocmc_param` in `setup.sh`

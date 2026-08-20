@@ -5,11 +5,13 @@ set -e
 PROFILE=$1
 PARAM_DIR=$2
 
-# add-delay branch: FlatterScatter sleep delay support, __nanosleep fix and the
-# MALLOCMC_SLEEP_TIME run-time read of the delay (see SLEEP_TIMES in run_all.sh).
+# add-delay branch: FlatterScatter sleep delay support, run-time delay via the
+# MALLOCMC_SLEEP_TIME environment variable, and the delay as a busy-wait on
+# the device global timer (replacing the __nanosleep intrinsic, whose wake-up
+# guarantee was too weak for a controlled delay).
 MALLOCMC_URL="https://github.com/chillenzer/mallocMC"
 MALLOCMC_SRC="src/picongpu/thirdParty/mallocMC"
-MALLOCMC_HASH="381795a115959ff44d144b09485eb9935b2daef8"
+MALLOCMC_HASH="53fdbc8fb49f9054235a38e3fade04445d0addaf"
 PICONGPU_URL="https://github.com/ComputationalRadiationPhysics/picongpu"
 PICONGPU_SRC="src/picongpu"
 PICONGPU_HASH="6e7d58bb97300ac74cd7a09e13b3c03fdd3863ae"
@@ -196,7 +198,8 @@ function toolchain_fingerprint() {
 
 function build_fingerprint() {
   # Everything that determines whether the build is still valid:
-  # the input (via its stamp), the build flags, the profile and the toolchain.
+  # the input (via its stamp), the build flags, the mallocMC pin (whose
+  # headers are compiled into the binary), the profile and the toolchain.
   DEST=$1
   {
     if [ -f $DEST/.input-stamp ]; then
@@ -205,6 +208,7 @@ function build_fingerprint() {
       echo "missing-input-stamp"
     fi
     echo "$FLAGS"
+    echo "$MALLOCMC_HASH"
     md5sum $PROFILE | awk '{print $1}'
     toolchain_fingerprint
   } | md5sum | awk '{print $1}'
