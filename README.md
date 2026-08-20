@@ -51,7 +51,9 @@ impact of allocation latency on simulation runtime.
   DataFrame for seaborn (see below).
 - `analysis/analyse_sleeptimes.py` — reads the raw `run_all.sh` logs directly
   (no pre-filtering) and plots the runtime against the sleep_time per example
-  and grid, with IQR error bars.
+  and grid, with IQR error bars. Each run is labeled with a `configuration`
+  column (`compile-time` per-variant sweep vs `run-time` env-var sweep), so
+  logs from both layouts can be analyzed side by side.
 - `analysis/produce_figures.py` — produces the plots for the paper (see note
   below).
 - `build/` — created by `setup.sh`; one CMake project per example.

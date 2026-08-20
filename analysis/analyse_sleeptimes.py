@@ -25,7 +25,9 @@ def parse_setup(line: str):
     path = line.split()[-1]
     m = VARIANT_CD_RE.search(path)
     if m:
-        return {"setup": m[1], "algorithm": m[2], "sleeptime": int(m[3])}
+        # One build per (example, algorithm, sleeptime): the delay was
+        # compiled into the binary.
+        return {"setup": m[1], "algorithm": m[2], "sleeptime": int(m[3]), "configuration": "compile-time"}
     m = BUILD_CD_RE.search(path)
     if m:
         return {"setup": m[1], "algorithm": ALGORITHM}
@@ -33,9 +35,10 @@ def parse_setup(line: str):
 
 
 def parse_sleeptime(line: str):
-    # Only present in the run-time layout, as a prefix of the picongpu line.
+    # Only present in the run-time layout (one build per example), as a
+    # prefix of the picongpu line: the delay is injected at run time.
     if SLEEP_CMD in line:
-        return {"sleeptime": int(line.split(SLEEP_CMD)[1].split()[0])}
+        return {"sleeptime": int(line.split(SLEEP_CMD)[1].split()[0]), "configuration": "run-time"}
     return {}
 
 
