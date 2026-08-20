@@ -3,46 +3,55 @@
 This repository benchmarks the runtime of PIConGPU simulations compiled with
 different configurations of the [mallocMC](https://github.com/chillenzer/mallocMC)
 device allocator. The current setup benchmarks the **FlatterScatter** creation
-policy while sweeping the mallocMC heap option `sleep_time` (the nanosecond
-delay injected into every allocation request, implemented in mallocMC as a
-busy-wait on the 64-bit device global timer - the `__nanosleep` intrinsic's
-wake-up guarantee turned out too weak and produced step-like sweeps) to study
-the impact of allocation latency on simulation runtime.
+policy while sweeping (malloc delay, free delay) combinations: nanosecond
+delays injected into every allocation and every free request, implemented in
+mallocMC as a busy-wait on the 64-bit device global timer (injected at the
+top of `DeviceAllocator::malloc` / `DeviceAllocator::free`, independent of
+the creation policy; the `__nanosleep` intrinsic's wake-up guarantee turned
+out too weak and produced step-like sweeps) to study the impact of
+allocation and free latency on simulation runtime.
 
 ## Benchmarked configuration
 
 - **Allocation policies**: `FlatterScatter` only
-- **sleep_time sweep** (nanoseconds): `0`, `1000`, `10000`, `50000`,
-  `100000`, `500000` (see `SLEEP_TIMES` in `run_all.sh`)
-- **Examples**: `KelvinHelmholtz` (3D, 3 grid sizes 128^3, 256x128x128,
-  256x256x128, 1500 steps) and `FoilLCT` (2D, 256x1280 cells, 2000 steps)
-  — see `flags/*.flags`
-- **One build per example**: the delay is not a compile-time option; mallocMC
-  reads it at run time from the `MALLOCMC_SLEEP_TIME` environment variable
-  (set by `run_all.sh`/`run_folder.sh` for every run). Changing the sweep
-  therefore never requires recompiling.
+- **Delay combinations** (nanoseconds, see `COMBINATIONS` in `run_all.sh`):
+  a `(0, 0)` baseline, the malloc-delay sweep with free delay 0 and the
+  free-delay sweep with malloc delay 0 over the 11 log-spaced values
+  `100`…`10000000`, plus a 3x3 joint grid over `10000`, `1000000`,
+  `10000000` (32 runs per example)
+- **Examples**: `KelvinHelmholtz` (3D, grid sizes 128^3, 256x128x128,
+  256x128x256, 1500 steps) and `FoilLCT` (2D, 256x1280 cells, 2000 steps)
+  (see `EXAMPLES` in `run_all.sh` and `flags/*.flags`)
+- **One build per example**: the delays are not a compile-time option;
+  mallocMC reads them at run time from the `MALLOCMC_MALLOC_DELAY` and
+  `MALLOCMC_FREE_DELAY` environment variables (set by `run_all.sh` /
+  `run_folder.sh` for every run). Changing the sweep therefore never
+  requires recompiling.
 - **Layout**: `build/<Example>/` holds the one build; its flag lines are run
-  once per sleep_time: `MALLOCMC_SLEEP_TIME=<N> bin/picongpu ...`
+  once per combination: `MALLOCMC_MALLOC_DELAY=<M> MALLOCMC_FREE_DELAY=<F>
+  bin/picongpu ...`
 
 `setup.sh` pins the dependency versions:
 
 | dependency | source | pinned to |
 |------------|--------|-----------|
 | PIConGPU | ComputationalRadiationPhysics/picongpu | `6e7d58bb` |
-| mallocMC | chillenzer/mallocMC, `add-delay` branch (`BOOST_LANG_*` guards compatible with PIConGPU's vendored alpaka 2.0, run-time delay via the `MALLOCMC_SLEEP_TIME` environment variable, delay injected as a busy-wait on the device global timer) | `53fdbc8f` |
+| mallocMC | chillenzer/mallocMC, `add-delay` branch (`BOOST_LANG_*` guards compatible with PIConGPU's vendored alpaka 2.0; run-time malloc/free delays via the `MALLOCMC_MALLOC_DELAY` / `MALLOCMC_FREE_DELAY` environment variables, injected as a busy-wait on the device global timer at the top of `DeviceAllocator::malloc` / `DeviceAllocator::free`) | `a81a9452` |
 
 ## Repository layout
 
 - `setup.sh` — clones the pinned PIConGPU and mallocMC, prepares one input
   directory per example (`pic-create` + parameter overlay) and builds it
   (`pic-build`). The `mallocMC.param` is generated here
-  (`write_mallocmc_param`): FlatterScatter with the allocation delay read at
-  run time from `MALLOCMC_SLEEP_TIME`.
-- `run_all.sh` — for every example and every sleep_time in `SLEEP_TIMES`,
-  runs the example's flag lines with `MALLOCMC_SLEEP_TIME` set.
+  (`write_mallocmc_param`): FlatterScatter; the malloc/free delays are read
+  at run time from `MALLOCMC_MALLOC_DELAY` / `MALLOCMC_FREE_DELAY`.
+- `run_all.sh` — for every example and every `(malloc delay, free delay)`
+  combination in `COMBINATIONS`, runs the example's flag lines with both
+  environment variables set.
 - `run_folder.sh` — runs one already-built example folder, once per flag
-  line; takes an optional fourth argument (sleep_time in nanoseconds,
-  default `0`) which it passes via `MALLOCMC_SLEEP_TIME`.
+  line; takes optional fourth (malloc delay, default `0`) and fifth (free
+  delay, default `0`) arguments in nanoseconds, passed via the
+  `MALLOCMC_MALLOC_DELAY` / `MALLOCMC_FREE_DELAY` environment variables.
 - `profiles/` — HPC environment profiles (module/spack setup, `PIC_BACKEND`,
   `PICSRC`). One per machine.
 - `flags/` — one `picongpu` command line per benchmark run, per example.
@@ -52,18 +61,23 @@ the impact of allocation latency on simulation runtime.
 - `analysis/parse_results.py` — parses pre-filtered run logs into a pandas
   DataFrame for seaborn (see below).
 - `analysis/analyse_sleeptimes.py` — reads the raw `run_all.sh` logs directly
-  (no pre-filtering), fits each (example, grid) sweep to the Amdahl model
-  `T(s) = W + N*s + A*s0/(s+s0)` (large-s Amdahl line `W + N*s` plus a small-s
-  native-allocation correction `A`) with a bounded
-  `scipy.optimize.curve_fit`, plots the runtime against the sleep_time per
-  example and grid with IQR error bars and the fitted curve overlaid, and
-  prints the extracted fraction `f = A/(W+A)` of the runtime spent in
-  allocations, the allocation count `N`, and `W`/`A`, each with a standard
-  error (the bounds `W,N,A >= 0` keep `f` in `[0, 1)`; the model is documented
-  in the script docstring). Each run is labeled with a `configuration` column
-  (`compile-time` per-variant sweep vs `run-time` env-var sweep), so both log
-  layouts can be analyzed side by side. Set the module variable `CONFIGURATION`
-  to `"run-time"` or `"compile-time"` to compute the statistics, plot and fit
+  (no pre-filtering). For a sweep that varies only one delay it fits the
+  (example, grid) group to the Amdahl model `T(s) = W + N*s + A*s0/(s+s0)`
+  (large-s Amdahl line `W + N*s` plus a small-s native-cost correction `A`);
+  for a (malloc, free) combination sweep it fits the two-operation model
+  `T(m, f) = W + N_m*m + N_f*f + A_m*m0/(m+m0) + A_f*f0/(f+f0)` and reports
+  the runtime fractions spent in allocations and in frees separately
+  (`f_malloc = A_m/T0`, `f_free = A_f/T0`, `T0 = W + A_m + A_f`). Both fits
+  use a bounded `scipy.optimize.curve_fit` (bounds `W, N, A >= 0` keep each
+  `f` in `[0, 1)`), and print the fractions, the call counts `N`, and
+  `W`/`A`, each with a standard error (the full model is documented in the
+  script docstring). It plots runtime against the malloc delay per example,
+  grid and free delay with IQR error bars and the fitted curve overlaid.
+  Each run is labeled with a `configuration` column (`compile-time`
+  per-variant sweep vs `run-time` env-var sweep), so both log layouts can be
+  analyzed side by side (pre-rename logs that used `MALLOCMC_SLEEP_TIME`
+  parse into the malloc delay). Set the module variable `CONFIGURATION` to
+  `"run-time"` or `"compile-time"` to compute the statistics, plot and fit
   only from runs of that configuration (`None` uses all; the printed parsed
   results stay complete).
 - `analysis/produce_figures.py` — produces the plots for the paper (see note
@@ -106,24 +120,27 @@ must be invoked from the repository root.
    bash run_all.sh profiles/hal.sh flags
    ```
 
-   For every example and every sleep_time in `SLEEP_TIMES`, each flag line is
-   run as `MALLOCMC_SLEEP_TIME=<N> bin/picongpu ...`. Stdout contains one
-   `Running example: <Ex> / Using allocator: FlatterScatter, sleep_time: <N>
-   ns` section per run; each run's result is picongpu's `calculation ...
-   simulation time:` line.
+    For every example and every `(malloc delay, free delay)` combination in
+    `COMBINATIONS`, each flag line is run as
+    `MALLOCMC_MALLOC_DELAY=<M> MALLOCMC_FREE_DELAY=<F> bin/picongpu ...`.
+    Stdout contains one
+    `Running example: <Ex> / Using allocator: FlatterScatter, malloc delay:
+    <M> ns, free delay: <F> ns` section per run; each run's result is
+    picongpu's `calculation ... simulation time:` line.
 
-Single run (one example folder, one sleep_time):
+Single run (one example folder, one combination):
 
 ```
-bash run_folder.sh build/FoilLCT flags/FoilLCT.flags profiles/hal.sh 10000
+bash run_folder.sh build/FoilLCT flags/FoilLCT.flags profiles/hal.sh 10000 0
 ```
 
 ## Changing what is benchmarked
 
-- **sleep_time values**: edit `SLEEP_TIMES` in `run_all.sh`. The delay is
-  applied at run time via `MALLOCMC_SLEEP_TIME`, so changing the sweep
-  requires no rebuild (values above 1 ms are capped by mallocMC; the cap is a
-  safety limit, not a hardware limit of the busy-wait).
+- **Delay combinations**: edit `COMBINATIONS` (and the `DELAY_SWEEP` /
+  `JOINT` that build it) in `run_all.sh`. The delays are applied at run time
+  via `MALLOCMC_MALLOC_DELAY` / `MALLOCMC_FREE_DELAY`, so changing the sweep
+  requires no rebuild (values above 1 ms per delay are capped by mallocMC;
+  the cap is a safety limit, not a hardware limit of the busy-wait).
 - **Grids / steps / other picongpu flags**: edit `flags/<Example>.flags`
   (one command line per run).
 - **Allocator configuration**: `write_mallocmc_param` in `setup.sh`
@@ -152,15 +169,17 @@ python3 analysis/parse_results.py results.txt --csv r.csv  # also write CSV
 
 or import `parse_results.parse_results` from Python/notebooks. One row per
 run with columns `file`, `example`, `grid`, `grid_x/y/z`, `steps`, `policy`,
-`sleep_time` (ns) and `time_seconds` — ready for seaborn. Both the old
-per-variant log layout and the current one parse.
+`sleep_time` (the malloc delay, ns), `free_sleep_time` (the free delay, ns;
+`0` for pre-rename and compile-time runs) and `time_seconds` — ready for
+seaborn. The old per-variant, the pre-rename and the current log layout all
+parse.
 
 `analysis/analyse_sleeptimes.py` skips the pre-filtering: it reads the raw
-`output/hal-sleeptimes/run_*` logs directly (both the old per-variant layout
-and the current one) and plots the runtime against the sleep_time (log-log,
-median with IQR error bars) per example and grid, with the fitted Amdahl
-curve overlaid. It also fits each (example, grid) sweep to the model and
-prints the extracted fraction of runtime spent in allocations:
+`output/hal-sleeptimes/run_*` logs directly (all of the above layouts) and
+plots the runtime against the malloc delay (log-log, median with IQR error
+bars) per example, grid and free delay, with the fitted Amdahl curve
+overlaid. It also fits every (example, grid) sweep to the model and prints
+the extracted fraction of runtime spent in allocations / frees:
 
 ```
 python3 analysis/analyse_sleeptimes.py
@@ -169,5 +188,6 @@ python3 analysis/analyse_sleeptimes.py
 `analysis/produce_figures.py` reads the `run_all.sh` output files from
 `output/<cluster>/` and produces the figures. **Note:** it still encodes the
 old three-algorithm comparison (`ScatterAlloc`/`FlatterScatter`/`Gallatin`)
-and has not been adapted to the sleep_time sweep yet; the sweep labels appear
-in the logs as `Using allocator: FlatterScatter, sleep_time: <N> ns`.
+and has not been adapted to the delay-combination sweep yet; the sweep
+labels appear in the logs as `Using allocator: FlatterScatter, malloc delay:
+<M> ns, free delay: <F> ns`.

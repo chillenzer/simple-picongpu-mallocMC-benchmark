@@ -14,7 +14,8 @@ case $2 in
   *)  FLAGSFILE=$(pwd -P)/$2 ;;
 esac
 PROFILE=$3
-SLEEP_TIME=${4:-0}
+MALLOC_DELAY=${4:-0}
+FREE_DELAY=${5:-0}
 declare -a FLAGS
 
 source $(pwd -P)/$PROFILE
@@ -30,7 +31,7 @@ while IFS="" read -r line || [ -n "$line" ]; do
 done <"$FLAGSFILE"
 
 for FLAG in "${FLAGS[@]}"; do
-  MALLOCMC_SLEEP_TIME="$SLEEP_TIME" bin/picongpu $FLAG
+  MALLOCMC_MALLOC_DELAY="$MALLOC_DELAY" MALLOCMC_FREE_DELAY="$FREE_DELAY" bin/picongpu $FLAG
 done
 
 cd $WD
