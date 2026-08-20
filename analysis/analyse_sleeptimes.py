@@ -165,7 +165,10 @@ def simple_plot(simple_results: pd.DataFrame, fits: pd.DataFrame | None = None):
         for _, row in fits.iterrows():
             if all(pd.notna(row[k]) for k in ("W", "N", "A", "s0_ns")):
                 fits_by_key[_group_key(tuple(row[k] for k in GROUP_KEYS))] = (
-                    float(row["W"]), float(row["N"]), float(row["A"]), float(row["s0_ns"]) * 1e-9,
+                    float(row["W"]),
+                    float(row["N"]),
+                    float(row["A"]),
+                    float(row["s0_ns"]) * 1e-9,
                 )
     results = simple_results.groupby(list(GROUP_KEYS), dropna=False)
     fig, ax = plt.subplots(1, 1)
@@ -285,7 +288,11 @@ def fit_allocation_fraction(sleeptimes, runtimes, c_a: float | None = None) -> d
             "s0": s0,  # fade scale of the native correction (s)
             "T0": T0,  # total runtime at zero delay (s)
             "f": f,  # Amdahl fraction of runtime spent in allocations
-            "W_err": W_e, "N_err": N_e, "A_err": A_e, "s0_err": s0_e, "f_err": f_e,
+            "W_err": W_e,
+            "N_err": N_e,
+            "A_err": A_e,
+            "s0_err": s0_e,
+            "f_err": f_e,
             "r2": r2,
             "warnings": notes,
             "sleeptimes": s,
@@ -307,21 +314,28 @@ def fit_allocation_fraction(sleeptimes, runtimes, c_a: float | None = None) -> d
         # the two largest sleeptimes, A the (floored) residual at the smallest.
         (N, W), *_ = np.linalg.lstsq(np.vstack([s[-2:], np.ones(2)]).T, t[-2:], rcond=None)
         A = max(0.0, float(t[0] - (W + N * s[0])))
-        return finish(W, N, A, float("nan"), None, None, f_free,
-                      note="only 3 points: correction shape not identifiable; N and W from the two "
-                           "largest, A the (floored) residual at the smallest sleeptime")
+        return finish(
+            W,
+            N,
+            A,
+            float("nan"),
+            None,
+            None,
+            f_free,
+            note="only 3 points: correction shape not identifiable; N and W from the two "
+            "largest, A the (floored) residual at the smallest sleeptime",
+        )
 
     lo_b = max(lo, 1e-12)
     hi_b = max(hi, lo_b * 1.5)
     try:
         if c_a is None:
-            p0 = [max(gW, eps), max(gN, eps), max(gA, eps),
-                  float(np.clip(gs0, lo_b, hi_b))]
+            p0 = [max(gW, eps), max(gN, eps), max(gA, eps), float(np.clip(gs0, lo_b, hi_b))]
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", OptimizeWarning)
-                popt, pcov = curve_fit(_model, s, t, p0=p0,
-                                       bounds=([0.0, 0.0, 0.0, lo_b], [_INF, _INF, _INF, hi_b]),
-                                       maxfev=20000)
+                popt, pcov = curve_fit(
+                    _model, s, t, p0=p0, bounds=([0.0, 0.0, 0.0, lo_b], [_INF, _INF, _INF, hi_b]), maxfev=20000
+                )
             W, N, A, s0 = (float(v) for v in popt)
             if gA < -1e-6 * max(abs(gW), 1e-9) and A <= 1e-6 * max(abs(W), 1e-9):
                 notes.append(
@@ -329,28 +343,45 @@ def fit_allocation_fraction(sleeptimes, runtimes, c_a: float | None = None) -> d
                     "line); A constrained to 0 so f is floored at 0"
                 )
             if s0 >= hi_b * 0.999:
-                notes.append("s0 reached the search cap: the native correction does not clearly "
-                             "fade within the sweep, so A and W (hence f) are weakly constrained")
+                notes.append(
+                    "s0 reached the search cap: the native correction does not clearly "
+                    "fade within the sweep, so A and W (hence f) are weakly constrained"
+                )
             return finish(W, N, A, s0, pcov, list(popt), f_free)
         c = c_a * 1e-9
         f_ca = lambda p: p[1] * c / (p[0] + p[1] * c) if p[0] + p[1] * c > 1e-12 else 0.0
         p0 = [max(gW, eps), max(gN, eps), float(np.clip(gs0, lo_b, hi_b))]
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", OptimizeWarning)
-            popt, pcov = curve_fit(lambda qq, W, N, s0: _model_c_a(qq, W, N, s0, c), s, t,
-                                   p0=p0, bounds=([0.0, 0.0, lo_b], [_INF, _INF, hi_b]), maxfev=20000)
+            popt, pcov = curve_fit(
+                lambda qq, W, N, s0: _model_c_a(qq, W, N, s0, c),
+                s,
+                t,
+                p0=p0,
+                bounds=([0.0, 0.0, lo_b], [_INF, _INF, hi_b]),
+                maxfev=20000,
+            )
         W, N, s0 = (float(v) for v in popt)
         A = N * c
         if s0 >= hi_b * 0.999:
-            notes.append("s0 reached the search cap: the native correction does not clearly "
-                         "fade within the sweep, so A and W (hence f) are weakly constrained")
+            notes.append(
+                "s0 reached the search cap: the native correction does not clearly "
+                "fade within the sweep, so A and W (hence f) are weakly constrained"
+            )
         return finish(W, N, A, s0, pcov, list(popt), f_ca)
     except (RuntimeError, ValueError) as err:
         # curve_fit failed to converge; report the robust linear solution.
-        notes.append(f"curve_fit did not converge ({str(err).splitlines()[0]}); "
-                     "using the robust linear solution")
-        return finish(gW, gN, max(0.0, gA), gs0, None, None, f_free,
-                      note="constrained fit unavailable; linear grid solution reported (A floored at 0)")
+        notes.append(f"curve_fit did not converge ({str(err).splitlines()[0]}); using the robust linear solution")
+        return finish(
+            gW,
+            gN,
+            max(0.0, gA),
+            gs0,
+            None,
+            None,
+            f_free,
+            note="constrained fit unavailable; linear grid solution reported (A floored at 0)",
+        )
 
 
 def fit_sweep(df: pd.DataFrame, c_a: float | None = None, configuration: str | None = None) -> pd.DataFrame:
@@ -366,17 +397,37 @@ def fit_sweep(df: pd.DataFrame, c_a: float | None = None, configuration: str | N
         grp = grp.dropna(subset=["sleeptime", "runtime in s"])
         row = {**dict(zip(GROUP_KEYS, key)), "n_runs": len(grp)}
         if grp["sleeptime"].nunique() < 2:
-            row.update({"N": np.nan, "W": np.nan, "A": np.nan, "f": np.nan, "f_err": np.nan,
-                        "T0": np.nan, "r2": np.nan, "s0_ns": np.nan,
-                        "note": "fewer than 2 distinct sleeptimes"})
+            row.update(
+                {
+                    "N": np.nan,
+                    "W": np.nan,
+                    "A": np.nan,
+                    "f": np.nan,
+                    "f_err": np.nan,
+                    "T0": np.nan,
+                    "r2": np.nan,
+                    "s0_ns": np.nan,
+                    "note": "fewer than 2 distinct sleeptimes",
+                }
+            )
             rows.append(row)
             continue
         try:
             res = fit_allocation_fraction(grp["sleeptime"], grp["runtime in s"], c_a=c_a)
         except ValueError as err:
-            row.update({"N": np.nan, "W": np.nan, "A": np.nan, "f": np.nan, "f_err": np.nan,
-                        "T0": np.nan, "r2": np.nan, "s0_ns": np.nan,
-                        "note": str(err)})
+            row.update(
+                {
+                    "N": np.nan,
+                    "W": np.nan,
+                    "A": np.nan,
+                    "f": np.nan,
+                    "f_err": np.nan,
+                    "T0": np.nan,
+                    "r2": np.nan,
+                    "s0_ns": np.nan,
+                    "note": str(err),
+                }
+            )
             rows.append(row)
             continue
         row.update({k: res[k] for k in ("W", "N", "A", "T0", "f", "f_err", "r2")})
