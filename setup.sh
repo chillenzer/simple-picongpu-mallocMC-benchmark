@@ -16,7 +16,7 @@ EXAMPLES=("KelvinHelmholtz" "FoilLCT")
 # Each sleep_time (in nanoseconds) is a compile-time template parameter of the
 # FlatterScatter heap config, so every value needs its own build.
 ALGORITHM="FlatterScatter"
-SLEEP_TIMES=(0 1000 10000 50000 100000 500000)
+SLEEP_TIMES=(0 1000 1300 1800 2400 3100 4200 5000 7500 10000 13000 18000 24000 31000 42000 50000 75000 100000 130000 180000 240000 310000 420000 500000 750000)
 ALGORITHMS=()
 for sleep_time in "${SLEEP_TIMES[@]}"; do
   ALGORITHMS+=("${ALGORITHM}-sleep${sleep_time}")
