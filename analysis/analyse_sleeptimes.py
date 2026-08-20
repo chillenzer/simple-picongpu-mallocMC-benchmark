@@ -108,7 +108,7 @@ def simple_plot(simple_results: pd.DataFrame):
     results = simple_results.groupby(["setup", "x", "y", "z"], dropna=False)
     fig, ax = plt.subplots(1, 1)
     for name, result in results:
-        x, ye_min, y, ye_max = result.reset_index(drop=False)[["sleeptime", "25%", "50%", "75%"]].to_numpy().T
+        x, ye_min, y, ye_max = np.sort(result.reset_index(drop=False)[["sleeptime", "25%", "50%", "75%"]].to_numpy().T)
         (line,) = ax.plot(x, y, linestyle="-", alpha=0.3)
         ax.errorbar(
             x, y, yerr=(y - ye_min, ye_max - y), linestyle="none", marker="o", color=line.get_color(), label=label(name)
