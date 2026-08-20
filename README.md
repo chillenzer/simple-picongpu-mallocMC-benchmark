@@ -142,8 +142,9 @@ run with columns `file`, `example`, `grid`, `grid_x/y/z`, `steps`, `policy`,
 per-variant log layout and the current one parse.
 
 `analysis/analyse_sleeptimes.py` skips the pre-filtering: it reads the raw
-`output/hal-sleeptimes/run_*` logs directly and plots the runtime against the
-sleep_time (log-log, median with IQR error bars) per example and grid.
+`output/hal-sleeptimes/run_*` logs directly (both the old per-variant layout
+and the current one) and plots the runtime against the sleep_time (log-log,
+median with IQR error bars) per example and grid.
 
 `analysis/produce_figures.py` reads the `run_all.sh` output files from
 `output/<cluster>/` and produces the figures. **Note:** it still encodes the

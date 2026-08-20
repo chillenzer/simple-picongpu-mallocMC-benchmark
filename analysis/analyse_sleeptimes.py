@@ -5,25 +5,38 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import re
 
 ALGORITHM = "FlatterScatter"
 CD_CMD = "+ cd "
-SLEEP_CMD = "MALLOCMC_SLEEP_TIME="
 RUN_CMD = "bin/picongpu "
+SLEEP_CMD = "MALLOCMC_SLEEP_TIME="
+# `cd` trace lines that carry run context: the old per-variant layout
+# (`cd build/<Example>/<Algorithm>-sleep<N>`) and the current one-build-per
+# example layout (`cd .../build/<Example>`); every other `cd` (for example
+# the `cd $WD` return in run_folder.sh) is ignored.
+VARIANT_CD_RE = re.compile(r"(?:^|/)build/(\w+)/(\w+)-sleep(\d+)$")
+BUILD_CD_RE = re.compile(r"(?:^|/)build/(\w+)$")
 LOG_PATHS = (Path("output") / "hal-sleeptimes").glob("run_*")
 
 
 def parse_setup(line: str):
-    # The `cd` trace line ends with the example's build directory; with one
-    # build per example the sweep parameters live in the picongpu line instead.
-    return {
-        "setup": line.split()[-1].rsplit("/", 1)[-1],
-        "algorithm": ALGORITHM,
-    }
+    # Run context of a `cd` trace line, or None if the line is unrelated.
+    path = line.split()[-1]
+    m = VARIANT_CD_RE.search(path)
+    if m:
+        return {"setup": m[1], "algorithm": m[2], "sleeptime": int(m[3])}
+    m = BUILD_CD_RE.search(path)
+    if m:
+        return {"setup": m[1], "algorithm": ALGORITHM}
+    return None
 
 
 def parse_sleeptime(line: str):
-    return {"sleeptime": int(line.split(SLEEP_CMD)[1].split()[0])}
+    # Only present in the run-time layout, as a prefix of the picongpu line.
+    if SLEEP_CMD in line:
+        return {"sleeptime": int(line.split(SLEEP_CMD)[1].split()[0])}
+    return {}
 
 
 def parse_grid(line: str):
@@ -31,7 +44,7 @@ def parse_grid(line: str):
         key: int(val)
         for key, val in zip(
             ("x", "y", "z"),
-            line.split(RUN_CMD)[1].split("-g")[1].split("-")[0].strip().split(" "),
+            line.split(RUN_CMD, 1)[1].split("-g", 1)[1].split("-")[0].strip().split(" "),
         )
     }
 
@@ -42,14 +55,18 @@ def parse_simulation_time(line: str):
 
 def parse_log(log_path: Path):
     with log_path.open("r") as file:
-        setup = None
+        context = {}
         pending = None
         for line in map(str.strip, file):
             if line.startswith(CD_CMD):
-                setup, algorithm = parse_setup(line).values()
-            elif SLEEP_CMD in line and RUN_CMD in line:
-                pending = {"setup": setup, "algorithm": algorithm} | parse_sleeptime(line) | parse_grid(line)
-            elif line.startswith("calculation") and pending is not None:
+                setup = parse_setup(line)
+                if setup is not None:
+                    context = setup
+            elif line.startswith("+ ") and RUN_CMD in line and "setup" in context:
+                # In the run-time layout the env var overrides the variant
+                # sleeptime; in the per-variant layout it is absent.
+                pending = dict(context) | parse_sleeptime(line) | parse_grid(line)
+            elif line.startswith("calculation") and "simulation time" in line and pending is not None:
                 yield {**pending, **parse_simulation_time(line)}
                 pending = None
 
