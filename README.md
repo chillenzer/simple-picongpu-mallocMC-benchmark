@@ -52,19 +52,20 @@ the impact of allocation latency on simulation runtime.
 - `analysis/parse_results.py` — parses pre-filtered run logs into a pandas
   DataFrame for seaborn (see below).
 - `analysis/analyse_sleeptimes.py` — reads the raw `run_all.sh` logs directly
-  (no pre-filtering), plots the runtime against the sleep_time per example and
-  grid with IQR error bars, and fits each (example, grid) sweep to the Amdahl
-  model `T(s) = W + N*s + A*s0/(s+s0)` (large-s Amdahl line `W + N*s` plus a
-  small-s native-allocation correction `A`) with a bounded
-  `scipy.optimize.curve_fit`, printing the extracted fraction `f = A/(W+A)` of
-  the runtime spent in allocations, the allocation count `N`, and `W`/`A`,
-  each with a standard error (the bounds `W,N,A >= 0` keep `f` in `[0, 1)`;
-  the model is documented in the script docstring). Each run is labeled with
-  a `configuration` column (`compile-time` per-variant sweep vs `run-time`
-  env-var sweep), so both log layouts can be analyzed side by side. Set the
-  module variable `CONFIGURATION` to `"run-time"` or `"compile-time"` to
-  compute the statistics, plot and fit only from runs of that configuration
-  (`None` uses all; the printed parsed results stay complete).
+  (no pre-filtering), fits each (example, grid) sweep to the Amdahl model
+  `T(s) = W + N*s + A*s0/(s+s0)` (large-s Amdahl line `W + N*s` plus a small-s
+  native-allocation correction `A`) with a bounded
+  `scipy.optimize.curve_fit`, plots the runtime against the sleep_time per
+  example and grid with IQR error bars and the fitted curve overlaid, and
+  prints the extracted fraction `f = A/(W+A)` of the runtime spent in
+  allocations, the allocation count `N`, and `W`/`A`, each with a standard
+  error (the bounds `W,N,A >= 0` keep `f` in `[0, 1)`; the model is documented
+  in the script docstring). Each run is labeled with a `configuration` column
+  (`compile-time` per-variant sweep vs `run-time` env-var sweep), so both log
+  layouts can be analyzed side by side. Set the module variable `CONFIGURATION`
+  to `"run-time"` or `"compile-time"` to compute the statistics, plot and fit
+  only from runs of that configuration (`None` uses all; the printed parsed
+  results stay complete).
 - `analysis/produce_figures.py` — produces the plots for the paper (see note
   below).
 - `build/` — created by `setup.sh`; one CMake project per example.
@@ -157,9 +158,9 @@ per-variant log layout and the current one parse.
 `analysis/analyse_sleeptimes.py` skips the pre-filtering: it reads the raw
 `output/hal-sleeptimes/run_*` logs directly (both the old per-variant layout
 and the current one) and plots the runtime against the sleep_time (log-log,
-median with IQR error bars) per example and grid. It also fits each
-(example, grid) sweep to the Amdahl model and prints the extracted fraction
-of runtime spent in allocations:
+median with IQR error bars) per example and grid, with the fitted Amdahl
+curve overlaid. It also fits each (example, grid) sweep to the model and
+prints the extracted fraction of runtime spent in allocations:
 
 ```
 python3 analysis/analyse_sleeptimes.py

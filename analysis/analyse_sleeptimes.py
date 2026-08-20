@@ -153,7 +153,20 @@ def label(info):
     return f"{info[0]} {grid_string}"
 
 
-def simple_plot(simple_results: pd.DataFrame):
+def _group_key(name):
+    # NaN group values (missing z in 2D runs) do not compare equal, so
+    # canonicalize them; the key is only used for dictionary lookups.
+    return tuple(None if isinstance(k, float) and np.isnan(k) else k for k in name)
+
+
+def simple_plot(simple_results: pd.DataFrame, fits: pd.DataFrame | None = None):
+    fits_by_key = {}
+    if fits is not None:
+        for _, row in fits.iterrows():
+            if all(pd.notna(row[k]) for k in ("W", "N", "A", "s0_ns")):
+                fits_by_key[_group_key(tuple(row[k] for k in GROUP_KEYS))] = (
+                    float(row["W"]), float(row["N"]), float(row["A"]), float(row["s0_ns"]) * 1e-9,
+                )
     results = simple_results.groupby(list(GROUP_KEYS), dropna=False)
     fig, ax = plt.subplots(1, 1)
     for name, result in results:
@@ -162,6 +175,15 @@ def simple_plot(simple_results: pd.DataFrame):
         ax.errorbar(
             x, y, yerr=(y - ye_min, ye_max - y), linestyle="none", marker="o", color=line.get_color(), label=label(name)
         )
+        params = fits_by_key.get(_group_key(name))
+        if params is not None:
+            W, N, A, s0 = params
+            # Draw the fitted model over the sleeptimes the data covers.
+            s_data = x[x > 0]
+            if len(s_data) > 1 and float(s_data[-1]) > float(s_data[0]):
+                s_ns = np.geomspace(float(s_data[0]), float(s_data[-1]), 100)
+                # The model takes second-based sleeptimes; the axis is in ns.
+                ax.plot(s_ns, _model(s_ns * 1e-9, W, N, A, s0), color=line.get_color(), linestyle="--", alpha=0.8)
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.legend()
@@ -385,7 +407,7 @@ def main(log_paths: Iterable[PathLike]):
             )
             if r["note"]:
                 print(f"      note: {r.note}")
-    _ = simple_plot(simple_results)
+    _ = simple_plot(simple_results, fits)
     plt.show()
 
 
