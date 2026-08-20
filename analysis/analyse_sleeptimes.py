@@ -88,7 +88,7 @@ def parse_logs(log_paths: Iterable[Path]):
 
 def simple_statistics(full_results: pd.DataFrame):
     return full_results.groupby(list(set(full_results.columns) - {"runtime in s", "name"}), dropna=False).apply(
-        lambda df: df["runtime in s"].describe()
+        lambda df: df["runtime in s"].describe(), include_groups=False
     )
 
 
