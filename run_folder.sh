@@ -3,9 +3,10 @@
 set -e
 set -x
 
-FOLDER=$1
-FLAGSFILE=$2
+FOLDER=$(pwd -P)/$1
+FLAGSFILE=$(pwd -P)/$2
 PROFILE=$3
+SLEEP_TIME=${4:-0}
 declare -a FLAGS
 
 source $(pwd -P)/$PROFILE
@@ -21,7 +22,7 @@ while IFS="" read -r line || [ -n "$line" ]; do
 done <"$FLAGSFILE"
 
 for FLAG in "${FLAGS[@]}"; do
-  bin/picongpu $FLAG
+  MALLOCMC_SLEEP_TIME="$SLEEP_TIME" bin/picongpu $FLAG
 done
 
 cd $WD

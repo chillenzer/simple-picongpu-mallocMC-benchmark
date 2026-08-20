@@ -5,22 +5,15 @@ set -e
 PROFILE=$1
 PARAM_DIR=$2
 
-# add-delay branch: FlatterScatter sleep_time support and the __nanosleep fix.
+# add-delay branch: FlatterScatter sleep delay support, __nanosleep fix and the
+# MALLOCMC_SLEEP_TIME run-time read of the delay (see SLEEP_TIMES in run_all.sh).
 MALLOCMC_URL="https://github.com/chillenzer/mallocMC"
 MALLOCMC_SRC="src/picongpu/thirdParty/mallocMC"
-MALLOCMC_HASH="eab2da3e5fe3f4b7aaa88fcebdc12413bafb501f"
+MALLOCMC_HASH="381795a115959ff44d144b09485eb9935b2daef8"
 PICONGPU_URL="https://github.com/ComputationalRadiationPhysics/picongpu"
 PICONGPU_SRC="src/picongpu"
 PICONGPU_HASH="6e7d58bb97300ac74cd7a09e13b3c03fdd3863ae"
 EXAMPLES=("KelvinHelmholtz" "FoilLCT")
-# Each sleep_time (in nanoseconds) is a compile-time template parameter of the
-# FlatterScatter heap config, so every value needs its own build.
-ALGORITHM="FlatterScatter"
-SLEEP_TIMES=(0 1000 1300 1800 2400 3100 4200 5000 7500 10000 13000 18000 24000 31000 42000 50000 75000 100000 130000 180000 240000 310000 420000 500000 750000)
-ALGORITHMS=()
-for sleep_time in "${SLEEP_TIMES[@]}"; do
-  ALGORITHMS+=("${ALGORITHM}-sleep${sleep_time}")
-done
 
 MALLOCMC_SRC=$(pwd -P)/$MALLOCMC_SRC
 PICONGPU_SRC=$(pwd -P)/$PICONGPU_SRC
@@ -81,7 +74,6 @@ function prepare_src() {
 
 function write_mallocmc_param() {
   DEST=$1
-  SLEEP_TIME=$2
 
   cat >$DEST/include/picongpu/param/mallocMC.param <<EOF
 /* Copyright 2013-2024 Axel Huebl, Felix Schmitt, Heiko Burau, Rene Widera,
@@ -123,8 +115,9 @@ function write_mallocmc_param() {
 namespace picongpu {
 /** Define a new allocator
  *
- * FlatterScatter with a sleep_time of ${SLEEP_TIME} nanoseconds injected into
- * every allocation request via the mallocMC sleep_time heap config option.
+ * FlatterScatter; the allocation delay (in nanoseconds) is injected into
+ * every allocation request and read at run time from the MALLOCMC_SLEEP_TIME
+ * environment variable (run_all.sh sets it for each run).
  */
 using DeviceHeap = mallocMC::Allocator<
     alpaka::AccToTag<pmacc::Acc<DIM1>>,
@@ -132,15 +125,14 @@ using DeviceHeap = mallocMC::Allocator<
         mallocMC::CreationPolicies::FlatterScatterAlloc::DefaultHeapConfig<
             128U * 1024U * 1024U,  // accessblocksize
             128U * 1024U,          // pagesize
-            2U,                    // wastefactor
-            ${SLEEP_TIME}U>>,      // sleep_time in nanoseconds
+            2U>>,                 // wastefactor
     mallocMC::DistributionPolicies::Noop, mallocMC::OOMPolicies::ReturnNull,
     mallocMC::ReservePoolPolicies::AlpakaBuf<pmacc::Acc<DIM1>>,
     mallocMC::AlignmentPolicies::Shrink<>>;
 
 } // namespace picongpu
 EOF
-  echo "Wrote $DEST/include/picongpu/param/mallocMC.param (sleep_time=$SLEEP_TIME ns)"
+  echo "Wrote $DEST/include/picongpu/param/mallocMC.param"
 }
 
 function hash_dir() {
@@ -152,26 +144,22 @@ function hash_dir() {
 
 function input_fingerprint() {
   # Everything that determines the content of an input directory:
-  # the PIConGPU pin (pic-create template), the variant (sleep_time),
-  # the example and the overlay parameter files.
-  VARIANT=$1
-  EXAMPLE=$2
+  # the PIConGPU pin (pic-create template), the example and the overlay
+  # parameter files.
+  EXAMPLE=$1
   {
     echo "$PICONGPU_HASH"
-    echo "$VARIANT"
     echo "$EXAMPLE"
     hash_dir $PARAM_DIR/$EXAMPLE
-    hash_dir $PARAM_DIR/$EXAMPLE/$VARIANT
   } | md5sum | awk '{print $1}'
 }
 
 function create_input() {
   SRC=$1
   DEST=$2
-  VARIANT=$3
-  EXAMPLE=$4
+  EXAMPLE=$3
 
-  FINGERPRINT=$(input_fingerprint $VARIANT $EXAMPLE)
+  FINGERPRINT=$(input_fingerprint $EXAMPLE)
   if [ -f $DEST/.input-stamp ] && [ "$(cat $DEST/.input-stamp)" = "$FINGERPRINT" ]; then
     echo "Input $DEST is up to date; keeping."
     return 0
@@ -180,12 +168,9 @@ function create_input() {
   echo "Preparing input $DEST ..."
   rm -rf $DEST
   pic-create $SRC $DEST
-  write_mallocmc_param $DEST ${VARIANT##*-sleep}
+  write_mallocmc_param $DEST
   find $PARAM_DIR/* -type f \
     -wholename "$PARAM_DIR/${EXAMPLE}/"'*'".param" \
-    -exec cp -v {} $DEST/include/picongpu/param/ \;
-  find $PARAM_DIR/* -type f \
-    -wholename "$PARAM_DIR/${EXAMPLE}/${VARIANT}/"'*'".param" \
     -exec cp -v {} $DEST/include/picongpu/param/ \;
   echo "$FINGERPRINT" >$DEST/.input-stamp
   echo "Prepared input $DEST."
@@ -194,10 +179,7 @@ function create_input() {
 function prepare_inputs() {
   mkdir -p build
   for example in ${EXAMPLES[@]}; do
-    mkdir -p build/$example
-    for algorithm in ${ALGORITHMS[@]}; do
-      create_input $PICONGPU_SRC/share/picongpu/examples/$example build/$example/$algorithm $algorithm $example
-    done
+    create_input $PICONGPU_SRC/share/picongpu/examples/$example build/$example $example
   done
 }
 
@@ -252,10 +234,7 @@ function build_from_input() {
 function build() {
   mkdir -p build
   for example in ${EXAMPLES[@]}; do
-    mkdir -p build/$example
-    for algorithm in ${ALGORITHMS[@]}; do
-      build_from_input build/$example/$algorithm
-    done
+    build_from_input build/$example
   done
 }
 
