@@ -184,6 +184,8 @@ def simple_plot(simple_results: pd.DataFrame, fits: pd.DataFrame | None = None):
                 s_ns = np.geomspace(float(s_data[0]), float(s_data[-1]), 100)
                 # The model takes second-based sleeptimes; the axis is in ns.
                 ax.plot(s_ns, _model(s_ns * 1e-9, W, N, A, s0), color=line.get_color(), linestyle="--", alpha=0.8)
+    ax.set_xlabel("sleep_time (ns)")
+    ax.set_ylabel("runtime (s)")
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.legend()
