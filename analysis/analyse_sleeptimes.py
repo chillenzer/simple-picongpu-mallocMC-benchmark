@@ -86,7 +86,8 @@ def run_to_df(run: dict):
 
 
 def runs_to_df(runs: Iterable[dict]):
-    return pd.concat(map(run_to_df, runs))
+    tmp = pd.concat(map(run_to_df, runs))
+    return tmp.assign(z=tmp.get("z", np.nan))
 
 
 def parse_logs(log_paths: Iterable[Path]):
