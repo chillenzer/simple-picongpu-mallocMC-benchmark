@@ -3,7 +3,7 @@
 PROFILE=$1
 FLAGSFOLDER=$(pwd -P)/$2
 
-EXAMPLES=("FoilLCT")
+EXAMPLES=("KelvinHelmholtz" "FoilLCT")
 # Allocation delays in nanoseconds, injected at run time by mallocMC through
 # the MALLOCMC_SLEEP_TIME environment variable (run_folder.sh sets it), so one
 # build per example serves the whole sweep.
