@@ -3,6 +3,7 @@ from os import PathLike
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
 CD_CMD = "cd build/"
@@ -54,17 +55,28 @@ def parse_logs(log_paths: Iterable[Path]):
 
 
 def simple_statistics(full_results: pd.DataFrame):
-    return full_results.groupby(list(set(full_results.columns) - {"runtime in s", "name"})).describe()
+    return full_results.groupby(list(set(full_results.columns) - {"runtime in s", "name"}), dropna=False).apply(
+        lambda df: df["runtime in s"].describe()
+    )
+
+
+def label(info):
+    grid_string = "x".join(map(str, map(int, np.asarray(info[1:])[~np.isnan(info[1:])])))
+    return f"{info[0]} {grid_string}"
 
 
 def simple_plot(simple_results: pd.DataFrame):
-    x = simple_results.reset_index("sleeptime", drop=False)["sleeptime"].to_numpy()
-    ye_min, y, ye_max = simple_results["runtime in s"][["25%", "50%", "75%"]].to_numpy().T
+    results = simple_results.groupby(["setup", "x", "y", "z"], dropna=False)
     fig, ax = plt.subplots(1, 1)
-    (line,) = ax.plot(x, y, linestyle="-", alpha=0.3)
-    ax.errorbar(x, y, yerr=(y - ye_min, ye_max - y), linestyle="none", marker="o", color=line.get_color())
+    for name, result in results:
+        x, ye_min, y, ye_max = result.reset_index(drop=False)[["sleeptime", "25%", "50%", "75%"]].to_numpy().T
+        (line,) = ax.plot(x, y, linestyle="-", alpha=0.3)
+        ax.errorbar(
+            x, y, yerr=(y - ye_min, ye_max - y), linestyle="none", marker="o", color=line.get_color(), label=label(name)
+        )
     ax.set_xscale("log")
     ax.set_yscale("log")
+    ax.legend()
     return fig
 
 
