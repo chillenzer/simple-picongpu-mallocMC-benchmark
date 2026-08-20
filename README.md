@@ -58,9 +58,10 @@ impact of allocation latency on simulation runtime.
   that configuration (`None` plots all; the printed results stay complete).
 - `analysis/fit_allocations.py` — fits each (example, grid) sleeptime sweep to
   the Amdahl model `T(s) = W + N*s + A*s0/(s+s0)` (large-s Amdahl line
-  `W + N*s` plus a small-s native-allocation correction `A`) and extracts the
-  fraction `f = A/(W+A)` of the runtime spent in allocations, the allocation
-  count `N`, and `W`/`A`.
+  `W + N*s` plus a small-s native-allocation correction `A`) with a bounded
+  `scipy.optimize.curve_fit` and extracts the fraction `f = A/(W+A)` of the
+  runtime spent in allocations, the allocation count `N`, and `W`/`A`, each
+  with a standard error. The bounds `W,N,A >= 0` keep `f` in `[0, 1)`.
 - `analysis/produce_figures.py` — produces the plots for the paper (see note
   below).
 - `build/` — created by `setup.sh`; one CMake project per example.
