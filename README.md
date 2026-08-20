@@ -53,7 +53,9 @@ impact of allocation latency on simulation runtime.
   (no pre-filtering) and plots the runtime against the sleep_time per example
   and grid, with IQR error bars. Each run is labeled with a `configuration`
   column (`compile-time` per-variant sweep vs `run-time` env-var sweep), so
-  logs from both layouts can be analyzed side by side.
+  both log layouts can be analyzed side by side. Set the module variable
+  `CONFIGURATION` to `"run-time"` or `"compile-time"` to plot only runs of
+  that configuration (`None` plots all; the printed results stay complete).
 - `analysis/produce_figures.py` — produces the plots for the paper (see note
   below).
 - `build/` — created by `setup.sh`; one CMake project per example.

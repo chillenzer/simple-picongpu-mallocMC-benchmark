@@ -18,6 +18,11 @@ SLEEP_CMD = "MALLOCMC_SLEEP_TIME="
 VARIANT_CD_RE = re.compile(r"(?:^|/)build/(\w+)/(\w+)-sleep(\d+)$")
 BUILD_CD_RE = re.compile(r"(?:^|/)build/(\w+)$")
 LOG_PATHS = (Path("output") / "hal-sleeptimes").glob("run_*")
+# The statistics and plot are computed only for runs with this configuration:
+# "run-time" (delay injected via MALLOCMC_SLEEP_TIME) or "compile-time"
+# (per-variant builds); None plots all of them. The parsed results are
+# always complete.
+CONFIGURATION = None
 
 
 def parse_setup(line: str):
@@ -117,6 +122,9 @@ def simple_plot(simple_results: pd.DataFrame):
 def main(log_paths: Iterable[PathLike]):
     full_results = parse_logs(map(Path, log_paths))
     print(full_results)
+    if CONFIGURATION is not None:
+        # The parsed data is complete; only the plotted subset is filtered.
+        full_results = full_results[full_results["configuration"] == CONFIGURATION]
     simple_results = simple_statistics(full_results)
     print(simple_results)
     _ = simple_plot(simple_results)
