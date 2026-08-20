@@ -3,8 +3,16 @@
 set -e
 set -x
 
-FOLDER=$(pwd -P)/$1
-FLAGSFILE=$(pwd -P)/$2
+# Absolutize only relative paths: run_all.sh passes the flags file absolute.
+case $1 in
+  /*) FOLDER=$1 ;;
+  *)  FOLDER=$(pwd -P)/$1 ;;
+esac
+
+case $2 in
+  /*) FLAGSFILE=$2 ;;
+  *)  FLAGSFILE=$(pwd -P)/$2 ;;
+esac
 PROFILE=$3
 SLEEP_TIME=${4:-0}
 declare -a FLAGS
