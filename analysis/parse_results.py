@@ -7,21 +7,25 @@ Input is the output of, e.g.
 i.e. lines of the form `<log-file>:<content>` where `<content>` is one of
 
     + cd <path>/build/<Example>[/<policy-sleep<N>>]
+    + MALLOCMC_SLEEP_TIME=<N>
     [+ MALLOCMC_SLEEP_TIME=<N>] bin/picongpu <flags>
     calculation  simulation time:  ... = <t> sec
 
 The first form sets the current example (and, for the old per-variant
-directories, the policy and sleep_time as well); the second starts a run
-whose flags are parsed (grid from `-g`, steps from `-s`, sleep_time from a
-`MALLOCMC_SLEEP_TIME=<N>` prefix if present); the third closes the most
-recent run with its wall time. One DataFrame row is produced per picongpu
-run.
+directories, the policy and sleep_time as well); the second, third, and
+fourth forms mark a run. In the current log layout the `set -x` trace puts
+the `MALLOCMC_SLEEP_TIME=<N>` prefix on its own line before `bin/picongpu`,
+so the sleep time is taken from that line (or from the prefix when
+`bin/picongpu` is on the same line, or from the variant directory in the old
+layout); the run's flags are parsed (grid from `-g`, steps from `-s`); the
+last form closes the most recent run with its wall time. One DataFrame row
+is produced per picongpu run.
 
 For the current log layout (one build per example, sleep time set via the
-`MALLOCMC_SLEEP_TIME` environment variable), the `cd` lines are absolute
-paths, so use a grep that still captures them, e.g.
+`MALLOCMC_SLEEP_TIME` environment variable on its own trace line), the `cd`
+lines are absolute paths, so use a grep that still captures them, e.g.
 
-    grep -E "cd .*build/(FoilLCT|KelvinHelmholtz)|bin/picongpu |calculation" \
+    grep -E "cd .*build/(FoilLCT|KelvinHelmholtz)|MALLOCMC_SLEEP_TIME=|bin/picongpu |calculation" \
         output/hal-sleeptimes/run_*
 
 Both the old and the new log layout parse correctly.
@@ -55,6 +59,9 @@ VARIANT_RE = re.compile(r"^(?P<policy>\w+)-sleep(?P<sleep>\d+)$")
 ALLOCATION_RE = re.compile(r"^Using allocator: (?P<policy>\w+), sleep_time: (?P<sleep>\d+) ns$")
 PICONGPU_RE = re.compile(r"^\+(?P<prefix>.*)bin/picongpu (?P<flags>.*)$")
 SLEEP_ENV_RE = re.compile(r"MALLOCMC_SLEEP_TIME=(\d+)")
+# `set -x` traces the MALLOCMC_SLEEP_TIME prefix on its own line, before the
+# picongpu line.
+SLEEP_ENV_ASSIGN_RE = re.compile(r"^\+ MALLOCMC_SLEEP_TIME=(?P<sleep>\d+)$")
 GRID_RE = re.compile(r"-g\s+(?P<grid>(?:\d+\s+)+\d+)(?=\s+-|\s*$)")
 STEPS_RE = re.compile(r"-s\s+(?P<steps>\d+)")
 CALC_RE = re.compile(r"^calculation\s+simulation time:.*?=\s*(?P<time>[\d.]+)\s*sec$")
@@ -80,7 +87,7 @@ def parse_results(source) -> pd.DataFrame:
     for the expected input format and the columns. `sleep_time` is in
     nanoseconds, `time_seconds` is the simulation wall time in seconds.
     """
-    ctx = {"example": None, "policy": None, "sleep_time": None}
+    ctx = {"example": None, "policy": None, "sleep_time": None, "sleep_env": None}
     pending = None
     rows = []
 
@@ -109,6 +116,15 @@ def parse_results(source) -> pd.DataFrame:
                 vm = VARIANT_RE.match(bm["variant"]) if bm["variant"] else None
                 ctx["policy"] = vm["policy"] if vm else None
                 ctx["sleep_time"] = float(vm["sleep"]) if vm else None
+                # A new build context invalidates a remembered run-time env.
+                ctx["sleep_env"] = None
+            continue
+
+        cm = SLEEP_ENV_ASSIGN_RE.match(rest)
+        if cm:
+            # `set -x` traces the MALLOCMC_SLEEP_TIME prefix on its own line
+            # before the picongpu line.
+            ctx["sleep_env"] = float(cm["sleep"])
             continue
 
         cm = ALLOCATION_RE.match(rest)
@@ -126,6 +142,15 @@ def parse_results(source) -> pd.DataFrame:
                 print(f"parse_results: incomplete run (needs cd, -g and -s context): {line}", file=sys.stderr)
                 continue
             gdims = [int(x) for x in grid["grid"].split()]
+            if env:
+                # Inline prefix on the picongpu line.
+                sleep_time = float(env.group(1))
+            elif ctx["sleep_env"] is not None:
+                # Standalone assignment line of the current run.
+                sleep_time = ctx["sleep_env"]
+            else:
+                # Per-variant layout: compiled into the binary.
+                sleep_time = ctx["sleep_time"]
             pending = {
                 "example": ctx["example"],
                 "grid": "x".join(map(str, gdims)),
@@ -134,7 +159,7 @@ def parse_results(source) -> pd.DataFrame:
                 "grid_z": gdims[2] if len(gdims) > 2 else 1,
                 "steps": int(steps["steps"]),
                 "policy": ctx["policy"],
-                "sleep_time": float(env.group(1)) if env else ctx["sleep_time"],
+                "sleep_time": sleep_time,
             }
             continue
 

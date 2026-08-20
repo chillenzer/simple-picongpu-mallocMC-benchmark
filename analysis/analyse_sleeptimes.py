@@ -34,14 +34,6 @@ def parse_setup(line: str):
     return None
 
 
-def parse_sleeptime(line: str):
-    # Only present in the run-time layout (one build per example), as a
-    # prefix of the picongpu line: the delay is injected at run time.
-    if SLEEP_CMD in line:
-        return {"sleeptime": int(line.split(SLEEP_CMD)[1].split()[0]), "configuration": "run-time"}
-    return {}
-
-
 def parse_grid(line: str):
     return {
         key: int(val)
@@ -60,15 +52,25 @@ def parse_log(log_path: Path):
     with log_path.open("r") as file:
         context = {}
         pending = None
+        sleep = None
         for line in map(str.strip, file):
             if line.startswith(CD_CMD):
+                # A new run context invalidates a remembered sleep time.
                 setup = parse_setup(line)
                 if setup is not None:
                     context = setup
-            elif line.startswith("+ ") and RUN_CMD in line and "setup" in context:
-                # In the run-time layout the env var overrides the variant
-                # sleeptime; in the per-variant layout it is absent.
-                pending = dict(context) | parse_sleeptime(line) | parse_grid(line)
+                    sleep = None
+            elif line.startswith("+ "):
+                # With `set -x`, the MALLOCMC_SLEEP_TIME prefix is traced on
+                # its own line before the picongpu line.
+                if SLEEP_CMD in line:
+                    sleep = int(line.split(SLEEP_CMD, 1)[1].split()[0])
+                if RUN_CMD in line and "setup" in context:
+                    # In the run-time layout the env var overrides the variant
+                    # sleeptime; in the per-variant layout it is absent.
+                    pending = dict(context) | parse_grid(line)
+                    if sleep is not None:
+                        pending |= {"sleeptime": sleep, "configuration": "run-time"}
             elif line.startswith("calculation") and "simulation time" in line and pending is not None:
                 yield {**pending, **parse_simulation_time(line)}
                 pending = None
