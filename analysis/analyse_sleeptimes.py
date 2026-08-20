@@ -6,40 +6,52 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-CD_CMD = "cd build/"
+ALGORITHM = "FlatterScatter"
+CD_CMD = "+ cd "
+SLEEP_CMD = "MALLOCMC_SLEEP_TIME="
+RUN_CMD = "bin/picongpu "
 LOG_PATHS = (Path("output") / "hal-sleeptimes").glob("run_*")
 
 
-def parse_setup(log_content: str):
-    relevant_line = log_content.split("\n", maxsplit=1)[0]
+def parse_setup(line: str):
+    # The `cd` trace line ends with the example's build directory; with one
+    # build per example the sweep parameters live in the picongpu line instead.
     return {
-        "setup": relevant_line.split("/")[0],
-        "algorithm": relevant_line.split("/")[1].split("-")[0],
-        "sleeptime": int(relevant_line.split("/")[1].split("-")[1][len("sleep") :]),
+        "setup": line.split()[-1].rsplit("/", 1)[-1],
+        "algorithm": ALGORITHM,
     }
 
 
-def parse_grid(log_content: str):
+def parse_sleeptime(line: str):
+    return {"sleeptime": int(line.split(SLEEP_CMD)[1].split()[0])}
+
+
+def parse_grid(line: str):
     return {
         key: int(val)
         for key, val in zip(
             ("x", "y", "z"),
-            log_content.split("bin/picongpu")[1].split("\n")[0].split("-g")[1].split("-")[0].strip().split(" "),
+            line.split(RUN_CMD)[1].split("-g")[1].split("-")[0].strip().split(" "),
         )
     }
 
 
-def parse_simulation_time(log_content: str):
-    return {"runtime in s": float(log_content.split("calculation ")[1].split("\n")[0].split("=")[1][: -len("sec")])}
-
-
-def parse_run(log_content: str):
-    return parse_setup(log_content) | parse_grid(log_content) | parse_simulation_time(log_content)
+def parse_simulation_time(line: str):
+    return {"runtime in s": float(line.split("=")[1][: -len("sec")])}
 
 
 def parse_log(log_path: Path):
     with log_path.open("r") as file:
-        return map(parse_run, file.read().split(CD_CMD)[1:])
+        setup = None
+        pending = None
+        for line in map(str.strip, file):
+            if line.startswith(CD_CMD):
+                setup, algorithm = parse_setup(line).values()
+            elif SLEEP_CMD in line and RUN_CMD in line:
+                pending = {"setup": setup, "algorithm": algorithm} | parse_sleeptime(line) | parse_grid(line)
+            elif line.startswith("calculation") and pending is not None:
+                yield {**pending, **parse_simulation_time(line)}
+                pending = None
 
 
 def run_to_df(run: dict):
