@@ -174,10 +174,7 @@ def simple_plot(simple_results: pd.DataFrame, fits: pd.DataFrame | None = None):
     fig, ax = plt.subplots(1, 1)
     for name, result in results:
         x, ye_min, y, ye_max = np.sort(result.reset_index(drop=False)[["sleeptime", "25%", "50%", "75%"]].to_numpy().T)
-        (line,) = ax.plot(x, y, linestyle="-", alpha=0.3)
-        ax.errorbar(
-            x, y, yerr=(y - ye_min, ye_max - y), linestyle="none", marker="o", color=line.get_color(), label=label(name)
-        )
+        eb = ax.errorbar(x, y, yerr=(y - ye_min, ye_max - y), linestyle="none", marker="o", label=label(name))
         params = fits_by_key.get(_group_key(name))
         if params is not None:
             W, N, A, s0 = params
@@ -186,7 +183,8 @@ def simple_plot(simple_results: pd.DataFrame, fits: pd.DataFrame | None = None):
             if len(s_data) > 1 and float(s_data[-1]) > float(s_data[0]):
                 s_ns = np.geomspace(float(s_data[0]), float(s_data[-1]), 100)
                 # The model takes second-based sleeptimes; the axis is in ns.
-                ax.plot(s_ns, _model(s_ns * 1e-9, W, N, A, s0), color=line.get_color(), linestyle="--", alpha=0.8)
+                ax.plot(s_ns, _model(s_ns * 1e-9, W, N, A, s0), color=eb.lines[0].get_color(), linestyle="-", alpha=0.8)
+                ax.plot(s_ns, W + N * s_ns * 1e-9, color=eb.lines[0].get_color(), linestyle="--", alpha=0.8)
     ax.set_xlabel("sleep_time (ns)")
     ax.set_ylabel("runtime (s)")
     ax.set_xscale("log")
