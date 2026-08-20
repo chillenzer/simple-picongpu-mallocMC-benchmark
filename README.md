@@ -56,6 +56,11 @@ impact of allocation latency on simulation runtime.
   both log layouts can be analyzed side by side. Set the module variable
   `CONFIGURATION` to `"run-time"` or `"compile-time"` to plot only runs of
   that configuration (`None` plots all; the printed results stay complete).
+- `analysis/fit_allocations.py` — fits each (example, grid) sleeptime sweep to
+  the Amdahl model `T(s) = W + N*s + A*s0/(s+s0)` (large-s Amdahl line
+  `W + N*s` plus a small-s native-allocation correction `A`) and extracts the
+  fraction `f = A/(W+A)` of the runtime spent in allocations, the allocation
+  count `N`, and `W`/`A`.
 - `analysis/produce_figures.py` — produces the plots for the paper (see note
   below).
 - `build/` — created by `setup.sh`; one CMake project per example.
@@ -149,6 +154,14 @@ per-variant log layout and the current one parse.
 `output/hal-sleeptimes/run_*` logs directly (both the old per-variant layout
 and the current one) and plots the runtime against the sleep_time (log-log,
 median with IQR error bars) per example and grid.
+
+`analysis/fit_allocations.py` (run from the repository root) fits each
+(example, grid) sweep to the Amdahl model and prints the extracted fraction
+of runtime spent in allocations:
+
+```
+python3 analysis/fit_allocations.py
+```
 
 `analysis/produce_figures.py` reads the `run_all.sh` output files from
 `output/<cluster>/` and produces the figures. **Note:** it still encodes the
