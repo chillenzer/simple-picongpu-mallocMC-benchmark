@@ -4,7 +4,7 @@ set -x
 set -e
 
 FOLDER="output/rosi-sleeptimes"
-FILENAME="$FOLDER/run_$(date --rfc-3339=seconds | sed 's/ /_/g').txt"
+FILENAME="$FOLDER/run_$(date --rfc-3339=seconds | sed 's/ /_/g')_${SLURM_JOB_ID}.txt"
 mkdir -p "$FOLDER"
 
 echo "========================" | tee -a $FILENAME
