@@ -17,6 +17,9 @@ for large sleeptimes (negligible against the imposed delay) but acts as a
 correction at small sleeptimes, so the sweep is fitted with
 
     T(s) = W + N*s + A*s0/(s+s0)             (Amdahl model)
+    W + A (s/c_a + 1 / (1 + d * s/c_a)), d = c_a / s0
+
+    A (1 + s/c_a + s^2/(s0c_a) )/(1+s/s0)
 
 which reduces to the Amdahl line W + N*s for s >> s0 and to W + A for
 s -> 0. Parameters are (W, N, A, s0): baseline runtime, allocation calls per
@@ -62,7 +65,37 @@ SLEEP_CMD = "MALLOCMC_SLEEP_TIME="
 # the `cd $WD` return in run_folder.sh) is ignored.
 VARIANT_CD_RE = re.compile(r"(?:^|/)build/(\w+)/(\w+)-sleep(\d+)$")
 BUILD_CD_RE = re.compile(r"(?:^|/)build/(\w+)$")
-LOG_PATHS = (Path("output") / "hal-sleeptimes").glob("run_*")
+CLUSTER = "rosi"
+CLUSTER = "hal"
+if CLUSTER == "hal":
+    LOG_PATHS = (
+        "output/hal-sleeptimes/run_2026-08-20_14:58:01+02:00.txt",
+        "output/hal-sleeptimes/run_2026-08-20_15:49:52+02:00.txt",
+        "output/hal-sleeptimes/run_2026-08-20_16:35:43+02:00.txt",
+        "output/hal-sleeptimes/run_2026-08-20_17:21:31+02:00.txt",
+        "output/hal-sleeptimes/run_2026-08-20_17:21:32+02:00.txt",
+        "output/hal-sleeptimes/run_2026-08-20_17:21:50+02:00.txt",
+        "output/hal-sleeptimes/run_2026-08-21_01:04:15+02:00.txt",
+        "output/hal-sleeptimes/run_2026-08-21_08:07:13+02:00.txt",
+        "output/hal-sleeptimes/run_2026-08-21_10:08:19+02:00.txt",
+        "output/hal-sleeptimes/run_2026-08-21_13:22:57+02:00.txt",
+        "output/hal-sleeptimes/run_2026-08-21_16:37:29+02:00.txt",
+        "output/hal-sleeptimes/run_2026-08-21_19:52:05+02:00.txt",
+    )
+elif CLUSTER == "rosi":
+    LOG_PATHS = (
+        "output/rosi-sleeptimes/run_2026-08-21_10:41:24+02:00.txt",
+        "output/rosi-sleeptimes/run_2026-08-21_10:41:24+02:00.txt",
+        "output/rosi-sleeptimes/run_2026-08-21_11:02:14+02:00.txt",
+        "output/rosi-sleeptimes/run_2026-08-21_11:09:11+02:00_485215.txt",
+        "output/rosi-sleeptimes/run_2026-08-21_11:09:11+02:00_485216.txt",
+        "output/rosi-sleeptimes/run_2026-08-21_11:09:11+02:00_485217.txt",
+        "output/rosi-sleeptimes/run_2026-08-21_11:09:22+02:00_485218.txt",
+        "output/rosi-sleeptimes/run_2026-08-21_11:09:23+02:00_485219.txt",
+        "output/rosi-sleeptimes/run_2026-08-21_11:09:23+02:00_485220.txt",
+    )
+else:
+    LOG_PATHS = (Path("output") / "hal-sleeptimes").glob("run_*")
 # The statistics, plot and fit are computed only for runs with this
 # configuration: "run-time" (delay injected via MALLOCMC_SLEEP_TIME) or
 # "compile-time" (per-variant builds); None uses all of them. The parsed
