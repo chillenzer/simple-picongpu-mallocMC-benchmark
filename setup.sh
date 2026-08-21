@@ -11,7 +11,7 @@ PARAM_DIR=$2
 # guarantee was too weak for a controlled delay).
 MALLOCMC_URL="https://github.com/chillenzer/mallocMC"
 MALLOCMC_SRC="src/picongpu/thirdParty/mallocMC"
-MALLOCMC_HASH="53fdbc8fb49f9054235a38e3fade04445d0addaf"
+MALLOCMC_HASH="a81a94520865b6ab020b3c1d20a72c814fd350b8"
 PICONGPU_URL="https://github.com/ComputationalRadiationPhysics/picongpu"
 PICONGPU_SRC="src/picongpu"
 PICONGPU_HASH="6e7d58bb97300ac74cd7a09e13b3c03fdd3863ae"
@@ -220,8 +220,8 @@ function build_from_input() {
   WD=$(pwd -P)
 
   FINGERPRINT=$(build_fingerprint $DEST)
-  if [ -f "$DEST/.build-stamp" ] && [ "$(cat $DEST/.build-stamp)" = "$FINGERPRINT" ] \
-    && [ -x "$DEST/bin/picongpu" ]; then
+  if [ -f "$DEST/.build-stamp" ] && [ "$(cat $DEST/.build-stamp)" = "$FINGERPRINT" ] &&
+    [ -x "$DEST/bin/picongpu" ]; then
     echo "Build $DEST is up to date; skipping."
     return 0
   fi
