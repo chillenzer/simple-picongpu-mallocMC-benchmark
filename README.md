@@ -72,7 +72,9 @@ allocation and free latency on simulation runtime.
   `f` in `[0, 1)`), and print the fractions, the call counts `N`, and
   `W`/`A`, each with a standard error (the full model is documented in the
   script docstring). It plots runtime against the malloc delay per example,
-  grid and free delay with IQR error bars and the fitted curve overlaid.
+  grid and free delay with IQR error bars and the fitted curve overlaid, in
+  one figure with one axis per cluster (see `CLUSTERS` in the script),
+  titled by the hardware the runs were made on.
   Each run is labeled with a `configuration` column (`compile-time`
   per-variant sweep vs `run-time` env-var sweep), so both log layouts can be
   analyzed side by side (pre-rename logs that used `MALLOCMC_SLEEP_TIME`
@@ -139,8 +141,7 @@ bash run_folder.sh build/FoilLCT flags/FoilLCT.flags profiles/hal.sh 10000 0
 - **Delay combinations**: edit `COMBINATIONS` (and the `DELAY_SWEEP` /
   `JOINT` that build it) in `run_all.sh`. The delays are applied at run time
   via `MALLOCMC_MALLOC_DELAY` / `MALLOCMC_FREE_DELAY`, so changing the sweep
-  requires no rebuild (values above 1 ms per delay are capped by mallocMC;
-  the cap is a safety limit, not a hardware limit of the busy-wait).
+  requires no rebuild.
 - **Grids / steps / other picongpu flags**: edit `flags/<Example>.flags`
   (one command line per run).
 - **Allocator configuration**: `write_mallocmc_param` in `setup.sh`
@@ -175,11 +176,13 @@ seaborn. The old per-variant, the pre-rename and the current log layout all
 parse.
 
 `analysis/analyse_sleeptimes.py` skips the pre-filtering: it reads the raw
-`output/hal-sleeptimes/run_*` logs directly (all of the above layouts) and
-plots the runtime against the malloc delay (log-log, median with IQR error
-bars) per example, grid and free delay, with the fitted Amdahl curve
-overlaid. It also fits every (example, grid) sweep to the model and prints
-the extracted fraction of runtime spent in allocations / frees:
+`output/<cluster>-sleeptimes/run_*` logs directly (all of the above layouts)
+and plots the runtime against the malloc delay (log-log, median with IQR
+error bars) per example, grid and free delay, with the fitted Amdahl curve
+overlaid, in one figure with one axis per cluster (see `CLUSTERS` in the
+script), titled by the hardware the runs were made on. It also fits every
+(example, grid) sweep to the model and prints the extracted fraction of
+runtime spent in allocations / frees:
 
 ```
 python3 analysis/analyse_sleeptimes.py

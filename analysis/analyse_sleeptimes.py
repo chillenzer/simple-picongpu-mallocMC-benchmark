@@ -2,8 +2,10 @@
 
 Reads the raw `run_all.sh` logs directly (no pre-filtering; both the old
 per-variant layout and the current one), plots the runtime against the
-sleep_time per example and grid (median with IQR error bars), and fits each
-(example, grid) sweep to the constrained Amdahl allocation model:
+malloc delay per example, grid and free delay (median with IQR error bars)
+in one figure with one axis per cluster (see `CLUSTERS`), titled by the
+hardware the runs were made on, and fits each (example, grid) sweep to the
+constrained Amdahl allocation model:
 
 Model
 -----
@@ -84,11 +86,11 @@ LEGACY_MALLOC_DELAY_CMD = "MALLOCMC_SLEEP_TIME="
 # the `cd $WD` return in run_folder.sh) is ignored.
 VARIANT_CD_RE = re.compile(r"(?:^|/)build/(\w+)/(\w+)-sleep(\d+)$")
 BUILD_CD_RE = re.compile(r"(?:^|/)build/(\w+)$")
-CLUSTER = "rosi"
-if CLUSTER == "hal":
-    LOG_PATHS = (Path("output") / "hal-sleeptimes").glob("run_*")
-elif CLUSTER == "rosi":
-    LOG_PATHS = (Path("output") / "rosi-sleeptimes").glob("run_*")
+# cluster name -> (run-log directory, hardware title for the plot)
+CLUSTERS = {
+    "hal": (Path("output") / "hal-sleeptimes", "HAL (NVIDIA A30)"),
+    "rosi": (Path("output") / "rosi-sleeptimes", "RoSI (NVIDIA V100)"),
+}
 # The statistics, plot and fit are computed only for runs with this
 # configuration: "run-time" (delays injected via MALLOCMC_MALLOC_DELAY /
 # MALLOCMC_FREE_DELAY) or "compile-time" (per-variant builds); None uses all
@@ -205,7 +207,22 @@ def _group_key(name):
     return tuple(None if isinstance(k, float) and np.isnan(k) else k for k in name)
 
 
-def simple_plot(simple_results: pd.DataFrame, fits: pd.DataFrame | None = None):
+def simple_plot(cluster_results):
+    """One axis per cluster, next to each other in a single figure.
+
+    `cluster_results` is a list of `(title, simple_results, fits)` entries,
+    one per cluster; `title` is the hardware the runs were made on.
+    """
+    fig, axes = plt.subplots(1, len(cluster_results), figsize=(6.5 * len(cluster_results), 5.5))
+    if len(cluster_results) == 1:
+        axes = [axes]
+    for ax, (title, simple_results, fits) in zip(axes, cluster_results):
+        _plot_cluster(ax, simple_results, fits, title)
+    fig.tight_layout()
+    return fig
+
+
+def _plot_cluster(ax, simple_results: pd.DataFrame, fits: pd.DataFrame | None, title: str):
     fits_by_key = {}
     if fits is not None:
         for _, row in fits.iterrows():
@@ -243,7 +260,6 @@ def simple_plot(simple_results: pd.DataFrame, fits: pd.DataFrame | None = None):
     # One curve per (grid, free delay): the x-axis is the malloc delay.
     plot_keys = GROUP_KEYS + ("free_sleeptime",)
     results = simple_results.groupby(list(plot_keys), dropna=False)
-    fig, ax = plt.subplots(1, 1)
     for name, result in results:
         x, ye_min, y, ye_max = np.sort(
             result.reset_index(drop=False)[["malloc_sleeptime", "25%", "50%", "75%"]].to_numpy().T
@@ -269,12 +285,13 @@ def simple_plot(simple_results: pd.DataFrame, fits: pd.DataFrame | None = None):
                 # The model takes second-based delays; the axis is in ns.
                 ax.plot(m_ns, curve, color=color, linestyle="-", alpha=0.8)
                 ax.plot(m_ns, linear, color=color, linestyle="--", alpha=0.8)
+    ax.set_title(title)
     ax.set_xlabel("malloc sleep_time (ns)")
     ax.set_ylabel("runtime (s)")
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.legend()
-    return fig
+    return ax
 
 
 def _model(s, W, N, A, s0):
@@ -747,17 +764,7 @@ def fit_sweep(df: pd.DataFrame, c_a: float | None = None, configuration: str | N
     return pd.DataFrame(rows).sort_values(list(GROUP_KEYS), na_position="last")
 
 
-def main(log_paths: Iterable[PathLike]):
-    full_results = parse_logs(map(Path, log_paths))
-    print(full_results)
-    if CONFIGURATION is not None:
-        # The parsed data is complete; only the plotted subset is filtered.
-        full_results = full_results[full_results["configuration"] == CONFIGURATION]
-    simple_results = simple_statistics(full_results)
-    print(simple_results)
-    fits = fit_sweep(full_results)
-    with pd.option_context("display.max_columns", None, "display.width", 250):
-        print(fits.to_string(index=False, float_format=lambda v: f"{v:10.3g}"))
+def _print_fraction_summary(fits: pd.DataFrame):
     ok = fits[fits["f_malloc"].between(0, 1, inclusive="neither") | fits["f_free"].between(0, 1, inclusive="neither")]
     if len(ok):
         print("\nAmdahl fraction of runtime spent in the operation (f = A/T0):")
@@ -779,9 +786,31 @@ def main(log_paths: Iterable[PathLike]):
             )
             if r["note"]:
                 print(f"      note: {r.note}")
-    _ = simple_plot(simple_results, fits)
-    plt.show()
+
+
+def main(clusters: dict | None = None):
+    per_cluster = []
+    for name, (log_dir, title) in (clusters or CLUSTERS).items():
+        log_paths = sorted(Path(log_dir).glob("run_*"))
+        if not log_paths:
+            continue
+        print(f"=== {title}: {log_dir} ({len(log_paths)} log files) ===")
+        full_results = parse_logs(log_paths)
+        print(full_results)
+        if CONFIGURATION is not None:
+            # The parsed data is complete; only the plotted subset is filtered.
+            full_results = full_results[full_results["configuration"] == CONFIGURATION]
+        simple_results = simple_statistics(full_results)
+        print(simple_results)
+        fits = fit_sweep(full_results)
+        with pd.option_context("display.max_columns", None, "display.width", 250):
+            print(fits.to_string(index=False, float_format=lambda v: f"{v:10.3g}"))
+        _print_fraction_summary(fits)
+        per_cluster.append((title, simple_results, fits))
+    if per_cluster:
+        _ = simple_plot(per_cluster)
+        plt.show()
 
 
 if __name__ == "__main__":
-    main(LOG_PATHS)
+    main()
