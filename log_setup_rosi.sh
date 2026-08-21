@@ -28,4 +28,4 @@ echo "========================" >>$FILENAME
 echo "Starting setup" >>$FILENAME
 echo "========================" >>$FILENAME
 
-bash setup.sh profiles/rosi-v100.sh param/ 2>&1 | tee -a $FILENAME
+bash setup.sh profiles/rosi-v100.profile param/ 2>&1 | tee -a $FILENAME
