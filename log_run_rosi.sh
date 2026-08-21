@@ -14,6 +14,7 @@ echo "========================" | tee -a $FILENAME
 git log -n1 | tee -a $FILENAME
 git diff | tee -a $FILENAME
 nvidia-smi | tee -a $FILENAME
+hostname | tee -a $FILENAME
 
 echo "========================" | tee -a $FILENAME
 echo "Starting run" | tee -a $FILENAME
