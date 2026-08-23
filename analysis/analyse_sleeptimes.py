@@ -281,6 +281,7 @@ def _plot_cluster(
     # One curve per (grid, free delay): the x-axis is the malloc delay.
     plot_keys = GROUP_KEYS + ("free_sleeptime",)
     results = simple_results.groupby(list(plot_keys), dropna=False)
+    gaps = []
     for name, result in results:
         x, ye_min, y, ye_max = np.sort(
             result.reset_index(drop=False)[["malloc_sleeptime", "25%", "50%", "75%"]].to_numpy().T
@@ -322,16 +323,8 @@ def _plot_cluster(
                     x0 = float(m_ns[0])
                     y_lo, y_hi = float(linear[0]), float(curve[0])
                     ax.plot((x0, x0), (y_lo, y_hi), color=color, linewidth=1, alpha=0.8)
-                    ax.annotate(
-                        f"A = {a_val:.2f} s",
-                        xy=(x0, 0.5 * (y_lo + y_hi)),
-                        xytext=(5, 0),
-                        textcoords="offset points",
-                        ha="left",
-                        va="center",
-                        fontsize=8,
-                        color=color,
-                    )
+                    f_val = a_val / (W + a_val) if W + a_val > 1e-12 else 0.0
+                    gaps.append((0.5 * (y_lo + y_hi), x0, color, f"A = {a_val:.2f} s, f = {100 * f_val:.1f}%"))
     ax.set_title(title)
     ax.text(
         0.02,
@@ -347,6 +340,35 @@ def _plot_cluster(
     ax.set_ylabel("runtime (s)")
     ax.set_xscale("log")
     ax.set_yscale("log")
+    # Keep the A/f labels out of the data: each sits in the clear, to the right
+    # of the leftmost delay, and a thin leader line joins it to its gap.
+    if gaps:
+        lo, hi = ax.get_ylim()
+        for y_mid, x0, color, text in gaps:
+            mid_frac = (np.log10(y_mid) - np.log10(lo)) / (np.log10(hi) - np.log10(lo))
+            label_frac = (0.30, min(mid_frac + 0.02, 0.96))
+            # The leader line is its own artist: a bbox-anchored arrow breaks
+            # matplotlib's tight-layout path clipping.
+            arrow_start = ax.transData.inverted().transform(
+                ax.transAxes.transform((label_frac[0] - 0.005, label_frac[1]))
+            )
+            ax.annotate(
+                "",
+                xy=(x0, y_mid),
+                xytext=arrow_start,
+                arrowprops=dict(arrowstyle="->", color=color, linewidth=0.8, alpha=0.8),
+            )
+            ax.annotate(
+                text,
+                xy=label_frac,
+                xytext=label_frac,
+                xycoords="axes fraction",
+                ha="left",
+                va="center",
+                fontsize=8,
+                color=color,
+                bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor=color, alpha=0.85, linewidth=0.5),
+            )
     if show_legend:
         ax.legend()
     return ax
