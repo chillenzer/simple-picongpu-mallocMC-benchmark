@@ -351,12 +351,24 @@ def _plot_cluster(
         x_lo, x_hi = ax.get_xlim()
         gc = float(10 ** (0.5 * (np.log10(delay_xs[0]) + np.log10(delay_xs[1]))))
         gc_frac = (np.log10(gc) - np.log10(x_lo)) / (np.log10(x_hi) - np.log10(x_lo))
-        renderer = ax.figure.canvas.get_renderer()
-        ax_w = ax.get_position().width * ax.figure.get_figwidth() * ax.figure.get_dpi()
         for y_mid, x0, color, text in gaps:
             mid_frac = (np.log10(y_mid) - np.log10(lo)) / (np.log10(hi) - np.log10(lo))
             lfy = min(mid_frac + 0.02, 0.96)
-            txt = ax.text(
+            # The leader line is its own artist (a bbox-anchored arrow breaks
+            # matplotlib's tight-layout path clipping). Its tail is anchored at
+            # the label centre in axes fraction -- the same coordinates as the
+            # text -- so it tracks the box through tight_layout. The box,
+            # drawn on top, hides the part of the line under it, so the visible
+            # segment runs from the box edge to the gap.
+            ax.annotate(
+                "",
+                xy=(x0, y_mid),
+                xytext=(gc_frac, lfy),
+                textcoords="axes fraction",
+                arrowprops=dict(arrowstyle="->", color=color, linewidth=0.8, alpha=0.8),
+                zorder=4,
+            )
+            ax.text(
                 gc_frac,
                 lfy,
                 text,
@@ -365,17 +377,8 @@ def _plot_cluster(
                 va="center",
                 fontsize=8,
                 color=color,
-                bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor=color, alpha=0.85, linewidth=0.5),
-            )
-            w_frac = txt.get_window_extent(renderer).width / ax_w
-            # The leader line is its own artist: a bbox-anchored arrow breaks
-            # matplotlib's tight-layout path clipping.
-            arrow_start = ax.transData.inverted().transform(ax.transAxes.transform((gc_frac - w_frac / 2 - 0.005, lfy)))
-            ax.annotate(
-                "",
-                xy=(x0, y_mid),
-                xytext=arrow_start,
-                arrowprops=dict(arrowstyle="->", color=color, linewidth=0.8, alpha=0.8),
+                bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor=color, alpha=0.95, linewidth=0.5),
+                zorder=5,
             )
     if show_legend:
         ax.legend()
