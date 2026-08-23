@@ -282,10 +282,12 @@ def _plot_cluster(
     plot_keys = GROUP_KEYS + ("free_sleeptime",)
     results = simple_results.groupby(list(plot_keys), dropna=False)
     gaps = []
+    delays = set()
     for name, result in results:
         x, ye_min, y, ye_max = np.sort(
             result.reset_index(drop=False)[["malloc_sleeptime", "25%", "50%", "75%"]].to_numpy().T
         )
+        delays.update(x[x > 0])
         eb = ax.errorbar(
             x,
             y,
@@ -340,34 +342,40 @@ def _plot_cluster(
     ax.set_ylabel("runtime (s)")
     ax.set_xscale("log")
     ax.set_yscale("log")
-    # Keep the A/f labels out of the data: each sits in the clear, to the right
-    # of the leftmost delay, and a thin leader line joins it to its gap.
-    if gaps:
+    # Each A/f label sits in the clear band between the first and second
+    # delays; a thin leader line joins it to its solid/dashed gap.
+    delay_xs = sorted(delays)
+    if gaps and len(delay_xs) >= 2:
+        ax.autoscale_view()
         lo, hi = ax.get_ylim()
+        x_lo, x_hi = ax.get_xlim()
+        gc = float(10 ** (0.5 * (np.log10(delay_xs[0]) + np.log10(delay_xs[1]))))
+        gc_frac = (np.log10(gc) - np.log10(x_lo)) / (np.log10(x_hi) - np.log10(x_lo))
+        renderer = ax.figure.canvas.get_renderer()
+        ax_w = ax.get_position().width * ax.figure.get_figwidth() * ax.figure.get_dpi()
         for y_mid, x0, color, text in gaps:
             mid_frac = (np.log10(y_mid) - np.log10(lo)) / (np.log10(hi) - np.log10(lo))
-            label_frac = (0.30, min(mid_frac + 0.02, 0.96))
+            lfy = min(mid_frac + 0.02, 0.96)
+            txt = ax.text(
+                gc_frac,
+                lfy,
+                text,
+                transform=ax.transAxes,
+                ha="center",
+                va="center",
+                fontsize=8,
+                color=color,
+                bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor=color, alpha=0.85, linewidth=0.5),
+            )
+            w_frac = txt.get_window_extent(renderer).width / ax_w
             # The leader line is its own artist: a bbox-anchored arrow breaks
             # matplotlib's tight-layout path clipping.
-            arrow_start = ax.transData.inverted().transform(
-                ax.transAxes.transform((label_frac[0] - 0.005, label_frac[1]))
-            )
+            arrow_start = ax.transData.inverted().transform(ax.transAxes.transform((gc_frac - w_frac / 2 - 0.005, lfy)))
             ax.annotate(
                 "",
                 xy=(x0, y_mid),
                 xytext=arrow_start,
                 arrowprops=dict(arrowstyle="->", color=color, linewidth=0.8, alpha=0.8),
-            )
-            ax.annotate(
-                text,
-                xy=label_frac,
-                xytext=label_frac,
-                xycoords="axes fraction",
-                ha="left",
-                va="center",
-                fontsize=8,
-                color=color,
-                bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor=color, alpha=0.85, linewidth=0.5),
             )
     if show_legend:
         ax.legend()
