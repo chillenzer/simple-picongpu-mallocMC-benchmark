@@ -2,10 +2,12 @@
 
 Reads the raw `run_all.sh` logs directly (no pre-filtering; both the old
 per-variant layout and the current one), plots the runtime against the
-malloc delay per example, grid and free delay (median with IQR error bars)
-in one figure with one axis per cluster (see `CLUSTERS`), titled by the
-hardware the runs were made on, and fits each (example, grid) sweep to the
-constrained Amdahl allocation model:
+imposed delay (median with IQR error bars) in two companion figures, each
+with one axis per cluster (see `CLUSTERS`) and titled by the hardware the
+runs were made on: one against the malloc delay (the free delay held at 0)
+and one, mirrored, against the free delay (the malloc delay held at 0). It
+also fits each (example, grid) sweep to the constrained Amdahl allocation
+model:
 
 Model
 -----
@@ -98,6 +100,9 @@ CLUSTERS = {
 CONFIGURATION = None
 
 GROUP_KEYS = ("setup", "x", "y", "z")
+MALLOC_DELAY = "malloc_sleeptime"
+FREE_DELAY = "free_sleeptime"
+DELAY_COLUMNS = (MALLOC_DELAY, FREE_DELAY)
 # one distinct marker per (setup, grid) series, shared by all axes
 MARKERS = ("o", "s", "^", "D", "v", "P", "h", "X", "8")
 _INF = float("inf")
@@ -196,10 +201,11 @@ def simple_statistics(full_results: pd.DataFrame):
     )
 
 
-def label(info):
-    # Plot group key (setup, x, y, z, free_sleeptime).
+def label(info, secondary: str = "free"):
+    # Plot group key (setup, x, y, z, <secondary delay>); the suffix names the
+    # held (secondary) delay when it is non-zero.
     grid_string = "x".join(map(str, map(int, np.asarray(info[1:4])[~np.isnan(info[1:4])])))
-    suffix = "" if info[4] == 0 else f", free: {int(info[4])} ns"
+    suffix = "" if info[4] == 0 else f", {secondary}: {int(info[4])} ns"
     return f"{info[0]} {grid_string}{suffix}"
 
 
@@ -209,14 +215,19 @@ def _group_key(name):
     return tuple(None if isinstance(k, float) and np.isnan(k) else k for k in name)
 
 
-def simple_plot(cluster_results):
+def simple_plot(cluster_results, x_delay: str = MALLOC_DELAY):
     """One axis per cluster, next to each other in a single figure.
 
     `cluster_results` is a list of `(title, simple_results, fits)` entries,
-    one per cluster; `title` is the hardware the runs were made on. Each
-    (setup, grid) series gets a distinct marker, consistently on all axes;
-    the legend is only shown on the right-most axis.
+    one per cluster; `title` is the hardware the runs were made on. `x_delay`
+    selects the delay plotted on the x-axis (the malloc delay by default, or
+    the free delay for the companion figure); the sweep of that delay, with
+    the other one held at 0, is drawn per (setup, grid). Each (setup, grid)
+    series gets a distinct marker, consistently on all axes; the legend is
+    shown on the right-most axis that has a curve.
     """
+    if x_delay not in DELAY_COLUMNS:
+        raise ValueError(f"x_delay must be one of {DELAY_COLUMNS}, got {x_delay!r}")
     fig, axes = plt.subplots(1, len(cluster_results), figsize=(6.5 * len(cluster_results), 5.5))
     if len(cluster_results) == 1:
         axes = [axes]
@@ -224,14 +235,21 @@ def simple_plot(cluster_results):
     # same series is drawn with the same marker on every axis.
     series_markers = {}
     for _, simple_results, _ in cluster_results:
-        for name, _ in simple_results.groupby(list(GROUP_KEYS + ("free_sleeptime",)), dropna=False):
-            key = _group_key(name[:4])
+        for name, _ in simple_results.groupby(list(GROUP_KEYS), dropna=False):
+            key = _group_key(name)
             if key not in series_markers:
                 series_markers[key] = MARKERS[len(series_markers) % len(MARKERS)]
     if len(series_markers) > len(MARKERS):
         warnings.warn(f"more than {len(MARKERS)} (setup, grid) series; the markers repeat")
-    for i, (ax, (title, simple_results, fits)) in enumerate(zip(axes, cluster_results)):
-        _plot_cluster(ax, simple_results, fits, title, series_markers, show_legend=(i == len(axes) - 1))
+    for ax, (title, simple_results, fits) in zip(axes, cluster_results):
+        _plot_cluster(ax, simple_results, fits, title, series_markers, x_delay=x_delay)
+    # Legend on the right-most axis that actually has a curve (a companion
+    # figure may have data on only one cluster while the others wait for
+    # their delay sweep).
+    for ax in reversed(axes):
+        if ax.get_legend_handles_labels()[0]:
+            ax.legend()
+            break
     fig.tight_layout()
     return fig
 
@@ -242,8 +260,12 @@ def _plot_cluster(
     fits: pd.DataFrame | None,
     title: str,
     series_markers: dict,
-    show_legend: bool,
+    x_delay: str = MALLOC_DELAY,
 ):
+    # The x-axis shows `x_delay`; the other delay is held per curve.
+    secondary = FREE_DELAY if x_delay == MALLOC_DELAY else MALLOC_DELAY
+    short = "malloc" if x_delay == MALLOC_DELAY else "free"
+    secondary_short = "free" if secondary == FREE_DELAY else "malloc"
     fits_by_key = {}
     if fits is not None:
         for _, row in fits.iterrows():
@@ -272,21 +294,32 @@ def _plot_cluster(
                 )
             elif row["model"] == "1d-malloc" and all(pd.notna(row[k]) for k in ("W", "N_malloc", "A_malloc", "m0_ns")):
                 fits_by_key[key] = (
-                    "1d",
+                    "1d-malloc",
                     float(row["W"]),
                     float(row["N_malloc"]),
                     float(row["A_malloc"]),
                     float(row["m0_ns"]) * 1e-9,
                 )
-    # One curve per (grid, free delay): the x-axis is the malloc delay.
-    plot_keys = GROUP_KEYS + ("free_sleeptime",)
+            elif row["model"] == "1d-free" and all(pd.notna(row[k]) for k in ("W", "N_free", "A_free", "f0_ns")):
+                fits_by_key[key] = (
+                    "1d-free",
+                    float(row["W"]),
+                    float(row["N_free"]),
+                    float(row["A_free"]),
+                    float(row["f0_ns"]) * 1e-9,
+                )
+    # One curve per (grid, held delay): the x-axis is `x_delay`.
+    plot_keys = GROUP_KEYS + (secondary,)
     results = simple_results.groupby(list(plot_keys), dropna=False)
     gaps = []
     delays = set()
     for name, result in results:
-        x, ye_min, y, ye_max = np.sort(
-            result.reset_index(drop=False)[["malloc_sleeptime", "25%", "50%", "75%"]].to_numpy().T
-        )
+        x, ye_min, y, ye_max = np.sort(result.reset_index(drop=False)[[x_delay, "25%", "50%", "75%"]].to_numpy().T)
+        # Only draw curves with a real sweep along the x-axis. Cross-sweep
+        # points sit at x = 0, which falls off the log axis, and would just
+        # clutter the legend.
+        if len(np.unique(x[x > 0])) < 2:
+            continue
         delays.update(x[x > 0])
         eb = ax.errorbar(
             x,
@@ -294,35 +327,44 @@ def _plot_cluster(
             yerr=(y - ye_min, ye_max - y),
             linestyle="none",
             marker=series_markers[_group_key(name[:4])],
-            label=label(name),
+            label=label(name, secondary_short),
         )
         color = eb.lines[0].get_color()
         params = fits_by_key.get(_group_key(name[:4]))
+        # A 1-D fit only applies when it was made on the plotted delay; the
+        # 2-D fit applies to either direction.
         if params is not None:
-            free_s = float(name[4]) * 1e-9
-            # Draw the fitted model over the malloc delays this curve covers.
-            m_data = x[x > 0]
-            if len(m_data) > 1 and float(m_data[-1]) > float(m_data[0]):
-                m_ns = np.geomspace(float(m_data[0]), float(m_data[-1]), 100)
-                m_s = m_ns * 1e-9
+            if (params[0] == "1d-malloc" and short != "malloc") or (params[0] == "1d-free" and short != "free"):
+                params = None
+        if params is not None:
+            held_s = float(name[4]) * 1e-9
+            # Draw the fitted model over the x-delay range this curve covers.
+            x_data = x[x > 0]
+            if len(x_data) > 1 and float(x_data[-1]) > float(x_data[0]):
+                x_ns = np.geomspace(float(x_data[0]), float(x_data[-1]), 100)
+                x_s = x_ns * 1e-9
                 if params[0] == "2d":
                     _, W, Nm, Nf, Am, Af, m0, f0 = params
-                    curve = _model_2d(m_s, np.full_like(m_s, free_s), W, Nm, Nf, Am, Af, m0, f0)
-                    linear = W + Nm * m_s + Nf * free_s
+                    if short == "malloc":
+                        curve = _model_2d(x_s, np.full_like(x_s, held_s), W, Nm, Nf, Am, Af, m0, f0)
+                        linear = W + Nm * x_s + Nf * held_s
+                    else:
+                        curve = _model_2d(np.full_like(x_s, held_s), x_s, W, Nm, Nf, Am, Af, m0, f0)
+                        linear = W + Nm * held_s + Nf * x_s
                     a_val = Am + Af
                 else:
                     _, W, N, A, s0 = params
-                    curve = _model(m_s, W, N, A, s0)
-                    linear = W + N * m_s
+                    curve = _model(x_s, W, N, A, s0)
+                    linear = W + N * x_s
                     a_val = A
                 # The model takes second-based delays; the axis is in ns.
-                ax.plot(m_ns, curve, color=color, linestyle="-", alpha=0.8)
-                ax.plot(m_ns, linear, color=color, linestyle="--", alpha=0.8)
+                ax.plot(x_ns, curve, color=color, linestyle="-", alpha=0.8)
+                ax.plot(x_ns, linear, color=color, linestyle="--", alpha=0.8)
                 # The solid/dashed gap is the native cost A that the dashed line
                 # (the extrapolation to A = 0) drops; mark it at the smallest
-                # malloc delay, in the series color.
+                # x-delay, in the series color.
                 if float(curve[0]) > float(linear[0]):
-                    x0 = float(m_ns[0])
+                    x0 = float(x_ns[0])
                     y_lo, y_hi = float(linear[0]), float(curve[0])
                     ax.plot((x0, x0), (y_lo, y_hi), color=color, linewidth=1, alpha=0.8)
                     f_val = a_val / (W + a_val) if W + a_val > 1e-12 else 0.0
@@ -338,7 +380,7 @@ def _plot_cluster(
         fontsize=8,
         color="0.35",
     )
-    ax.set_xlabel("malloc sleep_time (ns)")
+    ax.set_xlabel(f"{short} sleep_time (ns)")
     ax.set_ylabel("runtime (s)")
     ax.set_xscale("log")
     ax.set_yscale("log")
@@ -380,8 +422,6 @@ def _plot_cluster(
                 bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor=color, alpha=0.95, linewidth=0.5),
                 zorder=5,
             )
-    if show_legend:
-        ax.legend()
     return ax
 
 
@@ -899,7 +939,10 @@ def main(clusters: dict | None = None):
         _print_fraction_summary(fits)
         per_cluster.append((title, simple_results, fits))
     if per_cluster:
+        # Two companion figures: the sweep over the malloc delay and, mirrored,
+        # the sweep over the free delay (the other held at 0 each).
         _ = simple_plot(per_cluster)
+        _ = simple_plot(per_cluster, x_delay=FREE_DELAY)
         plt.show()
 
 
