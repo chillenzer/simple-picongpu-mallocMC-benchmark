@@ -16,19 +16,22 @@ DELAY_SWEEP=(100 10000 100000 177828 316228 562341 1000000 1778279 3162278 56234
 JOINT=(10000 1000000 10000000)
 
 COMBINATIONS=("0 0")
-for delay in ${DELAY_SWEEP[@]}; do
+for delay in "${DELAY_SWEEP[@]}"; do
   COMBINATIONS+=("$delay 0" "0 $delay")
 done
-for malloc_delay in ${JOINT[@]}; do
-  for free_delay in ${JOINT[@]}; do
+for malloc_delay in "${JOINT[@]}"; do
+  for free_delay in "${JOINT[@]}"; do
     COMBINATIONS+=("$malloc_delay $free_delay")
   done
 done
 
 echo "All combinations:"
 echo "${COMBINATIONS[@]}"
-for example in ${EXAMPLES[@]}; do
-  for combination in ${COMBINATIONS[@]}; do
+for example in "${EXAMPLES[@]}"; do
+  # Quoted: the combinations contain spaces ("100 0"), and unquoted
+  # ${COMBINATIONS[@]} word-splits each of them into bare numbers, so the
+  # free delay is lost and defaults to 0.
+  for combination in "${COMBINATIONS[@]}"; do
     read -r malloc_delay free_delay <<<"$combination"
     echo "=============================="
     echo "Running example: $example"
