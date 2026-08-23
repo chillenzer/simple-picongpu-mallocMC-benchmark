@@ -26,7 +26,7 @@ for malloc_delay in ${JOINT[@]}; do
 done
 
 echo "All combinations:"
-echo "$COMBINATIONS"
+echo "${COMBINATIONS[@]}"
 for example in ${EXAMPLES[@]}; do
   for combination in ${COMBINATIONS[@]}; do
     read -r malloc_delay free_delay <<<"$combination"
