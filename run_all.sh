@@ -25,9 +25,11 @@ for malloc_delay in ${JOINT[@]}; do
   done
 done
 
+echo "All combinations:"
+echo "$COMBINATIONS"
 for example in ${EXAMPLES[@]}; do
   for combination in ${COMBINATIONS[@]}; do
-    read -r malloc_delay free_delay <<< "$combination"
+    read -r malloc_delay free_delay <<<"$combination"
     echo "=============================="
     echo "Running example: $example"
     echo "Using allocator: FlatterScatter, malloc delay: $malloc_delay ns, free delay: $free_delay ns"
