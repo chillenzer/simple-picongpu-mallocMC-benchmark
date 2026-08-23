@@ -306,14 +306,43 @@ def _plot_cluster(
                     _, W, Nm, Nf, Am, Af, m0, f0 = params
                     curve = _model_2d(m_s, np.full_like(m_s, free_s), W, Nm, Nf, Am, Af, m0, f0)
                     linear = W + Nm * m_s + Nf * free_s
+                    a_val = Am + Af
                 else:
                     _, W, N, A, s0 = params
                     curve = _model(m_s, W, N, A, s0)
                     linear = W + N * m_s
+                    a_val = A
                 # The model takes second-based delays; the axis is in ns.
                 ax.plot(m_ns, curve, color=color, linestyle="-", alpha=0.8)
                 ax.plot(m_ns, linear, color=color, linestyle="--", alpha=0.8)
+                # The solid/dashed gap is the native cost A that the dashed line
+                # (the extrapolation to A = 0) drops; mark it at the smallest
+                # malloc delay, in the series color.
+                if float(curve[0]) > float(linear[0]):
+                    x0 = float(m_ns[0])
+                    y_lo, y_hi = float(linear[0]), float(curve[0])
+                    ax.plot((x0, x0), (y_lo, y_hi), color=color, linewidth=1, alpha=0.8)
+                    ax.annotate(
+                        f"A = {a_val:.2f} s",
+                        xy=(x0, 0.5 * (y_lo + y_hi)),
+                        xytext=(5, 0),
+                        textcoords="offset points",
+                        ha="left",
+                        va="center",
+                        fontsize=8,
+                        color=color,
+                    )
     ax.set_title(title)
+    ax.text(
+        0.02,
+        0.98,
+        "solid: full fit, dashed: extrapolation to A = 0",
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=8,
+        color="0.35",
+    )
     ax.set_xlabel("malloc sleep_time (ns)")
     ax.set_ylabel("runtime (s)")
     ax.set_xscale("log")
