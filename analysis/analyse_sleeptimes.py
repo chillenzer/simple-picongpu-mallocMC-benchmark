@@ -98,6 +98,8 @@ CLUSTERS = {
 CONFIGURATION = None
 
 GROUP_KEYS = ("setup", "x", "y", "z")
+# one distinct marker per (setup, grid) series, shared by all axes
+MARKERS = ("o", "s", "^", "D", "v", "P", "h", "X", "8")
 _INF = float("inf")
 
 
@@ -211,18 +213,37 @@ def simple_plot(cluster_results):
     """One axis per cluster, next to each other in a single figure.
 
     `cluster_results` is a list of `(title, simple_results, fits)` entries,
-    one per cluster; `title` is the hardware the runs were made on.
+    one per cluster; `title` is the hardware the runs were made on. Each
+    (setup, grid) series gets a distinct marker, consistently on all axes;
+    the legend is only shown on the right-most axis.
     """
     fig, axes = plt.subplots(1, len(cluster_results), figsize=(6.5 * len(cluster_results), 5.5))
     if len(cluster_results) == 1:
         axes = [axes]
-    for ax, (title, simple_results, fits) in zip(axes, cluster_results):
-        _plot_cluster(ax, simple_results, fits, title)
+    # Assign each (setup, grid) series its marker once, in plot order, so the
+    # same series is drawn with the same marker on every axis.
+    series_markers = {}
+    for _, simple_results, _ in cluster_results:
+        for name, _ in simple_results.groupby(list(GROUP_KEYS + ("free_sleeptime",)), dropna=False):
+            key = _group_key(name[:4])
+            if key not in series_markers:
+                series_markers[key] = MARKERS[len(series_markers) % len(MARKERS)]
+    if len(series_markers) > len(MARKERS):
+        warnings.warn(f"more than {len(MARKERS)} (setup, grid) series; the markers repeat")
+    for i, (ax, (title, simple_results, fits)) in enumerate(zip(axes, cluster_results)):
+        _plot_cluster(ax, simple_results, fits, title, series_markers, show_legend=(i == len(axes) - 1))
     fig.tight_layout()
     return fig
 
 
-def _plot_cluster(ax, simple_results: pd.DataFrame, fits: pd.DataFrame | None, title: str):
+def _plot_cluster(
+    ax,
+    simple_results: pd.DataFrame,
+    fits: pd.DataFrame | None,
+    title: str,
+    series_markers: dict,
+    show_legend: bool,
+):
     fits_by_key = {}
     if fits is not None:
         for _, row in fits.iterrows():
@@ -264,7 +285,14 @@ def _plot_cluster(ax, simple_results: pd.DataFrame, fits: pd.DataFrame | None, t
         x, ye_min, y, ye_max = np.sort(
             result.reset_index(drop=False)[["malloc_sleeptime", "25%", "50%", "75%"]].to_numpy().T
         )
-        eb = ax.errorbar(x, y, yerr=(y - ye_min, ye_max - y), linestyle="none", marker="o", label=label(name))
+        eb = ax.errorbar(
+            x,
+            y,
+            yerr=(y - ye_min, ye_max - y),
+            linestyle="none",
+            marker=series_markers[_group_key(name[:4])],
+            label=label(name),
+        )
         color = eb.lines[0].get_color()
         params = fits_by_key.get(_group_key(name[:4]))
         if params is not None:
@@ -290,7 +318,8 @@ def _plot_cluster(ax, simple_results: pd.DataFrame, fits: pd.DataFrame | None, t
     ax.set_ylabel("runtime (s)")
     ax.set_xscale("log")
     ax.set_yscale("log")
-    ax.legend()
+    if show_legend:
+        ax.legend()
     return ax
 
 
