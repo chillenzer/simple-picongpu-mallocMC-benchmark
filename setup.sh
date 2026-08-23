@@ -13,7 +13,7 @@ PARAM_DIR=$2
 # controlled delay).
 MALLOCMC_URL="https://github.com/chillenzer/mallocMC"
 MALLOCMC_SRC="src/picongpu/thirdParty/mallocMC"
-MALLOCMC_HASH="a81a94520865b6ab020b3c1d20a72c814fd350b8"
+MALLOCMC_HASH="2eb8a18e3298afc18060edcd6e24b09316e2ee18"
 PICONGPU_URL="https://github.com/ComputationalRadiationPhysics/picongpu"
 PICONGPU_SRC="src/picongpu"
 PICONGPU_HASH="6e7d58bb97300ac74cd7a09e13b3c03fdd3863ae"
