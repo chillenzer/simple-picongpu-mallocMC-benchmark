@@ -1112,15 +1112,6 @@ def fit_allocation_fraction_2d(m_delays: pd.Series, f_delays: pd.Series, runtime
     gW, gNm, gNf, gAm, gAf, gm0, gf0 = grid_guess()
     eps = 1e-9 * max(1.0, float(np.max(np.abs(t))))
     try:
-        # Start f0 at the bottom of its window (close to 0), not at the grid
-        # guess: when the free fade is unresolved the profiled surface has a
-        # shallow ridge between a small-f0 minimum (small A_free, quick fade)
-        # and the search cap, and the grid guess sits at the cap in that case,
-        # where the near-degenerate (W, A_free) pair inflates the sleeve. From
-        # a small-f0 start the fit lands on the small-native-cost minimum
-        # (free cost per call below malloc, tight sleeve); for sweeps where
-        # the free fade *is* resolved this converges to the same minimum as
-        # the grid guess.
         p0 = [
             max(gW, eps),
             max(gNm, eps),
@@ -1128,7 +1119,7 @@ def fit_allocation_fraction_2d(m_delays: pd.Series, f_delays: pd.Series, runtime
             max(gAm, eps),
             max(gAf, eps),
             gm0,
-            lo_f,
+            gf0,
         ]
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", OptimizeWarning)
