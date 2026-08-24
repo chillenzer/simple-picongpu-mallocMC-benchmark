@@ -221,6 +221,7 @@ def parse_results(source: str | Path | Iterable[str]) -> pd.DataFrame:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Parse a pre-filtered run log and print (and optionally write) the frame."""
     parser = argparse.ArgumentParser(description="Parse pre-filtered run logs into a DataFrame")
     parser.add_argument("results", help="pre-filtered log (output of the grep)")
     parser.add_argument("--csv", metavar="OUT", help="also write the DataFrame to a CSV file")

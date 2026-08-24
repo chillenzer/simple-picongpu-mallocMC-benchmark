@@ -128,7 +128,7 @@ LABEL_MIN_SPACE = 0.02
 
 
 def parse_setup(line: str) -> dict | None:
-    # Run context of a `cd` trace line, or None if the line is unrelated.
+    """Parse the run context of a `cd` trace line; None if the line is unrelated."""
     path = line.rsplit(maxsplit=1)[-1]
     m = VARIANT_CD_RE.search(path)
     if m:
@@ -148,6 +148,7 @@ def parse_setup(line: str) -> dict | None:
 
 
 def parse_grid(line: str) -> dict[str, int]:
+    """Parse the `-g` grid dimensions out of a picongpu command line."""
     return {
         key: int(val)
         for key, val in zip(
@@ -161,10 +162,12 @@ def parse_grid(line: str) -> dict[str, int]:
 
 
 def parse_simulation_time(line: str) -> dict[str, float]:
+    """Parse a `calculation  simulation time` line into a runtime dict."""
     return {"runtime in s": float(line.split("=")[1][: -len("sec")])}
 
 
 def parse_log(log_path: Path) -> Iterator[dict]:
+    """Yield one record per picongpu run of a single run log."""
     with log_path.open("r") as file:
         context = {}
         pending = None
@@ -205,19 +208,23 @@ def parse_log(log_path: Path) -> Iterator[dict]:
 
 
 def run_to_df(run: dict) -> pd.DataFrame:
+    """Build a DataFrame from one run's records, tagged with its name."""
     return pd.DataFrame(run["runs"]).assign(name=run["name"])
 
 
 def runs_to_df(runs: Iterable[dict]) -> pd.DataFrame:
+    """Concatenate the per-run DataFrames, filling a missing z with NaN."""
     tmp = pd.concat(map(run_to_df, runs))
     return tmp.assign(z=tmp.get("z", np.nan))
 
 
 def parse_logs(log_paths: Iterable[Path]) -> pd.DataFrame:
+    """Parse every run log into a single DataFrame."""
     return runs_to_df({"name": p, "runs": parse_log(p)} for p in log_paths)
 
 
 def simple_statistics(full_results: pd.DataFrame) -> pd.DataFrame:
+    """Group the parsed runs and describe the runtime of each group."""
     # Group by the frame's column order (not a set): a set's iteration order
     # is hash-randomized per process, which would shuffle the printed index.
     group_cols = [c for c in full_results.columns if c not in {"runtime in s", "name"}]
@@ -227,6 +234,7 @@ def simple_statistics(full_results: pd.DataFrame) -> pd.DataFrame:
 
 
 def label(info: tuple, secondary: str = "free") -> str:
+    """Format a (setup, grid, held-delay) group key as a legend label."""
     # Plot group key (setup, x, y, z, <secondary delay>); the suffix names the
     # held (secondary) delay when it is non-zero.
     grid_string = "x".join(map(str, map(int, np.asarray(info[1:4])[~np.isnan(info[1:4])])))
@@ -1301,6 +1309,7 @@ def _print_fraction_summary(fits: pd.DataFrame) -> None:
 
 
 def main(clusters: dict | None = None) -> None:
+    """Parse, fit and plot every cluster's delay sweeps."""
     per_cluster = []
     for log_dir, title in (clusters or CLUSTERS).values():
         log_paths = sorted(Path(log_dir).glob("run_*"))
