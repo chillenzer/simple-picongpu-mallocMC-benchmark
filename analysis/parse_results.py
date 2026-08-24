@@ -27,7 +27,8 @@ For the current log layout (one build per example, delays set via the
 `MALLOCMC_MALLOC_DELAY` / `MALLOCMC_FREE_DELAY` environment variables), the
 `cd` lines are absolute paths, so use a grep that still captures them, e.g.
 
-    grep -E "cd .*build/(FoilLCT|KelvinHelmholtz)|Using allocator|MALLOCMC_(SLEEP_TIME|MALLOC_DELAY|FREE_DELAY)=|bin/picongpu |calculation" \
+    grep -E "cd .*build/(FoilLCT|KelvinHelmholtz)|Using allocator|MALLOCMC_(SLEEP_TIME|MALLOC_DELAY|FREE_DELAY)=|" \
+        "bin/picongpu |calculation" \
         output/hal-sleeptimes/run_*
 
 Both the old and the new log layout parse correctly.
@@ -111,7 +112,10 @@ def parse_results(source) -> pd.DataFrame:
     pending = None
     rows = []
 
-    lines = source if hasattr(source, "readline") or isinstance(source, (list, tuple)) else open(source, "r")
+    if not (hasattr(source, "readline") or isinstance(source, (list, tuple))):
+        with open(source) as file:
+            source = file.readlines()
+    lines = source
     for raw in lines:
         line = raw.strip()
         m = LINE_RE.match(line)

@@ -141,6 +141,9 @@ def parse_grid(line: str):
         for key, val in zip(
             ("x", "y", "z"),
             line.split(RUN_CMD, 1)[1].split("-g", 1)[1].split("-")[0].strip().split(" "),
+            # 2-D grids have only two values; the zip truncates the keys to
+            # the dimensions present (the missing one becomes NaN downstream).
+            strict=False,
         )
     }
 
@@ -242,7 +245,7 @@ def simple_plot(cluster_results):
             if key not in series_markers:
                 series_markers[key] = MARKERS[len(series_markers) % len(MARKERS)]
     if len(series_markers) > len(MARKERS):
-        warnings.warn(f"more than {len(MARKERS)} (setup, grid) series; the markers repeat")
+        warnings.warn(f"more than {len(MARKERS)} (setup, grid) series; the markers repeat", stacklevel=2)
     figs = []
     for title, simple_results, fits in cluster_results:
         fig, axes = plt.subplots(1, 2, figsize=(6.5 * 2, 5.5))
@@ -317,7 +320,7 @@ def _plot_cluster(
                     row["cov"],
                 )
     # One curve per (grid, held delay): the x-axis is `x_delay`.
-    plot_keys = GROUP_KEYS + (secondary,)
+    plot_keys = (*GROUP_KEYS, secondary)
     results = simple_results.groupby(list(plot_keys), dropna=False)
     gaps = []
     delays = set()
@@ -344,9 +347,10 @@ def _plot_cluster(
         params = fits_by_key.get(_group_key(name[:4]))
         # A 1-D fit only applies when it was made on the plotted delay; the
         # 2-D fit applies to either direction.
-        if params is not None:
-            if (params[0] == "1d-malloc" and short != "malloc") or (params[0] == "1d-free" and short != "free"):
-                params = None
+        if params is not None and (
+            (params[0] == "1d-malloc" and short != "malloc") or (params[0] == "1d-free" and short != "free")
+        ):
+            params = None
         if params is not None:
             held_s = float(name[4]) * 1e-9
             # Draw the fitted model over the x-delay range this curve covers.
@@ -491,7 +495,7 @@ def _plot_cluster(
                 xy=(x0, y_mid),
                 xytext=(gc_frac, lfy),
                 textcoords="axes fraction",
-                arrowprops=dict(arrowstyle="->", color=color, linewidth=0.8, alpha=0.8),
+                arrowprops={"arrowstyle": "->", "color": color, "linewidth": 0.8, "alpha": 0.8},
                 zorder=4,
             )
             lab = ax.text(
@@ -503,7 +507,13 @@ def _plot_cluster(
                 va="center",
                 fontsize=8,
                 color=color,
-                bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor=color, alpha=0.95, linewidth=0.5),
+                bbox={
+                    "boxstyle": "round,pad=0.25",
+                    "facecolor": "white",
+                    "edgecolor": color,
+                    "alpha": 0.95,
+                    "linewidth": 0.5,
+                },
                 zorder=5,
             )
             placed.append([arrow, lab, lfy])
@@ -750,7 +760,9 @@ def fit_allocation_fraction(sleeptimes, runtimes, c_a: float | None = None) -> d
                     maxfev=20000,
                 )
             W, N, A, s0 = (float(v) for v in popt)
-            if gA < -1e-6 * max(abs(gW), 1e-9) and A <= 1e-6 * max(abs(W), 1e-9):
+            # ruff's SIM300 "fix" would move the constant expression to the
+            # left of the comparison, i.e. create a genuine Yoda condition.
+            if gA < -1e-6 * max(abs(gW), 1e-9) and A <= 1e-6 * max(abs(W), 1e-9):  # noqa: SIM300
                 notes.append(
                     "unconstrained fit wanted A<0 (smallest-sleeptime runtime below the Amdahl "
                     "line); A constrained to 0 so f is floored at 0"
@@ -997,7 +1009,7 @@ def fit_sweep(df: pd.DataFrame, c_a: float | None = None, configuration: str | N
     rows = []
     for key, grp in df.groupby(list(GROUP_KEYS), dropna=False):
         grp = grp.dropna(subset=["malloc_sleeptime", "free_sleeptime", "runtime in s"])
-        row = {**dict(zip(GROUP_KEYS, key)), "n_runs": len(grp), **no_fit}
+        row = {**dict(zip(GROUP_KEYS, key, strict=True)), "n_runs": len(grp), **no_fit}
         m, f = grp["malloc_sleeptime"], grp["free_sleeptime"]
         try:
             if m.nunique() >= 2 and f.nunique() >= 2:
@@ -1110,7 +1122,7 @@ def _print_fraction_summary(fits: pd.DataFrame):
 
 def main(clusters: dict | None = None):
     per_cluster = []
-    for name, (log_dir, title) in (clusters or CLUSTERS).items():
+    for _, (log_dir, title) in (clusters or CLUSTERS).items():
         log_paths = sorted(Path(log_dir).glob("run_*"))
         if not log_paths:
             continue

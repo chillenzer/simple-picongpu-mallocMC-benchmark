@@ -90,7 +90,7 @@ def parse_log(log):
         runtime = parse.findall("calculation  simulation time:{}= {seconds:f} sec", text)
         key = flags["first"][1] if flags["first"][0] == "g" else flags["second"][1]
         if len(key) == 2:
-            key = key + (np.nan,)
+            key = (*key, np.nan)
         try:
             results[key] = next(runtime)["seconds"]
         except StopIteration:
@@ -251,7 +251,7 @@ def plot_khi(timings):
     baselines = compute_baselines(timings)
     timings["relative runtime"] = (
         timings.reset_index(drop=False)
-        .set_index(baselines.index.names + ["algorithm", "run_id"], append=False, drop=True)
+        .set_index([*baselines.index.names, "algorithm", "run_id"], append=False, drop=True)
         .unstack(["algorithm", "run_id"])
         .div(baselines, axis=0)["runtime in seconds"]
         .stack(["algorithm", "run_id"])
