@@ -4,9 +4,11 @@ Reads the raw `run_all.sh` logs directly (no pre-filtering; both the old
 per-variant layout and the current one) and fits each (example, grid) sweep
 to the constrained Amdahl allocation model. It then plots the runtime
 against the imposed delay (median with IQR error bars) in one figure per
-cluster (see `CLUSTERS`), titled by the hardware the runs were made on,
-with the malloc sleep_time sweep (free sleep_time = 0) on the left and the
-free sleep_time sweep (malloc sleep_time = 0) on the right. Each swept
+cluster (see `CLUSTERS`), the figure titled by the hardware the runs were
+made on, with the malloc sleep_time sweep (free sleep_time = 0) on the
+left and the free sleep_time sweep (malloc sleep_time = 0) on the right,
+each axis titled after the swept delay ("malloc time scan", "free time
+scan"), the two axes sharing the y-axis. Each swept
 curve overlays the fitted model (solid), the extrapolation to
 A_malloc = A_free = 0 (dashed) and, for two-operation fits, the
 intermediate extrapolation that keeps only the held operation's native
@@ -97,10 +99,10 @@ LEGACY_MALLOC_DELAY_CMD = "MALLOCMC_SLEEP_TIME="
 # the `cd $WD` return in run_folder.sh) is ignored.
 VARIANT_CD_RE = re.compile(r"(?:^|/)build/(\w+)/(\w+)-sleep(\d+)$")
 BUILD_CD_RE = re.compile(r"(?:^|/)build/(\w+)$")
-# cluster name -> (run-log directory, hardware title for the plot)
+# cluster name -> (run-log directory, hardware name for the figure title)
 CLUSTERS = {
-    "hal": (Path("output") / "hal-sleeptimes", "HAL (NVIDIA A30)"),
-    "rosi": (Path("output") / "rosi-sleeptimes", "RoSI (NVIDIA V100)"),
+    "hal": (Path("output") / "hal-sleeptimes", "NVIDIA A30"),
+    "rosi": (Path("output") / "rosi-sleeptimes", "NVIDIA V100"),
 }
 # The statistics, plot and fit are computed only for runs with this
 # configuration: "run-time" (delays injected via MALLOCMC_MALLOC_DELAY /
@@ -253,11 +255,14 @@ def simple_plot(cluster_results: list[tuple[str, pd.DataFrame, pd.DataFrame | No
 
     `cluster_results` is a list of `(title, simple_results, fits)` entries,
     one per cluster; `title` is the hardware the runs were made on. Each
-    figure has two axes: the malloc sleep_time sweep (free sleep_time = 0)
-    on the left and the free sleep_time sweep (malloc sleep_time = 0) on
-    the right. Each (setup, grid) series gets a distinct marker,
-    consistently on all axes and figures; the legend is shown on each
-    figure's right-most axis that has a curve. Returns the list of figures.
+    figure is titled by the hardware and has two axes, titled "malloc time
+    scan" and "free time scan", sharing the y-axis (only the left axis shows
+    its tick labels and label): the malloc sleep_time sweep (free
+    sleep_time = 0) on the left and the free sleep_time sweep (malloc
+    sleep_time = 0) on the right. Each (setup, grid) series gets a distinct
+    marker, consistently on all axes and figures; the legend is shown on
+    each figure's left-most axis that has a curve. Returns the list of
+    figures.
     """
     # Assign each (setup, grid) series its marker once, in plot order, so the
     # same series is drawn with the same marker on every axis of every figure.
@@ -271,16 +276,19 @@ def simple_plot(cluster_results: list[tuple[str, pd.DataFrame, pd.DataFrame | No
         warnings.warn(f"more than {len(MARKERS)} (setup, grid) series; the markers repeat", stacklevel=2)
     figs = []
     for title, simple_results, fits in cluster_results:
-        fig, axes = plt.subplots(1, 2, figsize=(6.5 * 2, 5.5))
-        _plot_cluster(axes[0], simple_results, fits, title, series_markers, x_delay=MALLOC_DELAY)
-        _plot_cluster(axes[1], simple_results, fits, title, series_markers, x_delay=FREE_DELAY)
-        # Legend on the right-most axis that actually has a curve (one
+        fig, axes = plt.subplots(1, 2, figsize=(6.5 * 2, 5.5), sharey=True, layout="constrained")
+        fig.suptitle(title)
+        _plot_cluster(axes[0], simple_results, fits, series_markers, x_delay=MALLOC_DELAY)
+        _plot_cluster(axes[1], simple_results, fits, series_markers, x_delay=FREE_DELAY)
+        # The y-axis is shared: subplots already hides the right axis' tick
+        # labels, drop its label too.
+        axes[1].set_ylabel("")
+        # Legend on the left-most axis that actually has a curve (one
         # cluster's delay sweep may not have arrived yet).
-        for ax in reversed(axes):
+        for ax in axes:
             if ax.get_legend_handles_labels()[0]:
                 ax.legend()
                 break
-        fig.tight_layout()
         figs.append(fig)
     return figs
 
@@ -545,7 +553,6 @@ def _plot_cluster(
     ax: plt.Axes,
     simple_results: pd.DataFrame,
     fits: pd.DataFrame | None,
-    title: str,
     series_markers: dict,
     x_delay: str = MALLOC_DELAY,
 ) -> plt.Axes:
@@ -570,6 +577,11 @@ def _plot_cluster(
         if len(np.unique(x[x > 0])) < 2:
             continue
         delays.update(x[x > 0])
+        # The x-axis is logarithmic, so the zero-delay point is not
+        # representable there (it is invisible on the plot anyway); drop it
+        # so it cannot corrupt the autoscaled x limits.
+        pos = x > 0
+        x, ye_min, y, ye_max = x[pos], ye_min[pos], y[pos], ye_max[pos]
         eb = ax.errorbar(
             x,
             y,
@@ -593,11 +605,13 @@ def _plot_cluster(
                 x_s = x_ns * 1e-9
                 x0 = float(x_ns[0])
                 has_2d = _draw_fit_curves(ax, x_ns, x_s, x0, held_s, params, short, color, gaps) or has_2d
-    ax.set_title(title)
-    note = "solid: full fit, dashed: extrapolation to A = 0"
+    ax.set_title(f"{short} time scan")
+    lines = ["solid: full fit"]
     if has_2d:
-        note = f"solid: full fit, dashed: A_malloc = A_free = 0, dotted: A_{short} = 0"
-    ax.text(0.02, 0.98, note, transform=ax.transAxes, ha="left", va="top", fontsize=8, color="0.35")
+        lines += [f"dotted: A_{short} = 0", "dashed: A_malloc = A_free = 0"]
+    else:
+        lines.append("dashed: extrapolation to A = 0")
+    ax.text(0.98, 0.02, "\n".join(lines), transform=ax.transAxes, ha="right", va="bottom", fontsize=8, color="0.35")
     ax.set_xlabel(f"{short} sleep_time (ns)")
     ax.set_ylabel("runtime (s)")
     ax.set_xscale("log")
@@ -627,9 +641,9 @@ def _place_gap_labels(ax: plt.Axes, gaps: list[tuple[float, float, str, str]], d
         mid_frac = (np.log10(y_mid) - np.log10(lo)) / (np.log10(hi) - np.log10(lo))
         lfy = min(mid_frac + LABEL_MIN_SPACE, 0.96)
         # The leader line is its own artist (a bbox-anchored arrow breaks
-        # matplotlib's tight-layout path clipping). Its tail is anchored at
+        # matplotlib's layout path clipping). Its tail is anchored at
         # the label centre in axes fraction -- the same coordinates as the
-        # text -- so it tracks the box through tight_layout. The box,
+        # text -- so it tracks the box through the layout. The box,
         # drawn on top, hides the part of the line under it, so the visible
         # segment runs from the box edge to the gap.
         arrow = ax.annotate(
