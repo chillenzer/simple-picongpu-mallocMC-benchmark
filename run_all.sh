@@ -3,7 +3,7 @@
 PROFILE=$1
 FLAGSFOLDER=$(pwd -P)/$2
 
-EXAMPLES=("KelvinHelmholtz")
+EXAMPLES=("FoilLCT" "KelvinHelmholtz")
 # (malloc_delay, free_delay) combinations in nanoseconds, injected at run
 # time by mallocMC through the MALLOCMC_MALLOC_DELAY / MALLOCMC_FREE_DELAY
 # environment variables (run_folder.sh sets them), so one build per example
