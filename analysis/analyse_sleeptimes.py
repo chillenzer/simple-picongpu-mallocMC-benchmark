@@ -320,9 +320,11 @@ def _plot_cluster(
     has_2d = False
     for name, result in results:
         x, ye_min, y, ye_max = np.sort(result.reset_index(drop=False)[[x_delay, "25%", "50%", "75%"]].to_numpy().T)
-        # Only draw curves with a real sweep along the x-axis. Cross-sweep
-        # points sit at x = 0, which falls off the log axis, and would just
-        # clutter the legend.
+        # Only the pure sweep is shown: runs where the other (held) delay is
+        # 0. Runs with both delays > 0 belong to neither figure.
+        if float(name[4]) != 0:
+            continue
+        # A sweep needs at least two distinct x values above 0.
         if len(np.unique(x[x > 0])) < 2:
             continue
         delays.update(x[x > 0])
