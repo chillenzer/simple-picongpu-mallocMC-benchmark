@@ -20,13 +20,13 @@ ignore = [
     # not a fit for this codebase:
     "N",  # W, N, A, s0 are Amdahl-model parameter names
     "T20",  # print() is the output of these scripts
+    "CPY",  # copyright headers; a REUSE-compliance check is planned instead
+    "INP",  # analysis/ holds standalone CLI scripts, not an importable package
     # deferred (would need a dedicated pass or a policy decision):
     "ANN",  # type annotations (~150 findings)
     "D",  # docstring conventions (~40 findings)
     "C90",  # mccabe complexity (5 functions above the default limit)
     "PL",  # pylint (mostly magic-value and complexity noise here)
-    "CPY",  # copyright headers (needs a license policy)
-    "INP",  # analysis/ is standalone scripts, not a package
     # no findings so far; not applicable to these scripts:
     "ASYNC",
     "DJ",
