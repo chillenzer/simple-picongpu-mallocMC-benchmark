@@ -7,7 +7,11 @@ with one axis per cluster (see `CLUSTERS`) and titled by the hardware the
 runs were made on: one against the malloc delay (the free delay held at 0)
 and one, mirrored, against the free delay (the malloc delay held at 0). It
 also fits each (example, grid) sweep to the constrained Amdahl allocation
-model:
+model. Each swept curve overlays the fitted model (solid), the
+extrapolation to A_malloc = A_free = 0 (dashed) and, for two-operation
+fits, the intermediate extrapolation that keeps only the held operation's
+native cost (dotted); the gaps at the smallest delay are annotated with
+the native cost A and Amdahl fraction f of each operation:
 
 Model
 -----
@@ -313,6 +317,7 @@ def _plot_cluster(
     results = simple_results.groupby(list(plot_keys), dropna=False)
     gaps = []
     delays = set()
+    has_2d = False
     for name, result in results:
         x, ye_min, y, ye_max = np.sort(result.reset_index(drop=False)[[x_delay, "25%", "50%", "75%"]].to_numpy().T)
         # Only draw curves with a real sweep along the x-axis. Cross-sweep
@@ -343,37 +348,62 @@ def _plot_cluster(
             if len(x_data) > 1 and float(x_data[-1]) > float(x_data[0]):
                 x_ns = np.geomspace(float(x_data[0]), float(x_data[-1]), 100)
                 x_s = x_ns * 1e-9
+                x0 = float(x_ns[0])
                 if params[0] == "2d":
+                    has_2d = True
                     _, W, Nm, Nf, Am, Af, m0, f0 = params
                     if short == "malloc":
                         curve = _model_2d(x_s, np.full_like(x_s, held_s), W, Nm, Nf, Am, Af, m0, f0)
                         linear = W + Nm * x_s + Nf * held_s
+                        dotted = linear + Af * f0 / (held_s + f0)
+                        a_up, a_dn = Am, Af
                     else:
                         curve = _model_2d(np.full_like(x_s, held_s), x_s, W, Nm, Nf, Am, Af, m0, f0)
-                        linear = W + Nm * held_s + Nf * x_s
-                    a_val = Am + Af
+                        linear = W + Nf * x_s + Nm * held_s
+                        dotted = linear + Am * m0 / (held_s + m0)
+                        a_up, a_dn = Af, Am
+                    # The solid/dashed gap splits at the dotted line (one
+                    # Amdahl term set to 0): the upper part is the native cost
+                    # of the plotted operation, the lower part the one of the
+                    # held operation.
+                    t0 = W + Am + Af
+                    held_name = "free" if short == "malloc" else "malloc"
+                    if float(curve[0]) - float(dotted[0]) > 1e-9:
+                        y_lo, y_hi = float(dotted[0]), float(curve[0])
+                        ax.plot((x0, x0), (y_lo, y_hi), color=color, linewidth=1, alpha=0.8)
+                        f_val = a_up / t0 if t0 > 1e-12 else 0.0
+                        gaps.append(
+                            (np.sqrt(y_lo * y_hi), x0, color, f"A_{short} = {a_up:.2f} s, f = {100 * f_val:.1f}%")
+                        )
+                    if float(dotted[0]) - float(linear[0]) > 1e-9:
+                        y_lo, y_hi = float(linear[0]), float(dotted[0])
+                        ax.plot((x0, x0), (y_lo, y_hi), color=color, linewidth=1, alpha=0.8)
+                        f_val = a_dn / t0 if t0 > 1e-12 else 0.0
+                        gaps.append(
+                            (np.sqrt(y_lo * y_hi), x0, color, f"A_{held_name} = {a_dn:.2f} s, f = {100 * f_val:.1f}%")
+                        )
+                    # The model takes second-based delays; the axis is in ns.
+                    ax.plot(x_ns, dotted, color=color, linestyle=":", alpha=0.8)
                 else:
                     _, W, N, A, s0 = params
                     curve = _model(x_s, W, N, A, s0)
                     linear = W + N * x_s
-                    a_val = A
+                    if float(curve[0]) > float(linear[0]):
+                        y_lo, y_hi = float(linear[0]), float(curve[0])
+                        ax.plot((x0, x0), (y_lo, y_hi), color=color, linewidth=1, alpha=0.8)
+                        f_val = A / (W + A) if W + A > 1e-12 else 0.0
+                        gaps.append((np.sqrt(y_lo * y_hi), x0, color, f"A_{short} = {A:.2f} s, f = {100 * f_val:.1f}%"))
                 # The model takes second-based delays; the axis is in ns.
                 ax.plot(x_ns, curve, color=color, linestyle="-", alpha=0.8)
                 ax.plot(x_ns, linear, color=color, linestyle="--", alpha=0.8)
-                # The solid/dashed gap is the native cost A that the dashed line
-                # (the extrapolation to A = 0) drops; mark it at the smallest
-                # x-delay, in the series color.
-                if float(curve[0]) > float(linear[0]):
-                    x0 = float(x_ns[0])
-                    y_lo, y_hi = float(linear[0]), float(curve[0])
-                    ax.plot((x0, x0), (y_lo, y_hi), color=color, linewidth=1, alpha=0.8)
-                    f_val = a_val / (W + a_val) if W + a_val > 1e-12 else 0.0
-                    gaps.append((0.5 * (y_lo + y_hi), x0, color, f"A = {a_val:.2f} s, f = {100 * f_val:.1f}%"))
     ax.set_title(title)
+    note = "solid: full fit, dashed: extrapolation to A = 0"
+    if has_2d:
+        note = f"solid: full fit, dashed: A_malloc = A_free = 0, dotted: A_{short} = 0"
     ax.text(
         0.02,
         0.98,
-        "solid: full fit, dashed: extrapolation to A = 0",
+        note,
         transform=ax.transAxes,
         ha="left",
         va="top",
@@ -385,7 +415,7 @@ def _plot_cluster(
     ax.set_xscale("log")
     ax.set_yscale("log")
     # Each A/f label sits in the clear band between the first and second
-    # delays; a thin leader line joins it to its solid/dashed gap.
+    # delays; a thin leader line joins it to its gap marker.
     delay_xs = sorted(delays)
     if gaps and len(delay_xs) >= 2:
         ax.autoscale_view()
@@ -393,6 +423,7 @@ def _plot_cluster(
         x_lo, x_hi = ax.get_xlim()
         gc = float(10 ** (0.5 * (np.log10(delay_xs[0]) + np.log10(delay_xs[1]))))
         gc_frac = (np.log10(gc) - np.log10(x_lo)) / (np.log10(x_hi) - np.log10(x_lo))
+        placed = []
         for y_mid, x0, color, text in gaps:
             mid_frac = (np.log10(y_mid) - np.log10(lo)) / (np.log10(hi) - np.log10(lo))
             lfy = min(mid_frac + 0.02, 0.96)
@@ -402,7 +433,7 @@ def _plot_cluster(
             # text -- so it tracks the box through tight_layout. The box,
             # drawn on top, hides the part of the line under it, so the visible
             # segment runs from the box edge to the gap.
-            ax.annotate(
+            arrow = ax.annotate(
                 "",
                 xy=(x0, y_mid),
                 xytext=(gc_frac, lfy),
@@ -410,7 +441,7 @@ def _plot_cluster(
                 arrowprops=dict(arrowstyle="->", color=color, linewidth=0.8, alpha=0.8),
                 zorder=4,
             )
-            ax.text(
+            lab = ax.text(
                 gc_frac,
                 lfy,
                 text,
@@ -422,6 +453,46 @@ def _plot_cluster(
                 bbox=dict(boxstyle="round,pad=0.25", facecolor="white", edgecolor=color, alpha=0.95, linewidth=0.5),
                 zorder=5,
             )
+            placed.append([arrow, lab, lfy])
+        if len(placed) > 1:
+            # A 2-D group contributes two labels (one per operation); separate
+            # any that touch or overlap, vertically, in axes fraction. The
+            # arrows follow their box centres.
+            inv = ax.transAxes.inverted()
+            for _ in range(64):
+                ax.figure.canvas.draw()
+                boxes = []
+                for _, lab, _lfy in placed:
+                    c = inv.transform(lab.get_window_extent(ax.figure.canvas.get_renderer()).corners())
+                    boxes.append((c[:, 0].min(), c[:, 0].max(), c[:, 1].min(), c[:, 1].max()))
+                moved = False
+                for i in range(len(placed)):
+                    for j in range(i + 1, len(placed)):
+                        xi0, xi1, yi0, yi1 = boxes[i]
+                        xj0, xj1, yj0, yj1 = boxes[j]
+                        if min(xi1, xj1) - max(xi0, xj0) <= 0:
+                            continue
+                        y_overlap = min(yi1, yj1) - max(yi0, yj0)
+                        if y_overlap > -0.005:
+                            shift = 0.5 * (y_overlap + 0.02)
+                            if 0.5 * (yi0 + yi1) >= 0.5 * (yj0 + yj1):
+                                placed[i], placed[j] = (
+                                    (placed[i][0], placed[i][1], min(max(placed[i][2] + shift, 0.0), 1.0)),
+                                    (placed[j][0], placed[j][1], min(max(placed[j][2] - shift, 0.0), 1.0)),
+                                )
+                            else:
+                                placed[i], placed[j] = (
+                                    (placed[i][0], placed[i][1], min(max(placed[i][2] - shift, 0.0), 1.0)),
+                                    (placed[j][0], placed[j][1], min(max(placed[j][2] + shift, 0.0), 1.0)),
+                                )
+                            placed[i][1].set_position((gc_frac, placed[i][2]))
+                            placed[j][1].set_position((gc_frac, placed[j][2]))
+                            moved = True
+                if not moved:
+                    break
+            for arrow, lab, lfy in placed:
+                arrow.xyann = (gc_frac, lfy)
+                lab.set_position((gc_frac, lfy))
     return ax
 
 
