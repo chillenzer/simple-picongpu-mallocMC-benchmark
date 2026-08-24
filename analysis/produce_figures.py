@@ -1,3 +1,11 @@
+"""Benchmark figures and runtime statistics from the run_all.sh cluster logs.
+
+Reads the per-run simulation times from the `output/<cluster>/` logs,
+writes `figures/foil.pdf` (FoilLCT) and `figures/khi.pdf`
+(KelvinHelmholtz), and prints the per-grid timing statistics together with
+the metadata of both figures.
+"""
+
 from pathlib import Path
 
 import matplotlib as mpl

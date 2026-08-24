@@ -1,4 +1,4 @@
-"""Parse pre-filtered run logs into a pandas DataFrame for seaborn.
+r"""Parse pre-filtered run logs into a pandas DataFrame for seaborn.
 
 Input is the output of, e.g.
 

@@ -72,6 +72,7 @@ only (W, N, s0) are fitted.
 
 from __future__ import annotations
 
+import math
 import re
 import warnings
 from collections.abc import Iterable
@@ -118,7 +119,7 @@ _INF = float("inf")
 
 def parse_setup(line: str):
     # Run context of a `cd` trace line, or None if the line is unrelated.
-    path = line.split()[-1]
+    path = line.rsplit(maxsplit=1)[-1]
     m = VARIANT_CD_RE.search(path)
     if m:
         # One build per (example, algorithm, sleeptime): the delay was
@@ -141,7 +142,7 @@ def parse_grid(line: str):
         key: int(val)
         for key, val in zip(
             ("x", "y", "z"),
-            line.split(RUN_CMD, 1)[1].split("-g", 1)[1].split("-")[0].strip().split(" "),
+            line.split(RUN_CMD, 1)[1].split("-g", 1)[1].split("-", maxsplit=1)[0].strip().split(" "),
             # 2-D grids have only two values; the zip truncates the keys to
             # the dimensions present (the missing one becomes NaN downstream).
             strict=False,
@@ -652,8 +653,10 @@ def _fit_lsq(h, s, t):
 
 
 def _grid_guess(s, t, lo, hi):
-    """Robust unconstrained solution: linear in (W, N, A) for each s0 on a
-    log grid. Returns (W, N, A, s0)."""
+    """Robust unconstrained solution: linear in (W, N, A) for each s0 on a log grid.
+
+    Returns (W, N, A, s0).
+    """
     hi_g = max(float(hi), lo * 1.5)
     best = None
     for s0 in np.logspace(np.log10(lo), np.log10(hi_g), 60):
@@ -665,8 +668,10 @@ def _grid_guess(s, t, lo, hi):
 
 
 def _uncertainties(p, pcov, f_of_p):
-    """Standard errors for the fitted parameters p and for f = f_of_p(p),
-    from the parameter covariance. NaNs if the covariance is unavailable."""
+    """Compute the standard errors for the fitted parameters p and for f = f_of_p(p).
+
+    Derived from the parameter covariance; NaNs if the covariance is unavailable.
+    """
     if pcov is None or not np.all(np.isfinite(np.asarray(pcov))):
         return [float("nan")] * (len(p) + 1)
     pcov = np.asarray(pcov, dtype=float)
@@ -712,7 +717,7 @@ def fit_allocation_fraction(sleeptimes, runtimes, c_a: float | None = None) -> d
         if note:
             notes.append(note)
         W, N, A = float(W), float(N), float(A)
-        s0 = float("nan") if s0 != s0 else float(s0)
+        s0 = float("nan") if math.isnan(s0) else float(s0)
         T0 = W + A
         f = A / T0 if T0 > 1e-12 else 0.0
         if fit_params is None:
@@ -722,7 +727,7 @@ def fit_allocation_fraction(sleeptimes, runtimes, c_a: float | None = None) -> d
         else:
             c = c_a * 1e-9
             W_e, N_e, s0_e, f_e = _uncertainties(fit_params, pcov, f_of_p)
-            A_e = float("nan") if N_e != N_e else N_e * c
+            A_e = float("nan") if math.isnan(N_e) else N_e * c
         return {
             "W": W,  # runtime without allocation cost (s)
             "N": N,  # allocation calls per run
@@ -846,9 +851,9 @@ def fit_allocation_fraction(sleeptimes, runtimes, c_a: float | None = None) -> d
 
 
 def fit_allocation_fraction_2d(m_delays, f_delays, runtimes) -> dict:
-    """Fit one (malloc, free) delay combination sweep to the constrained
-    two-operation Amdahl model
-        T(m, f) = W + N_m*m + N_f*f + A_m*m0/(m+m0) + A_f*f0/(f+f0).
+    """Fit one (malloc, free) delay combination sweep to the constrained two-operation Amdahl model.
+
+    The model is T(m, f) = W + N_m*m + N_f*f + A_m*m0/(m+m0) + A_f*f0/(f+f0).
 
     Returns a dict with W, N_m, N_f, A_m, A_f, m0, f0, T0, f_malloc, f_free,
     r2 plus their standard errors (NaN when unavailable), warnings, and the
@@ -896,8 +901,8 @@ def fit_allocation_fraction_2d(m_delays, f_delays, runtimes) -> dict:
             "N_f": float(N_f),  # free calls per run
             "A_m": float(A_m),  # native allocation time (s)
             "A_f": float(A_f),  # native free time (s)
-            "m0": float("nan") if m0 != m0 else float(m0),  # malloc fade scale (s)
-            "f0": float("nan") if f0 != f0 else float(f0),  # free fade scale (s)
+            "m0": float("nan") if math.isnan(m0) else float(m0),  # malloc fade scale (s)
+            "f0": float("nan") if math.isnan(f0) else float(f0),  # free fade scale (s)
             "T0": T0,  # total runtime at zero delay (s)
             "f_malloc": f_malloc,  # Amdahl fraction of runtime spent in allocations
             "f_free": f_free,  # Amdahl fraction of runtime spent in frees
@@ -1002,7 +1007,7 @@ def fit_allocation_fraction_2d(m_delays, f_delays, runtimes) -> dict:
 
 def _to_ns(value: float):
     value = float(value)
-    return float("nan") if value != value else value * 1e9
+    return float("nan") if math.isnan(value) else value * 1e9
 
 
 def _fit_cov(res):
@@ -1042,8 +1047,8 @@ def fit_sweep(df: pd.DataFrame, c_a: float | None = None, configuration: str | N
         "cov": None,
     }
     rows = []
-    for key, grp in df.groupby(list(GROUP_KEYS), dropna=False):
-        grp = grp.dropna(subset=["malloc_sleeptime", "free_sleeptime", "runtime in s"])
+    for key, frame in df.groupby(list(GROUP_KEYS), dropna=False):
+        grp = frame.dropna(subset=["malloc_sleeptime", "free_sleeptime", "runtime in s"])
         row = {**dict(zip(GROUP_KEYS, key, strict=True)), "n_runs": len(grp), **no_fit}
         m, f = grp["malloc_sleeptime"], grp["free_sleeptime"]
         try:
