@@ -25,16 +25,21 @@ ignore = [
     # self-documenting counts (len < 2, size < 3, ndim == 2) dominate this
     # rule's findings; the meaningful tolerances are named constants:
     "PLR2004",
-    # no findings so far; not applicable to these scripts:
+    # pandas-vet reshape preferences (.melt over .stack, .pivot_table over
+    # .unstack): the MultiIndex reshaping needs stack/unstack semantics,
+    # which melt/pivot_table do not cover:
+    "PD",
+    # stdlib imports used only for types: these are CLI scripts, so the
+    # runtime import cost a TYPE_CHECKING block would save is negligible:
+    "TC",
+    # no findings; not applicable to these scripts:
     "ASYNC",
     "DJ",
     "DOC",
     "FAST",
     "FURB",
-    "PD",
     "SLF",
     "SLOT",
-    "TC",
 ]
 
 # The fit/parsing routines (complexity 11-19, up to 74 statements) are
