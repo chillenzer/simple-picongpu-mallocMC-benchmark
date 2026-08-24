@@ -4,10 +4,14 @@ target-version = "py314"
 
 [tool.ruff.lint]
 # Ruff's default selection (E4, E7, E9, F) plus import sorting (I) and the
-# bugbear / pyupgrade / flake8-{alias,comprehensions,simplify,ruff}
-# families. E1/E2 indentation rules are left to `ruff format`; E501 is
-# enforced here as a hard line limit.
-select = ["E4", "E501", "E7", "E9", "F", "I", "W", "B", "UP", "A", "C4", "SIM", "RUF"]
+# bugbear, pyupgrade, flake8-{alias,blind-except,boolean-trap,bandit,
+# comprehensions,datetimez,errmsg,eradicate,future-annotations,pie,
+# return,simplify,ruff} families. E1/E2 indentation rules are left to
+# `ruff format`; E501 is enforced here as a hard line limit.
+select = [
+    "A", "B", "BLE", "C4", "DTZ", "E4", "E501", "E7", "E9", "EM", "ERA", "F", "FA",
+    "FBT", "I", "PIE", "RET", "RUF", "S", "SIM", "UP", "W", "YTT",
+]
 # B023 (loop variable captured by a function): the plotting loops define
 # closures that are called within the same iteration, before the captured
 # variables are rebound, so late binding cannot bite.
