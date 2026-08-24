@@ -49,6 +49,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 import pandas as pd
@@ -93,7 +94,7 @@ COLUMNS = [
 ]
 
 
-def parse_results(source) -> pd.DataFrame:
+def parse_results(source: str | Path | Iterable[str]) -> pd.DataFrame:
     """Parse the pre-filtered run log `source` (path or line iterable).
 
     Returns a DataFrame with one row per picongpu run; see the module docstring
@@ -219,7 +220,7 @@ def parse_results(source) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=COLUMNS)
 
 
-def main(argv=None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Parse pre-filtered run logs into a DataFrame")
     parser.add_argument("results", help="pre-filtered log (output of the grep)")
     parser.add_argument("--csv", metavar="OUT", help="also write the DataFrame to a CSV file")

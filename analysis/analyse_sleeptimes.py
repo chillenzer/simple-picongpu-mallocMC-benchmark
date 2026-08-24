@@ -75,7 +75,7 @@ from __future__ import annotations
 import math
 import re
 import warnings
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from pathlib import Path
 from typing import NamedTuple
 
@@ -127,7 +127,7 @@ LABEL_OVERLAP_EPS = 0.005
 LABEL_MIN_SPACE = 0.02
 
 
-def parse_setup(line: str):
+def parse_setup(line: str) -> dict | None:
     # Run context of a `cd` trace line, or None if the line is unrelated.
     path = line.rsplit(maxsplit=1)[-1]
     m = VARIANT_CD_RE.search(path)
@@ -147,7 +147,7 @@ def parse_setup(line: str):
     return None
 
 
-def parse_grid(line: str):
+def parse_grid(line: str) -> dict[str, int]:
     return {
         key: int(val)
         for key, val in zip(
@@ -160,11 +160,11 @@ def parse_grid(line: str):
     }
 
 
-def parse_simulation_time(line: str):
+def parse_simulation_time(line: str) -> dict[str, float]:
     return {"runtime in s": float(line.split("=")[1][: -len("sec")])}
 
 
-def parse_log(log_path: Path):
+def parse_log(log_path: Path) -> Iterator[dict]:
     with log_path.open("r") as file:
         context = {}
         pending = None
@@ -204,20 +204,20 @@ def parse_log(log_path: Path):
                 pending = None
 
 
-def run_to_df(run: dict):
+def run_to_df(run: dict) -> pd.DataFrame:
     return pd.DataFrame(run["runs"]).assign(name=run["name"])
 
 
-def runs_to_df(runs: Iterable[dict]):
+def runs_to_df(runs: Iterable[dict]) -> pd.DataFrame:
     tmp = pd.concat(map(run_to_df, runs))
     return tmp.assign(z=tmp.get("z", np.nan))
 
 
-def parse_logs(log_paths: Iterable[Path]):
+def parse_logs(log_paths: Iterable[Path]) -> pd.DataFrame:
     return runs_to_df({"name": p, "runs": parse_log(p)} for p in log_paths)
 
 
-def simple_statistics(full_results: pd.DataFrame):
+def simple_statistics(full_results: pd.DataFrame) -> pd.DataFrame:
     # Group by the frame's column order (not a set): a set's iteration order
     # is hash-randomized per process, which would shuffle the printed index.
     group_cols = [c for c in full_results.columns if c not in {"runtime in s", "name"}]
@@ -226,7 +226,7 @@ def simple_statistics(full_results: pd.DataFrame):
     )
 
 
-def label(info, secondary: str = "free"):
+def label(info: tuple, secondary: str = "free") -> str:
     # Plot group key (setup, x, y, z, <secondary delay>); the suffix names the
     # held (secondary) delay when it is non-zero.
     grid_string = "x".join(map(str, map(int, np.asarray(info[1:4])[~np.isnan(info[1:4])])))
@@ -234,13 +234,13 @@ def label(info, secondary: str = "free"):
     return f"{info[0]} {grid_string}{suffix}"
 
 
-def _group_key(name):
+def _group_key(name: tuple) -> tuple:
     # NaN group values (missing z in 2D runs) do not compare equal, so
     # canonicalize them; the key is only used for dictionary lookups.
     return tuple(None if isinstance(k, float) and np.isnan(k) else k for k in name)
 
 
-def simple_plot(cluster_results):
+def simple_plot(cluster_results: list[tuple[str, pd.DataFrame, pd.DataFrame | None]]) -> list[plt.Figure]:
     """One figure per cluster, the two sweeps next to each other.
 
     `cluster_results` is a list of `(title, simple_results, fits)` entries,
@@ -309,7 +309,10 @@ class Fit2d(NamedTuple):
     cov: tuple | None
 
 
-def _collect_fits(fits):
+_ModelFn = Callable[[np.ndarray], np.ndarray]
+
+
+def _collect_fits(fits: pd.DataFrame | None) -> dict[tuple, Fit1d | Fit2d]:
     """Collect the usable fits, keyed by (setup, grid) group key.
 
     Rows without a complete fit (missing or NaN parameters) are
@@ -362,7 +365,18 @@ def _collect_fits(fits):
     return fits_by_key
 
 
-def _draw_fit_2d(ax, x_ns, x_s, x0, held_s, params, short, color, gaps, sleeve):
+def _draw_fit_2d(
+    ax: plt.Axes,
+    x_ns: np.ndarray,
+    x_s: np.ndarray,
+    x0: float,
+    held_s: float,
+    params: Fit2d,
+    short: str,
+    color: str,
+    gaps: list[tuple[float, float, str, str]],
+    sleeve: Callable[[_ModelFn, tuple], None],
+) -> None:
     """Draw the 2-D fit of one curve and its two A/f gap markers.
 
     The solid line is the full model, the dashed line the linear
@@ -390,13 +404,13 @@ def _draw_fit_2d(ax, x_ns, x_s, x0, held_s, params, short, color, gaps, sleeve):
         dotted = linear + params.a_free * params.f0 / (held_s + params.f0)
         a_up, a_dn = params.a_malloc, params.a_free
 
-        def fn_curve(p):
+        def fn_curve(p: np.ndarray) -> np.ndarray:
             return _model_2d(x_s, held_arr, *p)
 
-        def fn_dash(p):
+        def fn_dash(p: np.ndarray) -> np.ndarray:
             return p[0] + p[1] * x_s + p[2] * held_s
 
-        def fn_dot(p):
+        def fn_dot(p: np.ndarray) -> np.ndarray:
             return p[0] + p[1] * x_s + p[2] * held_s + p[4] * p[6] / (held_s + p[6])
     else:
         curve = _model_2d(
@@ -414,13 +428,13 @@ def _draw_fit_2d(ax, x_ns, x_s, x0, held_s, params, short, color, gaps, sleeve):
         dotted = linear + params.a_malloc * params.m0 / (held_s + params.m0)
         a_up, a_dn = params.a_free, params.a_malloc
 
-        def fn_curve(p):
+        def fn_curve(p: np.ndarray) -> np.ndarray:
             return _model_2d(held_arr, x_s, *p)
 
-        def fn_dash(p):
+        def fn_dash(p: np.ndarray) -> np.ndarray:
             return p[0] + p[2] * x_s + p[1] * held_s
 
-        def fn_dot(p):
+        def fn_dot(p: np.ndarray) -> np.ndarray:
             return p[0] + p[2] * x_s + p[1] * held_s + p[3] * p[5] / (held_s + p[5])
 
     t0 = params.W + params.a_malloc + params.a_free
@@ -444,7 +458,17 @@ def _draw_fit_2d(ax, x_ns, x_s, x0, held_s, params, short, color, gaps, sleeve):
     ax.plot(x_ns, linear, color=color, linestyle="--", alpha=0.8)
 
 
-def _draw_fit_1d(ax, x_ns, x_s, x0, params, short, color, gaps, sleeve):
+def _draw_fit_1d(
+    ax: plt.Axes,
+    x_ns: np.ndarray,
+    x_s: np.ndarray,
+    x0: float,
+    params: Fit1d,
+    short: str,
+    color: str,
+    gaps: list[tuple[float, float, str, str]],
+    sleeve: Callable[[_ModelFn, tuple], None],
+) -> None:
     """Draw the 1-D fit of one curve and its A/f gap marker.
 
     The solid line is the full model, the dashed line the linear
@@ -455,10 +479,10 @@ def _draw_fit_1d(ax, x_ns, x_s, x0, params, short, color, gaps, sleeve):
     curve = _model(x_s, params.W, params.N, params.A, params.s0)
     linear = params.W + params.N * x_s
 
-    def fn_curve(p):
+    def fn_curve(p: np.ndarray) -> np.ndarray:
         return _model(x_s, p[0], p[1], p[2], p[3])
 
-    def fn_dash(p):
+    def fn_dash(p: np.ndarray) -> np.ndarray:
         return p[0] + p[1] * x_s
 
     if float(curve[0]) > float(linear[0]):
@@ -473,14 +497,24 @@ def _draw_fit_1d(ax, x_ns, x_s, x0, params, short, color, gaps, sleeve):
     ax.plot(x_ns, linear, color=color, linestyle="--", alpha=0.8)
 
 
-def _draw_fit_curves(ax, x_ns, x_s, x0, held_s, params, short, color, gaps):
+def _draw_fit_curves(
+    ax: plt.Axes,
+    x_ns: np.ndarray,
+    x_s: np.ndarray,
+    x0: float,
+    held_s: float,
+    params: Fit1d | Fit2d,
+    short: str,
+    color: str,
+    gaps: list[tuple[float, float, str, str]],
+) -> bool:
     """Draw the fitted model lines of one curve and its A/f gap markers.
 
     Dispatches on the fit type; appends the gap markers to `gaps` and
     returns True when a 2-D fit was drawn.
     """
 
-    def sleeve(fn, lower):
+    def sleeve(fn: _ModelFn, lower: tuple) -> None:
         # Bootstrap sleeve of a fit line: draw the fitted
         # parameters from their covariance (the model is
         # non-linear in them) and fill the 25/75-percentile
@@ -500,13 +534,13 @@ def _draw_fit_curves(ax, x_ns, x_s, x0, held_s, params, short, color, gaps):
 
 
 def _plot_cluster(
-    ax,
+    ax: plt.Axes,
     simple_results: pd.DataFrame,
     fits: pd.DataFrame | None,
     title: str,
     series_markers: dict,
     x_delay: str = MALLOC_DELAY,
-):
+) -> plt.Axes:
     # The x-axis shows `x_delay`; the other delay is held per curve.
     secondary = FREE_DELAY if x_delay == MALLOC_DELAY else MALLOC_DELAY
     short = "malloc" if x_delay == MALLOC_DELAY else "free"
@@ -564,7 +598,7 @@ def _plot_cluster(
     return ax
 
 
-def _place_gap_labels(ax, gaps, delays):
+def _place_gap_labels(ax: plt.Axes, gaps: list[tuple[float, float, str, str]], delays: set[float]) -> None:
     """Place the A/f gap labels and their leader lines on the axis.
 
     Each label sits in the clear band between the first and second
@@ -658,20 +692,39 @@ def _place_gap_labels(ax, gaps, delays):
             lab.set_position((gc_frac, lfy))
 
 
-def _model(s, W, N, A, s0):
+def _model(s: np.ndarray, W: float, N: float, A: float, s0: float) -> np.ndarray:
     return W + N * s + A * s0 / (s + s0)
 
 
-def _model_2d(m, f, W, N_m, N_f, A_m, A_f, m0, f0):
+def _model_2d(
+    m: np.ndarray,
+    f: np.ndarray,
+    W: float,
+    N_m: float,
+    N_f: float,
+    A_m: float,
+    A_f: float,
+    m0: float,
+    f0: float,
+) -> np.ndarray:
     return W + N_m * m + N_f * f + A_m * m0 / (m + m0) + A_f * f0 / (f + f0)
 
 
-def _model_c_a(s, W, N, s0, c):
+def _model_c_a(s: np.ndarray, W: float, N: float, s0: float, c: float) -> np.ndarray:
     A = N * c
     return W + N * s + A * s0 / (s + s0)
 
 
-def _bootstrap_band(x_s, fn, params, pcov, n=512, percentiles=(25.0, 75.0), seed=0, lower=None):
+def _bootstrap_band(
+    x_s: np.ndarray,
+    fn: _ModelFn,
+    params: Sequence[float],
+    pcov: np.ndarray,
+    n: int = 512,
+    percentiles: tuple[float, float] = (25.0, 75.0),
+    seed: int = 0,
+    lower: Sequence[float] | None = None,
+) -> tuple[np.ndarray, np.ndarray] | None:
     """Percentile envelope of `fn(x_s, *p)` over p ~ N(params, pcov).
 
     The parameters enter the model non-linearly (the Amdahl terms), so the
@@ -712,14 +765,14 @@ def _bootstrap_band(x_s, fn, params, pcov, n=512, percentiles=(25.0, 75.0), seed
     return lo, hi
 
 
-def _fit_lsq(h, s, t):
+def _fit_lsq(h: np.ndarray, s: np.ndarray, t: np.ndarray) -> tuple[float, float, float, float]:
     """Least squares for t = W + N*s + A*h; returns (W, N, A, ss_res)."""
     sol, *_ = np.linalg.lstsq(np.vstack([np.ones_like(s), s, h]).T, t, rcond=None)
     res = t - (sol[0] + sol[1] * s + sol[2] * h)
     return (*[float(v) for v in sol], float(np.sum(res**2)))
 
 
-def _grid_guess(s, t, lo, hi):
+def _grid_guess(s: np.ndarray, t: np.ndarray, lo: float, hi: float) -> tuple[float, float, float, float]:
     """Robust unconstrained solution: linear in (W, N, A) for each s0 on a log grid.
 
     Returns (W, N, A, s0).
@@ -734,7 +787,7 @@ def _grid_guess(s, t, lo, hi):
     return W, N, A, float(s0)
 
 
-def _uncertainties(p, pcov, f_of_p):
+def _uncertainties(p: np.ndarray, pcov: np.ndarray | None, f_of_p: Callable[[np.ndarray], float]) -> list[float]:
     """Compute the standard errors for the fitted parameters p and for f = f_of_p(p).
 
     Derived from the parameter covariance; NaNs if the covariance is unavailable.
@@ -756,7 +809,7 @@ def _uncertainties(p, pcov, f_of_p):
     return errs
 
 
-def fit_allocation_fraction(sleeptimes, runtimes, c_a: float | None = None) -> dict:
+def fit_allocation_fraction(sleeptimes: pd.Series, runtimes: pd.Series, c_a: float | None = None) -> dict:
     """Fit one sleeptime sweep to the constrained Amdahl model.
 
     Returns a dict with W, N, A, s0, T0, f, r2 plus their standard errors
@@ -776,7 +829,16 @@ def fit_allocation_fraction(sleeptimes, runtimes, c_a: float | None = None) -> d
     ss_tot = float(np.sum((t - t.mean()) ** 2))
     notes = []
 
-    def finish(W, N, A, s0, pcov, fit_params, f_of_p, note=None):
+    def finish(
+        W: float,
+        N: float,
+        A: float,
+        s0: float,
+        pcov: np.ndarray | None,
+        fit_params: list[float] | None,
+        f_of_p: Callable[[np.ndarray], float],
+        note: str | None = None,
+    ) -> dict:
         pred = _model(s, W, N, A, s0)
         r2 = 1.0 - float(np.sum((t - pred) ** 2)) / ss_tot if ss_tot > 0 else float("nan")
         if N <= 0:
@@ -816,7 +878,7 @@ def fit_allocation_fraction(sleeptimes, runtimes, c_a: float | None = None) -> d
             "pcov": pcov,  # parameter covariance matrix (or None)
         }
 
-    def f_free(p):
+    def f_free(p: np.ndarray) -> float:
         return p[2] / (p[0] + p[2]) if p[0] + p[2] > EPS_S else 0.0
 
     s_min_pos = s[s > 0].min() if np.any(s > 0) else s.max()
@@ -880,7 +942,7 @@ def fit_allocation_fraction(sleeptimes, runtimes, c_a: float | None = None) -> d
             return finish(W, N, A, s0, pcov, list(popt), f_free)
         c = c_a * 1e-9
 
-        def f_ca(p):
+        def f_ca(p: np.ndarray) -> float:
             return p[1] * c / (p[0] + p[1] * c) if p[0] + p[1] * c > EPS_S else 0.0
 
         p0 = [max(gW, eps), max(gN, eps), float(np.clip(gs0, lo_b, hi_b))]
@@ -917,7 +979,7 @@ def fit_allocation_fraction(sleeptimes, runtimes, c_a: float | None = None) -> d
         )
 
 
-def fit_allocation_fraction_2d(m_delays, f_delays, runtimes) -> dict:
+def fit_allocation_fraction_2d(m_delays: pd.Series, f_delays: pd.Series, runtimes: pd.Series) -> dict:
     """Fit one (malloc, free) delay combination sweep to the constrained two-operation Amdahl model.
 
     The model is T(m, f) = W + N_m*m + N_f*f + A_m*m0/(m+m0) + A_f*f0/(f+f0).
@@ -938,7 +1000,18 @@ def fit_allocation_fraction_2d(m_delays, f_delays, runtimes) -> dict:
     ss_tot = float(np.sum((t - t.mean()) ** 2))
     notes = []
 
-    def finish(W, N_m, N_f, A_m, A_f, m0, f0, pcov, fit_params, note=None):
+    def finish(
+        W: float,
+        N_m: float,
+        N_f: float,
+        A_m: float,
+        A_f: float,
+        m0: float,
+        f0: float,
+        pcov: np.ndarray | None,
+        fit_params: list[float] | None,
+        note: str | None = None,
+    ) -> dict:
         pred = _model_2d(m, f, W, N_m, N_f, A_m, A_f, m0, f0)
         r2 = 1.0 - float(np.sum((t - pred) ** 2)) / ss_tot if ss_tot > 0 else float("nan")
         if N_m <= 0:
@@ -954,10 +1027,10 @@ def fit_allocation_fraction_2d(m_delays, f_delays, runtimes) -> dict:
             W_e = Nm_e = Nf_e = Am_e = Af_e = m0_e = f0_e = f_malloc_e = f_free_e = float("nan")
         else:
 
-            def f_of_m(p):
+            def f_of_m(p: np.ndarray) -> float:
                 return p[3] / (p[0] + p[3] + p[4]) if p[0] + p[3] + p[4] > EPS_S else 0.0
 
-            def f_of_f(p):
+            def f_of_f(p: np.ndarray) -> float:
                 return p[4] / (p[0] + p[3] + p[4]) if p[0] + p[3] + p[4] > EPS_S else 0.0
 
             W_e, Nm_e, Nf_e, Am_e, Af_e, m0_e, f0_e, f_malloc_e = _uncertainties(fit_params, pcov, f_of_m)
@@ -998,7 +1071,7 @@ def fit_allocation_fraction_2d(m_delays, f_delays, runtimes) -> dict:
     lo_f = max(0.05 * f_min_pos, EPS_S)
     hi_f = max(0.5 * (f.max() - f.min()), lo_f * 1.5)
 
-    def grid_guess():
+    def grid_guess() -> tuple[float, float, float, float, float, float, float]:
         # Robust unconstrained solution: linear in (W, N_m, N_f, A_m, A_f)
         # for each (m0, f0) on a log grid.
         best = None
@@ -1072,12 +1145,12 @@ def fit_allocation_fraction_2d(m_delays, f_delays, runtimes) -> dict:
         )
 
 
-def _to_ns(value: float):
+def _to_ns(value: float) -> float:
     value = float(value)
     return float("nan") if math.isnan(value) else value * 1e9
 
 
-def _fit_cov(res):
+def _fit_cov(res: dict) -> tuple | None:
     """(fit_params, pcov) for the bootstrap sleeves, or None if unavailable."""
     return (res["fit_params"], res["pcov"]) if res["fit_params"] is not None else None
 
@@ -1203,7 +1276,7 @@ def fit_sweep(df: pd.DataFrame, c_a: float | None = None, configuration: str | N
     return pd.DataFrame(rows).sort_values(list(GROUP_KEYS), na_position="last")
 
 
-def _print_fraction_summary(fits: pd.DataFrame):
+def _print_fraction_summary(fits: pd.DataFrame) -> None:
     ok = fits[fits["f_malloc"].between(0, 1, inclusive="neither") | fits["f_free"].between(0, 1, inclusive="neither")]
     if len(ok):
         print("\nAmdahl fraction of runtime spent in the operation (f = A/T0):")
@@ -1227,7 +1300,7 @@ def _print_fraction_summary(fits: pd.DataFrame):
                 print(f"      note: {r.note}")
 
 
-def main(clusters: dict | None = None):
+def main(clusters: dict | None = None) -> None:
     per_cluster = []
     for log_dir, title in (clusters or CLUSTERS).values():
         log_paths = sorted(Path(log_dir).glob("run_*"))

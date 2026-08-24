@@ -23,7 +23,6 @@ ignore = [
     "CPY",  # copyright headers; a REUSE-compliance check is planned instead
     "INP",  # analysis/ holds standalone CLI scripts, not an importable package
     # deferred (would need a dedicated pass or a policy decision):
-    "ANN",  # type annotations (~150 findings)
     "D",  # docstring conventions (~40 findings)
     # self-documenting counts (len < 2, size < 3, ndim == 2) dominate this
     # rule's findings; the meaningful tolerances are named constants:

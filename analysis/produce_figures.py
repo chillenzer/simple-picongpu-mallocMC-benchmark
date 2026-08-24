@@ -6,6 +6,7 @@ writes `figures/foil.pdf` (FoilLCT) and `figures/khi.pdf`
 the metadata of both figures.
 """
 
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 import matplotlib as mpl
@@ -21,11 +22,11 @@ import seaborn as sns
 from scipy.stats import kruskal
 
 
-def fresh_markers():
+def fresh_markers() -> Iterator[str]:
     return cycle(("o", "s", "v", "p", "^", "8", ">", "<"))
 
 
-def fresh_colours():
+def fresh_colours() -> Iterator[str]:
     return cycle(
         [
             "#1f77b4",
@@ -58,7 +59,7 @@ MEM_LABEL = "estimated particle memory consumption in GB"
 YMIN, YMAX = 0.9, 1.1
 
 
-def generate_new_style():
+def generate_new_style() -> dict[str, str]:
     return {"marker": next(MARKER), "color": next(COLOR)}
 
 
@@ -73,7 +74,7 @@ MEMORY_PER_CELL = SIZE_OF_PARTICLE * TYPICAL_PARTICLES_PER_CELL * NUMBER_OF_SPEC
 REFERENCE_ALGORITHM = "ScatterAlloc"
 
 
-def parse_header(header):
+def parse_header(header: str) -> tuple[str, str] | None:
     parsed = parse.parse(
         "Running example: {example}\nUsing algorithm: {algorithm}",
         header.strip("=").strip(),
@@ -83,11 +84,11 @@ def parse_header(header):
     return parsed["example"], parsed["algorithm"]
 
 
-def parse_tuple(text):
+def parse_tuple(text: str) -> tuple[str, tuple[int, ...]]:
     return text.strip()[0], tuple(map(int, text.strip()[1:].strip().split(" ")))
 
 
-def parse_log(log):
+def parse_log(log: str) -> pd.Series | None:
     results = {}
     for text in log.split("+ bin/picongpu ")[1:]:
         flags = parse.parse(
@@ -110,7 +111,7 @@ def parse_log(log):
     return results
 
 
-def pairs(iterable):
+def pairs(iterable: Iterable[str]) -> Iterator[tuple[str, str]]:
     try:
         first = next(iterable)
     except TypeError:
@@ -129,7 +130,7 @@ def pairs(iterable):
             return StopIteration()
 
 
-def parse_full(file):
+def parse_full(file: Path) -> pd.DataFrame:
     with file.open("r") as f:
         text = f.read()
     return pd.DataFrame(
@@ -141,12 +142,12 @@ def parse_full(file):
     )
 
 
-def read_data(cluster):
+def read_data(cluster: Path) -> pd.DataFrame:
     files = list(cluster.glob("*"))
     return pd.concat([parse_full(file) for file in files], axis=1)
 
 
-def read_timings():
+def read_timings() -> pd.DataFrame:
     clusters = list(OUTPUT.glob("*"))
     timings = pd.concat(
         [read_data(cluster) for cluster in clusters],
@@ -170,11 +171,11 @@ def read_timings():
     )
 
 
-def memory(grid_sizes):
+def memory(grid_sizes: pd.DataFrame) -> np.ndarray:
     return np.ceil(np.prod(grid_sizes, axis=1) * MEMORY_PER_CELL / 1024**3).astype(int)
 
 
-def statistical_timings(timings):
+def statistical_timings(timings: pd.DataFrame) -> pd.DataFrame:
     return (
         timings.reset_index(drop=False)
         .set_index(
@@ -193,7 +194,7 @@ def statistical_timings(timings):
     )
 
 
-def compute_baselines(timings):
+def compute_baselines(timings: pd.DataFrame) -> pd.Series:
     return timings.groupby(["hardware", MEM_LABEL], axis=0).apply(
         lambda x: np.percentile(
             x.set_index("algorithm", append=False, drop=True)["runtime in seconds"]["ScatterAlloc"],
@@ -202,7 +203,7 @@ def compute_baselines(timings):
     )
 
 
-def print_results(results, name):
+def print_results(results: pd.DataFrame | pd.Series, name: str) -> None:
     print("+++++++++++++++++++++++++++++++++++")
     print(name)
     print("+++++++++++++++++++++++++++++++++++")
@@ -210,7 +211,7 @@ def print_results(results, name):
     print()
 
 
-def plot_foil(timings):
+def plot_foil(timings: pd.DataFrame) -> pd.Series:
     plt.figure()
     ax = sns.barplot(
         timings,
@@ -232,7 +233,7 @@ def plot_foil(timings):
     ).droplevel(MEM_LABEL)
 
 
-def outlier_mask(timings, safety_factor=1.5):
+def outlier_mask(timings: pd.Series, safety_factor: float = 1.5) -> pd.Series:
     # according to Tukey's criterion
     perc_25, perc_75 = timings.describe()[["25%", "75%"]]
     interval = (
@@ -242,7 +243,7 @@ def outlier_mask(timings, safety_factor=1.5):
     return (timings < interval[0]) + (timings > interval[1])
 
 
-def plot_khi(timings):
+def plot_khi(timings: pd.DataFrame) -> pd.DataFrame:
     plt.figure()
     timings = (
         timings.assign(**{MEM_LABEL: memory(timings[["grid_x", "grid_y", "grid_z"]])})
@@ -304,7 +305,7 @@ def plot_khi(timings):
     )
 
 
-def compute_significance(timings, name):
+def compute_significance(timings: pd.DataFrame, name: str) -> pd.Series:
     return (
         timings.set_index(["algorithm", "run_id"])
         .groupby(["hardware", MEM_LABEL])
@@ -319,7 +320,7 @@ def compute_significance(timings, name):
     )
 
 
-def main():
+def main() -> None:
     timings = read_timings()
 
     stats = statistical_timings(timings)
