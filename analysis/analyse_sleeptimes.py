@@ -1,17 +1,17 @@
 """Analyze PIConGPU/mallocMC allocation-latency benchmark logs.
 
 Reads the raw `run_all.sh` logs directly (no pre-filtering; both the old
-per-variant layout and the current one), plots the runtime against the
-imposed delay (median with IQR error bars) in two companion figures, each
-with one axis per cluster (see `CLUSTERS`) and titled by the hardware the
-runs were made on: one against the malloc delay (the free delay held at 0)
-and one, mirrored, against the free delay (the malloc delay held at 0). It
-also fits each (example, grid) sweep to the constrained Amdahl allocation
-model. Each swept curve overlays the fitted model (solid), the
-extrapolation to A_malloc = A_free = 0 (dashed) and, for two-operation
-fits, the intermediate extrapolation that keeps only the held operation's
-native cost (dotted); the gaps at the smallest delay are annotated with
-the native cost A and Amdahl fraction f of each operation:
+per-variant layout and the current one) and fits each (example, grid) sweep
+to the constrained Amdahl allocation model. It then plots the runtime
+against the imposed delay (median with IQR error bars) in one figure per
+cluster (see `CLUSTERS`), titled by the hardware the runs were made on,
+with the malloc sleep_time sweep (free sleep_time = 0) on the left and the
+free sleep_time sweep (malloc sleep_time = 0) on the right. Each swept
+curve overlays the fitted model (solid), the extrapolation to
+A_malloc = A_free = 0 (dashed) and, for two-operation fits, the
+intermediate extrapolation that keeps only the held operation's native
+cost (dotted); the gaps at the smallest delay are annotated with the
+native cost A and Amdahl fraction f of each operation:
 
 Model
 -----
@@ -219,24 +219,19 @@ def _group_key(name):
     return tuple(None if isinstance(k, float) and np.isnan(k) else k for k in name)
 
 
-def simple_plot(cluster_results, x_delay: str = MALLOC_DELAY):
-    """One axis per cluster, next to each other in a single figure.
+def simple_plot(cluster_results):
+    """One figure per cluster, the two sweeps next to each other.
 
     `cluster_results` is a list of `(title, simple_results, fits)` entries,
-    one per cluster; `title` is the hardware the runs were made on. `x_delay`
-    selects the delay plotted on the x-axis (the malloc delay by default, or
-    the free delay for the companion figure); the sweep of that delay, with
-    the other one held at 0, is drawn per (setup, grid). Each (setup, grid)
-    series gets a distinct marker, consistently on all axes; the legend is
-    shown on the right-most axis that has a curve.
+    one per cluster; `title` is the hardware the runs were made on. Each
+    figure has two axes: the malloc sleep_time sweep (free sleep_time = 0)
+    on the left and the free sleep_time sweep (malloc sleep_time = 0) on
+    the right. Each (setup, grid) series gets a distinct marker,
+    consistently on all axes and figures; the legend is shown on each
+    figure's right-most axis that has a curve. Returns the list of figures.
     """
-    if x_delay not in DELAY_COLUMNS:
-        raise ValueError(f"x_delay must be one of {DELAY_COLUMNS}, got {x_delay!r}")
-    fig, axes = plt.subplots(1, len(cluster_results), figsize=(6.5 * len(cluster_results), 5.5))
-    if len(cluster_results) == 1:
-        axes = [axes]
     # Assign each (setup, grid) series its marker once, in plot order, so the
-    # same series is drawn with the same marker on every axis.
+    # same series is drawn with the same marker on every axis of every figure.
     series_markers = {}
     for _, simple_results, _ in cluster_results:
         for name, _ in simple_results.groupby(list(GROUP_KEYS), dropna=False):
@@ -245,17 +240,20 @@ def simple_plot(cluster_results, x_delay: str = MALLOC_DELAY):
                 series_markers[key] = MARKERS[len(series_markers) % len(MARKERS)]
     if len(series_markers) > len(MARKERS):
         warnings.warn(f"more than {len(MARKERS)} (setup, grid) series; the markers repeat")
-    for ax, (title, simple_results, fits) in zip(axes, cluster_results):
-        _plot_cluster(ax, simple_results, fits, title, series_markers, x_delay=x_delay)
-    # Legend on the right-most axis that actually has a curve (a companion
-    # figure may have data on only one cluster while the others wait for
-    # their delay sweep).
-    for ax in reversed(axes):
-        if ax.get_legend_handles_labels()[0]:
-            ax.legend()
-            break
-    fig.tight_layout()
-    return fig
+    figs = []
+    for title, simple_results, fits in cluster_results:
+        fig, axes = plt.subplots(1, 2, figsize=(6.5 * 2, 5.5))
+        _plot_cluster(axes[0], simple_results, fits, title, series_markers, x_delay=MALLOC_DELAY)
+        _plot_cluster(axes[1], simple_results, fits, title, series_markers, x_delay=FREE_DELAY)
+        # Legend on the right-most axis that actually has a curve (one
+        # cluster's delay sweep may not have arrived yet).
+        for ax in reversed(axes):
+            if ax.get_legend_handles_labels()[0]:
+                ax.legend()
+                break
+        fig.tight_layout()
+        figs.append(fig)
+    return figs
 
 
 def _plot_cluster(
@@ -1012,10 +1010,9 @@ def main(clusters: dict | None = None):
         _print_fraction_summary(fits)
         per_cluster.append((title, simple_results, fits))
     if per_cluster:
-        # Two companion figures: the sweep over the malloc delay and, mirrored,
-        # the sweep over the free delay (the other held at 0 each).
+        # One figure per cluster: the malloc sweep (left) and the free sweep
+        # (right) next to each other.
         _ = simple_plot(per_cluster)
-        _ = simple_plot(per_cluster, x_delay=FREE_DELAY)
         plt.show()
 
 
