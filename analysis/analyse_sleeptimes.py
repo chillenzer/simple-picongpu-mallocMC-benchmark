@@ -561,16 +561,20 @@ def _bootstrap_band(x_s, fn, params, pcov, n=512, percentiles=(25.0, 75.0), seed
         return None
     # curve_fit's covariance is symmetric in exact arithmetic (an inverse of
     # the symmetric J^T J), but only to rounding error in floating point.
-    # Cholesky requires exact symmetry -- it reads a single triangle -- so
-    # symmetrize to make sampling triangle-independent and well-defined.
+    # Symmetrize so the eigendecomposition below is exact and well-defined.
     cov = 0.5 * (cov + cov.T)
-    try:
-        chol = np.linalg.cholesky(cov)
-    except np.linalg.LinAlgError:
-        # Near-singular: fall back to the independent marginals.
-        chol = np.diag(np.sqrt(np.clip(np.diag(cov), 0.0, None)))
+    # The parameters are nearly degenerate, so this covariance is
+    # near-singular (condition number ~1e13-1e18). A Cholesky factor of such
+    # a matrix is numerically unreliable in floating point (error ~
+    # cond * eps) and injects spurious variance -- it sampled W with ~200x
+    # its true width, inflating the sleeve ~172x. An eigendecomposition is
+    # stable for near-singular PSD matrices: the tiny negative eigenvalues
+    # are just rounding, clip them to zero, and sample along the
+    # eigenvectors.
+    eig, evec = np.linalg.eigh(cov)
+    eig = np.clip(eig, 0.0, None)
     rng = np.random.default_rng(seed)
-    samples = np.asarray(params, dtype=float) + rng.standard_normal((n, len(params))) @ chol
+    samples = np.asarray(params, dtype=float) + (rng.standard_normal((n, len(params))) * np.sqrt(eig)) @ evec.T
     if lower is not None:
         # The multivariate tails can cross the fit's bounds; clip them so the
         # A*s0/(x+s0)-type terms cannot blow up on the wrong side.
