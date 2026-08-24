@@ -276,7 +276,7 @@ def plot_khi(timings):
     plt.tight_layout()
     ax.savefig("figures/khi.pdf")
     flatter_vs_scatter = timings[(timings["algorithm"] == "FlatterScatter") + (timings["algorithm"] == "ScatterAlloc")]
-    metadata = pd.concat(
+    return pd.concat(
         [
             baselines,
             flatter_vs_scatter.groupby(["hardware", MEM_LABEL]).sum()["outlier"],
@@ -294,7 +294,6 @@ def plot_khi(timings):
         ],
         axis=1,
     )
-    return metadata
 
 
 def compute_significance(timings, name):

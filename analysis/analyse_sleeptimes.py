@@ -76,6 +76,7 @@ import re
 import warnings
 from collections.abc import Iterable
 from pathlib import Path
+from typing import NamedTuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -265,6 +266,38 @@ def simple_plot(cluster_results):
     return figs
 
 
+class Fit1d(NamedTuple):
+    """1-D Amdahl fit on a single delay; `direction` names that delay.
+
+    `cov` is the `(fit_params, pcov)` pair used for the bootstrap sleeves,
+    or None when the covariance is unavailable.
+    """
+
+    direction: str
+    W: float
+    N: float
+    A: float
+    s0: float
+    cov: tuple | None
+
+
+class Fit2d(NamedTuple):
+    """2-D Amdahl fit (both delays vary); the delays are in seconds.
+
+    `cov` is the `(fit_params, pcov)` pair used for the bootstrap sleeves,
+    or None when the covariance is unavailable.
+    """
+
+    W: float
+    n_malloc: float
+    n_free: float
+    a_malloc: float
+    a_free: float
+    m0: float
+    f0: float
+    cov: tuple | None
+
+
 def _plot_cluster(
     ax,
     simple_results: pd.DataFrame,
@@ -293,34 +326,33 @@ def _plot_cluster(
                     "f0_ns",
                 )
             ):
-                fits_by_key[key] = (
-                    "2d",
-                    float(row["W"]),
-                    float(row["N_malloc"]),
-                    float(row["N_free"]),
-                    float(row["A_malloc"]),
-                    float(row["A_free"]),
-                    float(row["m0_ns"]) * 1e-9,
-                    float(row["f0_ns"]) * 1e-9,
-                    row["cov"],
+                fits_by_key[key] = Fit2d(
+                    W=float(row["W"]),
+                    n_malloc=float(row["N_malloc"]),
+                    n_free=float(row["N_free"]),
+                    a_malloc=float(row["A_malloc"]),
+                    a_free=float(row["A_free"]),
+                    m0=float(row["m0_ns"]) * 1e-9,
+                    f0=float(row["f0_ns"]) * 1e-9,
+                    cov=row["cov"],
                 )
             elif row["model"] == "1d-malloc" and all(pd.notna(row[k]) for k in ("W", "N_malloc", "A_malloc", "m0_ns")):
-                fits_by_key[key] = (
-                    "1d-malloc",
-                    float(row["W"]),
-                    float(row["N_malloc"]),
-                    float(row["A_malloc"]),
-                    float(row["m0_ns"]) * 1e-9,
-                    row["cov"],
+                fits_by_key[key] = Fit1d(
+                    direction="malloc",
+                    W=float(row["W"]),
+                    N=float(row["N_malloc"]),
+                    A=float(row["A_malloc"]),
+                    s0=float(row["m0_ns"]) * 1e-9,
+                    cov=row["cov"],
                 )
             elif row["model"] == "1d-free" and all(pd.notna(row[k]) for k in ("W", "N_free", "A_free", "f0_ns")):
-                fits_by_key[key] = (
-                    "1d-free",
-                    float(row["W"]),
-                    float(row["N_free"]),
-                    float(row["A_free"]),
-                    float(row["f0_ns"]) * 1e-9,
-                    row["cov"],
+                fits_by_key[key] = Fit1d(
+                    direction="free",
+                    W=float(row["W"]),
+                    N=float(row["N_free"]),
+                    A=float(row["A_free"]),
+                    s0=float(row["f0_ns"]) * 1e-9,
+                    cov=row["cov"],
                 )
     # One curve per (grid, held delay): the x-axis is `x_delay`.
     plot_keys = (*GROUP_KEYS, secondary)
@@ -350,9 +382,7 @@ def _plot_cluster(
         params = fits_by_key.get(_group_key(name[:4]))
         # A 1-D fit only applies when it was made on the plotted delay; the
         # 2-D fit applies to either direction.
-        if params is not None and (
-            (params[0] == "1d-malloc" and short != "malloc") or (params[0] == "1d-free" and short != "free")
-        ):
+        if params is not None and isinstance(params, Fit1d) and params.direction != short:
             params = None
         if params is not None:
             held_s = float(name[4]) * 1e-9
@@ -376,16 +406,15 @@ def _plot_cluster(
                     if band is not None:
                         ax.fill_between(x_ns, band[0], band[1], color=color, alpha=0.3)
 
-                if params[0] == "2d":
+                if isinstance(params, Fit2d):
                     has_2d = True
-                    _, W, Nm, Nf, Am, Af, m0, f0, cov = params
-                    # (W, N_malloc, N_free, A_malloc, A_free, m0, f0)
+                    W, n_malloc, n_free, a_malloc, a_free, m0, f0, cov = params
                     lower = (0.0, 0.0, 0.0, 0.0, 0.0, 1e-12, 1e-12)
                     if short == "malloc":
-                        curve = _model_2d(x_s, held_arr, W, Nm, Nf, Am, Af, m0, f0)
-                        linear = W + Nm * x_s + Nf * held_s
-                        dotted = linear + Af * f0 / (held_s + f0)
-                        a_up, a_dn = Am, Af
+                        curve = _model_2d(x_s, held_arr, W, n_malloc, n_free, a_malloc, a_free, m0, f0)
+                        linear = W + n_malloc * x_s + n_free * held_s
+                        dotted = linear + a_free * f0 / (held_s + f0)
+                        a_up, a_dn = a_malloc, a_free
 
                         def fn_curve(p):
                             return _model_2d(x_s, held_arr, *p)
@@ -396,10 +425,10 @@ def _plot_cluster(
                         def fn_dot(p):
                             return p[0] + p[1] * x_s + p[2] * held_s + p[4] * p[6] / (held_s + p[6])
                     else:
-                        curve = _model_2d(held_arr, x_s, W, Nm, Nf, Am, Af, m0, f0)
-                        linear = W + Nf * x_s + Nm * held_s
-                        dotted = linear + Am * m0 / (held_s + m0)
-                        a_up, a_dn = Af, Am
+                        curve = _model_2d(held_arr, x_s, W, n_malloc, n_free, a_malloc, a_free, m0, f0)
+                        linear = W + n_free * x_s + n_malloc * held_s
+                        dotted = linear + a_malloc * m0 / (held_s + m0)
+                        a_up, a_dn = a_free, a_malloc
 
                         def fn_curve(p):
                             return _model_2d(held_arr, x_s, *p)
@@ -414,7 +443,7 @@ def _plot_cluster(
                     # Amdahl term set to 0): the upper part is the native cost
                     # of the plotted operation, the lower part the one of the
                     # held operation.
-                    t0 = W + Am + Af
+                    t0 = W + a_malloc + a_free
                     held_name = "free" if short == "malloc" else "malloc"
                     if float(curve[0]) - float(dotted[0]) > 1e-9:
                         y_lo, y_hi = float(dotted[0]), float(curve[0])
@@ -435,7 +464,6 @@ def _plot_cluster(
                     ax.plot(x_ns, dotted, color=color, linestyle=":", alpha=0.8)
                 else:
                     _, W, N, A, s0, cov = params
-                    # (W, N, A, s0)
                     lower = (0.0, 0.0, 0.0, 1e-12)
                     curve = _model(x_s, W, N, A, s0)
                     linear = W + N * x_s
@@ -666,9 +694,11 @@ def fit_allocation_fraction(sleeptimes, runtimes, c_a: float | None = None) -> d
     s = np.asarray(sleeptimes, dtype=float) * 1e-9  # ns -> s
     t = np.asarray(runtimes, dtype=float)
     if s.shape != t.shape:
-        raise ValueError("sleeptimes and runtimes must have the same shape")
+        msg = "sleeptimes and runtimes must have the same shape"
+        raise ValueError(msg)
     if s.size < 3:
-        raise ValueError("need at least 3 data points")
+        msg = "need at least 3 data points"
+        raise ValueError(msg)
     order = np.argsort(s)
     s, t = s[order], t[order]
     ss_tot = float(np.sum((t - t.mean()) ** 2))
@@ -828,9 +858,11 @@ def fit_allocation_fraction_2d(m_delays, f_delays, runtimes) -> dict:
     f = np.asarray(f_delays, dtype=float) * 1e-9
     t = np.asarray(runtimes, dtype=float)
     if m.shape != f.shape or m.shape != t.shape:
-        raise ValueError("delays and runtimes must all have the same shape")
+        msg = "delays and runtimes must all have the same shape"
+        raise ValueError(msg)
     if m.size < 3:
-        raise ValueError("need at least 3 data points")
+        msg = "need at least 3 data points"
+        raise ValueError(msg)
     ss_tot = float(np.sum((t - t.mean()) ** 2))
     notes = []
 
