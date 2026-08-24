@@ -11,7 +11,11 @@ curve overlays the fitted model (solid), the extrapolation to
 A_malloc = A_free = 0 (dashed) and, for two-operation fits, the
 intermediate extrapolation that keeps only the held operation's native
 cost (dotted); the gaps at the smallest delay are annotated with the
-native cost A and Amdahl fraction f of each operation:
+native cost A and Amdahl fraction f of each operation. Each fit line
+carries a transparent sleeve, the 25/75-percentile envelope of the model
+evaluated at 512 parameter draws from the fitted parameters and their
+covariance (a bootstrap, since the parameters enter the model
+non-linearly):
 
 Model
 -----
@@ -293,6 +297,7 @@ def _plot_cluster(
                     float(row["A_free"]),
                     float(row["m0_ns"]) * 1e-9,
                     float(row["f0_ns"]) * 1e-9,
+                    row["cov"],
                 )
             elif row["model"] == "1d-malloc" and all(pd.notna(row[k]) for k in ("W", "N_malloc", "A_malloc", "m0_ns")):
                 fits_by_key[key] = (
@@ -301,6 +306,7 @@ def _plot_cluster(
                     float(row["N_malloc"]),
                     float(row["A_malloc"]),
                     float(row["m0_ns"]) * 1e-9,
+                    row["cov"],
                 )
             elif row["model"] == "1d-free" and all(pd.notna(row[k]) for k in ("W", "N_free", "A_free", "f0_ns")):
                 fits_by_key[key] = (
@@ -309,6 +315,7 @@ def _plot_cluster(
                     float(row["N_free"]),
                     float(row["A_free"]),
                     float(row["f0_ns"]) * 1e-9,
+                    row["cov"],
                 )
     # One curve per (grid, held delay): the x-axis is `x_delay`.
     plot_keys = GROUP_KEYS + (secondary,)
@@ -349,19 +356,41 @@ def _plot_cluster(
                 x_ns = np.geomspace(float(x_data[0]), float(x_data[-1]), 100)
                 x_s = x_ns * 1e-9
                 x0 = float(x_ns[0])
+                held_arr = np.full_like(x_s, held_s)
+
+                def sleeve(fn, lower):
+                    # Bootstrap sleeve of a fit line: draw the fitted
+                    # parameters from their covariance (the model is
+                    # non-linear in them) and fill the 25/75-percentile
+                    # envelope of the model values, the IQR convention of
+                    # the data's error bars. No covariance -> no sleeve.
+                    if cov is None:
+                        return
+                    band = _bootstrap_band(x_s, fn, cov[0], cov[1], lower=lower)
+                    if band is not None:
+                        ax.fill_between(x_ns, band[0], band[1], color=color, alpha=0.3)
+
                 if params[0] == "2d":
                     has_2d = True
-                    _, W, Nm, Nf, Am, Af, m0, f0 = params
+                    _, W, Nm, Nf, Am, Af, m0, f0, cov = params
+                    # (W, N_malloc, N_free, A_malloc, A_free, m0, f0)
+                    lower = (0.0, 0.0, 0.0, 0.0, 0.0, 1e-12, 1e-12)
                     if short == "malloc":
-                        curve = _model_2d(x_s, np.full_like(x_s, held_s), W, Nm, Nf, Am, Af, m0, f0)
+                        curve = _model_2d(x_s, held_arr, W, Nm, Nf, Am, Af, m0, f0)
                         linear = W + Nm * x_s + Nf * held_s
                         dotted = linear + Af * f0 / (held_s + f0)
                         a_up, a_dn = Am, Af
+                        fn_curve = lambda p: _model_2d(x_s, held_arr, *p)
+                        fn_dash = lambda p: p[0] + p[1] * x_s + p[2] * held_s
+                        fn_dot = lambda p: p[0] + p[1] * x_s + p[2] * held_s + p[4] * p[6] / (held_s + p[6])
                     else:
-                        curve = _model_2d(np.full_like(x_s, held_s), x_s, W, Nm, Nf, Am, Af, m0, f0)
+                        curve = _model_2d(held_arr, x_s, W, Nm, Nf, Am, Af, m0, f0)
                         linear = W + Nf * x_s + Nm * held_s
                         dotted = linear + Am * m0 / (held_s + m0)
                         a_up, a_dn = Af, Am
+                        fn_curve = lambda p: _model_2d(held_arr, x_s, *p)
+                        fn_dash = lambda p: p[0] + p[2] * x_s + p[1] * held_s
+                        fn_dot = lambda p: p[0] + p[2] * x_s + p[1] * held_s + p[3] * p[5] / (held_s + p[5])
                     # The solid/dashed gap splits at the dotted line (one
                     # Amdahl term set to 0): the upper part is the native cost
                     # of the plotted operation, the lower part the one of the
@@ -383,18 +412,25 @@ def _plot_cluster(
                             (np.sqrt(y_lo * y_hi), x0, color, f"A_{held_name} = {a_dn:.2f} s, f = {100 * f_val:.1f}%")
                         )
                     # The model takes second-based delays; the axis is in ns.
+                    sleeve(fn_dot, lower)
                     ax.plot(x_ns, dotted, color=color, linestyle=":", alpha=0.8)
                 else:
-                    _, W, N, A, s0 = params
+                    _, W, N, A, s0, cov = params
+                    # (W, N, A, s0)
+                    lower = (0.0, 0.0, 0.0, 1e-12)
                     curve = _model(x_s, W, N, A, s0)
                     linear = W + N * x_s
+                    fn_curve = lambda p: _model(x_s, p[0], p[1], p[2], p[3])
+                    fn_dash = lambda p: p[0] + p[1] * x_s
                     if float(curve[0]) > float(linear[0]):
                         y_lo, y_hi = float(linear[0]), float(curve[0])
                         ax.plot((x0, x0), (y_lo, y_hi), color=color, linewidth=1, alpha=0.8)
                         f_val = A / (W + A) if W + A > 1e-12 else 0.0
                         gaps.append((np.sqrt(y_lo * y_hi), x0, color, f"A_{short} = {A:.2f} s, f = {100 * f_val:.1f}%"))
                 # The model takes second-based delays; the axis is in ns.
+                sleeve(fn_curve, lower)
                 ax.plot(x_ns, curve, color=color, linestyle="-", alpha=0.8)
+                sleeve(fn_dash, lower)
                 ax.plot(x_ns, linear, color=color, linestyle="--", alpha=0.8)
     ax.set_title(title)
     note = "solid: full fit, dashed: extrapolation to A = 0"
@@ -509,6 +545,43 @@ def _model_c_a(s, W, N, s0, c):
     return W + N * s + A * s0 / (s + s0)
 
 
+def _bootstrap_band(x_s, fn, params, pcov, n=512, percentiles=(25.0, 75.0), seed=0, lower=None):
+    """Percentile envelope of `fn(x_s, *p)` over p ~ N(params, pcov).
+
+    The parameters enter the model non-linearly (the Amdahl terms), so the
+    sleeve is a resampling bootstrap rather than an analytic error
+    propagation: draw `n` parameter vectors from the multivariate normal of
+    the fitted parameters and their covariance, evaluate the line's model
+    function `fn` on the x-grid `x_s` (in seconds) for each, and return the
+    pointwise (lo, hi) percentiles of the resulting model values. Returns
+    None when `pcov` is unavailable or non-finite (no sleeve).
+    """
+    cov = np.asarray(pcov, dtype=float)
+    if not np.all(np.isfinite(cov)):
+        return None
+    # curve_fit's covariance is symmetric in exact arithmetic (an inverse of
+    # the symmetric J^T J), but only to rounding error in floating point.
+    # Cholesky requires exact symmetry -- it reads a single triangle -- so
+    # symmetrize to make sampling triangle-independent and well-defined.
+    cov = 0.5 * (cov + cov.T)
+    try:
+        chol = np.linalg.cholesky(cov)
+    except np.linalg.LinAlgError:
+        # Near-singular: fall back to the independent marginals.
+        chol = np.diag(np.sqrt(np.clip(np.diag(cov), 0.0, None)))
+    rng = np.random.default_rng(seed)
+    samples = np.asarray(params, dtype=float) + rng.standard_normal((n, len(params))) @ chol
+    if lower is not None:
+        # The multivariate tails can cross the fit's bounds; clip them so the
+        # A*s0/(x+s0)-type terms cannot blow up on the wrong side.
+        samples = np.clip(samples, np.asarray(lower, dtype=float), None)
+    values = np.empty((n, x_s.size))
+    for i, p in enumerate(samples):
+        values[i] = np.asarray(fn(p), dtype=float)
+    lo, hi = np.percentile(values, percentiles, axis=0)
+    return lo, hi
+
+
 def _fit_lsq(h, s, t):
     """Least squares for t = W + N*s + A*h; returns (W, N, A, ss_res)."""
     sol, *_ = np.linalg.lstsq(np.vstack([np.ones_like(s), s, h]).T, t, rcond=None)
@@ -603,6 +676,8 @@ def fit_allocation_fraction(sleeptimes, runtimes, c_a: float | None = None) -> d
             "sleeptimes": s,
             "runtimes": t,
             "residuals": t - pred,
+            "fit_params": fit_params,  # fitted parameter vector (or None)
+            "pcov": pcov,  # parameter covariance matrix (or None)
         }
 
     f_free = lambda p: p[2] / (p[0] + p[2]) if p[0] + p[2] > 1e-12 else 0.0
@@ -762,6 +837,8 @@ def fit_allocation_fraction_2d(m_delays, f_delays, runtimes) -> dict:
             "m_delays": m,
             "f_delays": f,
             "residuals": t - pred,
+            "fit_params": fit_params,  # fitted parameter vector (or None)
+            "pcov": pcov,  # parameter covariance matrix (or None)
         }
 
     m_min_pos = m[m > 0].min() if np.any(m > 0) else m.max()
@@ -850,6 +927,11 @@ def _to_ns(value: float):
     return float("nan") if value != value else value * 1e9
 
 
+def _fit_cov(res):
+    """(fit_params, pcov) for the bootstrap sleeves, or None if unavailable."""
+    return (res["fit_params"], res["pcov"]) if res["fit_params"] is not None else None
+
+
 def fit_sweep(df: pd.DataFrame, c_a: float | None = None, configuration: str | None = None) -> pd.DataFrame:
     """Fit every (setup, x, y, z) group of a parsed sweep DataFrame.
 
@@ -857,7 +939,9 @@ def fit_sweep(df: pd.DataFrame, c_a: float | None = None, configuration: str | N
     the two-operation model of `fit_allocation_fraction_2d`; groups spanning
     only one delay fall back to the 1-D model of `fit_allocation_fraction`
     on that delay. `df` is the output of `parse_logs`; `configuration`, if
-    given, restricts the fit to that configuration.
+    given, restricts the fit to that configuration. The `cov` column carries
+    the fitted parameter vector and its covariance (or None) so the plot can
+    draw bootstrap sleeves around the fit lines.
     """
     if configuration is not None:
         df = df[df["configuration"] == configuration]
@@ -877,6 +961,7 @@ def fit_sweep(df: pd.DataFrame, c_a: float | None = None, configuration: str | N
         "f_free": np.nan,
         "f_free_err": np.nan,
         "note": None,
+        "cov": None,
     }
     rows = []
     for key, grp in df.groupby(list(GROUP_KEYS), dropna=False):
@@ -905,6 +990,7 @@ def fit_sweep(df: pd.DataFrame, c_a: float | None = None, configuration: str | N
                     }
                 )
                 row["note"] = "; ".join(res["warnings"])
+                row["cov"] = _fit_cov(res)
             elif m.nunique() >= 2 or f.nunique() >= 2:
                 varying = "malloc" if m.nunique() >= 2 else "free"
                 delays = m if varying == "malloc" else f
@@ -940,6 +1026,7 @@ def fit_sweep(df: pd.DataFrame, c_a: float | None = None, configuration: str | N
                 base_notes = list(res["warnings"])
                 base_notes.append(f"only the {varying} delay varies; fitted the 1-D model on it")
                 row["note"] = "; ".join(base_notes)
+                row["cov"] = _fit_cov(res)
             else:
                 row["note"] = "fewer than 2 distinct delays in each operation"
         except ValueError as err:
@@ -1006,7 +1093,7 @@ def main(clusters: dict | None = None):
         print(simple_results)
         fits = fit_sweep(full_results)
         with pd.option_context("display.max_columns", None, "display.width", 250):
-            print(fits.to_string(index=False, float_format=lambda v: f"{v:10.3g}"))
+            print(fits.drop(columns=["cov"]).to_string(index=False, float_format=lambda v: f"{v:10.3g}"))
         _print_fraction_summary(fits)
         per_cluster.append((title, simple_results, fits))
     if per_cluster:
