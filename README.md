@@ -194,3 +194,16 @@ old three-algorithm comparison (`ScatterAlloc`/`FlatterScatter`/`Gallatin`)
 and has not been adapted to the delay-combination sweep yet; the sweep
 labels appear in the logs as `Using allocator: FlatterScatter, malloc delay:
 <M> ns, free delay: <F> ns`.
+
+## Code style
+
+The Python analysis code is formatted and linted with ruff (line length
+120, see `pyproject.toml`); the shell scripts are formatted with shfmt
+(2-space indent, indented case bodies) and checked with shellcheck. All of
+this runs as pre-commit hooks on every commit:
+
+```
+pip install pre-commit
+pre-commit install          # once per clone
+pre-commit run --all-files  # or just commit; the hooks check the staged files
+```
