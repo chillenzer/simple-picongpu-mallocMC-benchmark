@@ -115,6 +115,16 @@ DELAY_COLUMNS = (MALLOC_DELAY, FREE_DELAY)
 # one distinct marker per (setup, grid) series, shared by all axes
 MARKERS = ("o", "s", "^", "D", "v", "P", "h", "X", "8")
 _INF = float("inf")
+# Near-zero floor for second-based runtimes: the Amdahl fraction is
+# reported as 0 when the total runtime drops below it, and the fade
+# scales (s0, m0, f0) are bounded by it from below.
+EPS_S = 1e-12
+# A gap marker is only drawn when the model difference exceeds this (s).
+VISIBLE_GAP_S = 1e-9
+# Label placement in axes fraction: boxes within this of touching count as
+# overlapping, and at least this much clear space is kept between them.
+LABEL_OVERLAP_EPS = 0.005
+LABEL_MIN_SPACE = 0.02
 
 
 def parse_setup(line: str):
@@ -410,7 +420,7 @@ def _plot_cluster(
                 if isinstance(params, Fit2d):
                     has_2d = True
                     W, n_malloc, n_free, a_malloc, a_free, m0, f0, cov = params
-                    lower = (0.0, 0.0, 0.0, 0.0, 0.0, 1e-12, 1e-12)
+                    lower = (0.0, 0.0, 0.0, 0.0, 0.0, EPS_S, EPS_S)
                     if short == "malloc":
                         curve = _model_2d(x_s, held_arr, W, n_malloc, n_free, a_malloc, a_free, m0, f0)
                         linear = W + n_malloc * x_s + n_free * held_s
@@ -446,17 +456,17 @@ def _plot_cluster(
                     # held operation.
                     t0 = W + a_malloc + a_free
                     held_name = "free" if short == "malloc" else "malloc"
-                    if float(curve[0]) - float(dotted[0]) > 1e-9:
+                    if float(curve[0]) - float(dotted[0]) > VISIBLE_GAP_S:
                         y_lo, y_hi = float(dotted[0]), float(curve[0])
                         ax.plot((x0, x0), (y_lo, y_hi), color=color, linewidth=1, alpha=0.8)
-                        f_val = a_up / t0 if t0 > 1e-12 else 0.0
+                        f_val = a_up / t0 if t0 > EPS_S else 0.0
                         gaps.append(
                             (np.sqrt(y_lo * y_hi), x0, color, f"A_{short} = {a_up:.2f} s, f = {100 * f_val:.1f}%")
                         )
-                    if float(dotted[0]) - float(linear[0]) > 1e-9:
+                    if float(dotted[0]) - float(linear[0]) > VISIBLE_GAP_S:
                         y_lo, y_hi = float(linear[0]), float(dotted[0])
                         ax.plot((x0, x0), (y_lo, y_hi), color=color, linewidth=1, alpha=0.8)
-                        f_val = a_dn / t0 if t0 > 1e-12 else 0.0
+                        f_val = a_dn / t0 if t0 > EPS_S else 0.0
                         gaps.append(
                             (np.sqrt(y_lo * y_hi), x0, color, f"A_{held_name} = {a_dn:.2f} s, f = {100 * f_val:.1f}%")
                         )
@@ -465,7 +475,7 @@ def _plot_cluster(
                     ax.plot(x_ns, dotted, color=color, linestyle=":", alpha=0.8)
                 else:
                     _, W, N, A, s0, cov = params
-                    lower = (0.0, 0.0, 0.0, 1e-12)
+                    lower = (0.0, 0.0, 0.0, EPS_S)
                     curve = _model(x_s, W, N, A, s0)
                     linear = W + N * x_s
 
@@ -478,7 +488,7 @@ def _plot_cluster(
                     if float(curve[0]) > float(linear[0]):
                         y_lo, y_hi = float(linear[0]), float(curve[0])
                         ax.plot((x0, x0), (y_lo, y_hi), color=color, linewidth=1, alpha=0.8)
-                        f_val = A / (W + A) if W + A > 1e-12 else 0.0
+                        f_val = A / (W + A) if W + A > EPS_S else 0.0
                         gaps.append((np.sqrt(y_lo * y_hi), x0, color, f"A_{short} = {A:.2f} s, f = {100 * f_val:.1f}%"))
                 # The model takes second-based delays; the axis is in ns.
                 sleeve(fn_curve, lower)
@@ -515,7 +525,7 @@ def _plot_cluster(
         placed = []
         for y_mid, x0, color, text in gaps:
             mid_frac = (np.log10(y_mid) - np.log10(lo)) / (np.log10(hi) - np.log10(lo))
-            lfy = min(mid_frac + 0.02, 0.96)
+            lfy = min(mid_frac + LABEL_MIN_SPACE, 0.96)
             # The leader line is its own artist (a bbox-anchored arrow breaks
             # matplotlib's tight-layout path clipping). Its tail is anchored at
             # the label centre in axes fraction -- the same coordinates as the
@@ -568,8 +578,8 @@ def _plot_cluster(
                         if min(xi1, xj1) - max(xi0, xj0) <= 0:
                             continue
                         y_overlap = min(yi1, yj1) - max(yi0, yj0)
-                        if y_overlap > -0.005:
-                            shift = 0.5 * (y_overlap + 0.02)
+                        if y_overlap > -LABEL_OVERLAP_EPS:
+                            shift = 0.5 * (y_overlap + LABEL_MIN_SPACE)
                             if 0.5 * (yi0 + yi1) >= 0.5 * (yj0 + yj1):
                                 placed[i], placed[j] = (
                                     (placed[i][0], placed[i][1], min(max(placed[i][2] + shift, 0.0), 1.0)),
@@ -719,7 +729,7 @@ def fit_allocation_fraction(sleeptimes, runtimes, c_a: float | None = None) -> d
         W, N, A = float(W), float(N), float(A)
         s0 = float("nan") if math.isnan(s0) else float(s0)
         T0 = W + A
-        f = A / T0 if T0 > 1e-12 else 0.0
+        f = A / T0 if T0 > EPS_S else 0.0
         if fit_params is None:
             W_e = N_e = A_e = s0_e = f_e = float("nan")
         elif c_a is None:
@@ -750,10 +760,10 @@ def fit_allocation_fraction(sleeptimes, runtimes, c_a: float | None = None) -> d
         }
 
     def f_free(p):
-        return p[2] / (p[0] + p[2]) if p[0] + p[2] > 1e-12 else 0.0
+        return p[2] / (p[0] + p[2]) if p[0] + p[2] > EPS_S else 0.0
 
     s_min_pos = s[s > 0].min() if np.any(s > 0) else s.max()
-    lo = max(0.05 * s_min_pos, 1e-12)
+    lo = max(0.05 * s_min_pos, EPS_S)
     hi = 0.5 * (s.max() - s.min())
 
     # Robust, unconstrained initial guess (linear in W, N, A per s0).
@@ -777,7 +787,7 @@ def fit_allocation_fraction(sleeptimes, runtimes, c_a: float | None = None) -> d
             "largest, A the (floored) residual at the smallest sleeptime",
         )
 
-    lo_b = max(lo, 1e-12)
+    lo_b = max(lo, EPS_S)
     hi_b = max(hi, lo_b * 1.5)
     try:
         if c_a is None:
@@ -814,7 +824,7 @@ def fit_allocation_fraction(sleeptimes, runtimes, c_a: float | None = None) -> d
         c = c_a * 1e-9
 
         def f_ca(p):
-            return p[1] * c / (p[0] + p[1] * c) if p[0] + p[1] * c > 1e-12 else 0.0
+            return p[1] * c / (p[0] + p[1] * c) if p[0] + p[1] * c > EPS_S else 0.0
 
         p0 = [max(gW, eps), max(gN, eps), float(np.clip(gs0, lo_b, hi_b))]
         with warnings.catch_warnings():
@@ -881,17 +891,17 @@ def fit_allocation_fraction_2d(m_delays, f_delays, runtimes) -> dict:
         if note:
             notes.append(note)
         T0 = W + A_m + A_f
-        f_malloc = A_m / T0 if T0 > 1e-12 else 0.0
-        f_free = A_f / T0 if T0 > 1e-12 else 0.0
+        f_malloc = A_m / T0 if T0 > EPS_S else 0.0
+        f_free = A_f / T0 if T0 > EPS_S else 0.0
         if fit_params is None:
             W_e = Nm_e = Nf_e = Am_e = Af_e = m0_e = f0_e = f_malloc_e = f_free_e = float("nan")
         else:
 
             def f_of_m(p):
-                return p[3] / (p[0] + p[3] + p[4]) if p[0] + p[3] + p[4] > 1e-12 else 0.0
+                return p[3] / (p[0] + p[3] + p[4]) if p[0] + p[3] + p[4] > EPS_S else 0.0
 
             def f_of_f(p):
-                return p[4] / (p[0] + p[3] + p[4]) if p[0] + p[3] + p[4] > 1e-12 else 0.0
+                return p[4] / (p[0] + p[3] + p[4]) if p[0] + p[3] + p[4] > EPS_S else 0.0
 
             W_e, Nm_e, Nf_e, Am_e, Af_e, m0_e, f0_e, f_malloc_e = _uncertainties(fit_params, pcov, f_of_m)
             f_free_e = _uncertainties(fit_params, pcov, f_of_f)[-1]
@@ -926,9 +936,9 @@ def fit_allocation_fraction_2d(m_delays, f_delays, runtimes) -> dict:
 
     m_min_pos = m[m > 0].min() if np.any(m > 0) else m.max()
     f_min_pos = f[f > 0].min() if np.any(f > 0) else f.max()
-    lo_m = max(0.05 * m_min_pos, 1e-12)
+    lo_m = max(0.05 * m_min_pos, EPS_S)
     hi_m = max(0.5 * (m.max() - m.min()), lo_m * 1.5)
-    lo_f = max(0.05 * f_min_pos, 1e-12)
+    lo_f = max(0.05 * f_min_pos, EPS_S)
     hi_f = max(0.5 * (f.max() - f.min()), lo_f * 1.5)
 
     def grid_guess():
