@@ -19,8 +19,8 @@ PICONGPU_SRC="src/picongpu"
 PICONGPU_HASH="6e7d58bb97300ac74cd7a09e13b3c03fdd3863ae"
 EXAMPLES=("KelvinHelmholtz" "FoilLCT")
 
-MALLOCMC_SRC=$(pwd -P)/$MALLOCMC_SRC
-PICONGPU_SRC=$(pwd -P)/$PICONGPU_SRC
+MALLOCMC_SRC="$(pwd -P)/$MALLOCMC_SRC"
+PICONGPU_SRC="$(pwd -P)/$PICONGPU_SRC"
 # Nasty little bug here: GCC has a constexpr std::source_location but nvcc does not.
 # So, Boost gets confused and tries to use std::source_location constexpr.
 CXX_FLAGS="-DBOOST_DISABLE_CURRENT_LOCATION"
@@ -33,15 +33,15 @@ function clone() {
 
   WD=$(pwd -P)
 
-  git clone $URL $DEST
+  git clone "$URL" "$DEST"
 
   # Yes, we could the following directly in the `clone` command but we'd have to look up the syntax.
-  cd $DEST
-  git checkout $HASH
+  cd "$DEST"
+  git checkout "$HASH"
   git submodule init
   git submodule update
 
-  cd $WD
+  cd "$WD"
 }
 
 function ensure_src() {
@@ -51,35 +51,35 @@ function ensure_src() {
 
   if [ -d "$DEST/.git" ]; then
     # Reuse the existing checkout: only sync when the pinned hash changed.
-    if [ "$(git -C $DEST rev-parse HEAD)" != "$HASH" ]; then
+    if [ "$(git -C "$DEST" rev-parse HEAD)" != "$HASH" ]; then
       echo "Updating $DEST to ${HASH:0:8} ..."
-      git -C $DEST fetch --quiet
-      git -C $DEST checkout --quiet $HASH
+      git -C "$DEST" fetch --quiet
+      git -C "$DEST" checkout --quiet "$HASH"
     fi
-    git -C $DEST submodule update --init --force --quiet
+    git -C "$DEST" submodule update --init --force --quiet
     echo "Using $DEST @ ${HASH:0:8}."
   else
     if [ -e "$DEST" ]; then
       echo "Replacing $DEST (not a git checkout) ..."
-      rm -rf $DEST
+      rm -rf "$DEST"
     fi
     echo "Cloning $DEST @ ${HASH:0:8} ..."
-    clone $URL $DEST $HASH
+    clone "$URL" "$DEST" "$HASH"
   fi
 }
 
 function prepare_src() {
   mkdir -p src
-  ensure_src $PICONGPU_SRC $PICONGPU_URL $PICONGPU_HASH
+  ensure_src "$PICONGPU_SRC" "$PICONGPU_URL" "$PICONGPU_HASH"
 
   # We want full control over the version, so we patch in our own.
-  ensure_src $MALLOCMC_SRC $MALLOCMC_URL $MALLOCMC_HASH
+  ensure_src "$MALLOCMC_SRC" "$MALLOCMC_URL" "$MALLOCMC_HASH"
 }
 
 function write_mallocmc_param() {
   DEST=$1
 
-  cat >$DEST/include/picongpu/param/mallocMC.param <<EOF
+  cat >"$DEST"/include/picongpu/param/mallocMC.param <<EOF
 /* Copyright 2013-2024 Axel Huebl, Felix Schmitt, Heiko Burau, Rene Widera,
  *                     Carlchristian Eckert, Julian Lenz
  *
@@ -155,7 +155,7 @@ function input_fingerprint() {
   {
     echo "$PICONGPU_HASH"
     echo "$EXAMPLE"
-    hash_dir $PARAM_DIR/$EXAMPLE
+    hash_dir "$PARAM_DIR/$EXAMPLE"
   } | md5sum | awk '{print $1}'
 }
 
@@ -164,27 +164,27 @@ function create_input() {
   DEST=$2
   EXAMPLE=$3
 
-  FINGERPRINT=$(input_fingerprint $EXAMPLE)
-  if [ -f $DEST/.input-stamp ] && [ "$(cat $DEST/.input-stamp)" = "$FINGERPRINT" ]; then
+  FINGERPRINT=$(input_fingerprint "$EXAMPLE")
+  if [ -f "$DEST/.input-stamp" ] && [ "$(cat "$DEST/.input-stamp")" = "$FINGERPRINT" ]; then
     echo "Input $DEST is up to date; keeping."
     return 0
   fi
 
   echo "Preparing input $DEST ..."
-  rm -rf $DEST
-  pic-create $SRC $DEST
-  write_mallocmc_param $DEST
-  find $PARAM_DIR/* -type f \
+  rm -rf "$DEST"
+  pic-create "$SRC" "$DEST"
+  write_mallocmc_param "$DEST"
+  find "$PARAM_DIR"/* -type f \
     -wholename "$PARAM_DIR/${EXAMPLE}/"'*'".param" \
-    -exec cp -v {} $DEST/include/picongpu/param/ \;
-  echo "$FINGERPRINT" >$DEST/.input-stamp
+    -exec cp -v {} "$DEST/include/picongpu/param/" \;
+  echo "$FINGERPRINT" >"$DEST/.input-stamp"
   echo "Prepared input $DEST."
 }
 
 function prepare_inputs() {
   mkdir -p build
-  for example in ${EXAMPLES[@]}; do
-    create_input $PICONGPU_SRC/share/picongpu/examples/$example build/$example $example
+  for example in "${EXAMPLES[@]}"; do
+    create_input "$PICONGPU_SRC/share/picongpu/examples/$example" "build/$example" "$example"
   done
 }
 
@@ -192,8 +192,8 @@ function toolchain_fingerprint() {
   # Toolchain versions as loaded by the profile. A change here (for example
   # after updating the profile) invalidates all builds.
   for TOOL in gcc cmake nvcc; do
-    if command -v $TOOL >/dev/null 2>&1; then
-      echo "$TOOL: $($TOOL --version 2>/dev/null | sed -n 1p)"
+    if command -v "$TOOL" >/dev/null 2>&1; then
+      echo "$TOOL: $("TOOL" --version 2>/dev/null | sed -n 1p)"
     fi
   done
   return 0
@@ -205,14 +205,14 @@ function build_fingerprint() {
   # headers are compiled into the binary), the profile and the toolchain.
   DEST=$1
   {
-    if [ -f $DEST/.input-stamp ]; then
-      cat $DEST/.input-stamp
+    if [ -f "$DEST/.input-stamp" ]; then
+      cat "$DEST/.input-stamp"
     else
       echo "missing-input-stamp"
     fi
     echo "$FLAGS"
     echo "$MALLOCMC_HASH"
-    md5sum $PROFILE | awk '{print $1}'
+    md5sum "$PROFILE" | awk '{print $1}'
     toolchain_fingerprint
   } | md5sum | awk '{print $1}'
 }
@@ -222,32 +222,34 @@ function build_from_input() {
 
   WD=$(pwd -P)
 
-  FINGERPRINT=$(build_fingerprint $DEST)
-  if [ -f "$DEST/.build-stamp" ] && [ "$(cat $DEST/.build-stamp)" = "$FINGERPRINT" ] &&
+  FINGERPRINT=$(build_fingerprint "$DEST")
+  if [ -f "$DEST/.build-stamp" ] && [ "$(cat "$DEST/.build-stamp")" = "$FINGERPRINT" ] &&
     [ -x "$DEST/bin/picongpu" ]; then
     echo "Build $DEST is up to date; skipping."
     return 0
   fi
 
-  cd $DEST
-  export CMAKE_PREFIX_PATH=$MALLOCMC_SRC:$CMAKE_PREFIX_PATH
+  cd "$DEST"
+  export CMAKE_PREFIX_PATH="$MALLOCMC_SRC:$CMAKE_PREFIX_PATH"
   # A little bit dirty, mallocMC's CMakeLists.txt is not exactly clean:
   pic-build -c "$FLAGS"
 
-  cd $WD
-  echo "$FINGERPRINT" >$DEST/.build-stamp
+  cd "$WD"
+  echo "$FINGERPRINT" >"$DEST/.build-stamp"
 }
 
 function build() {
   mkdir -p build
-  for example in ${EXAMPLES[@]}; do
-    build_from_input build/$example
+  for example in "${EXAMPLES[@]}"; do
+    build_from_input "build/$example"
   done
 }
 
 function prepare_environment() {
-  sed -i 's|PICSRC=.*|PICSRC='"$PICONGPU_SRC"'|g' $PROFILE
-  source $PROFILE
+  sed -i 's|PICSRC=.*|PICSRC='"$PICONGPU_SRC"'|g' "$PROFILE"
+  # The profile path is a command-line argument, so shellcheck cannot follow it.
+  # shellcheck disable=SC1090
+  source "$PROFILE"
 }
 
 function main() {

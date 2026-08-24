@@ -10,19 +10,22 @@ FILENAME="$FOLDER/setup_$(date --rfc-3339=seconds | sed 's/ /_/g').txt"
 # are not up to date any more; delete them manually for a fully clean run.
 mkdir -p "$FOLDER"
 
-echo "========================" >>$FILENAME
-echo "Logging environment" >>$FILENAME
-echo "========================" >>$FILENAME
+{
+  echo "========================"
+  echo "Logging environment"
+  echo "========================"
+  git log -n1
+  git diff
+  nvidia-smi
+  spack find --loaded
+  env
+  hwinfo
+} >>"$FILENAME"
 
-git log -n1 >>$FILENAME
-git diff >>$FILENAME
-nvidia-smi >>$FILENAME
-spack find --loaded >>$FILENAME
-env >>$FILENAME
-hwinfo >>$FILENAME
+{
+  echo "========================"
+  echo "Starting setup"
+  echo "========================"
+} >>"$FILENAME"
 
-echo "========================" >>$FILENAME
-echo "Starting setup" >>$FILENAME
-echo "========================" >>$FILENAME
-
-bash setup.sh profiles/hal.sh param/ 2>&1 | tee -a $FILENAME
+bash setup.sh profiles/hal.sh param/ 2>&1 | tee -a "$FILENAME"

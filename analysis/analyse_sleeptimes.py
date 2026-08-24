@@ -72,15 +72,14 @@ only (W, N, s0) are fitted.
 
 from __future__ import annotations
 
+import re
 import warnings
 from collections.abc import Iterable
-from os import PathLike
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import re
 from scipy.optimize import OptimizeWarning, curve_fit
 
 ALGORITHM = "FlatterScatter"
@@ -380,17 +379,30 @@ def _plot_cluster(
                         linear = W + Nm * x_s + Nf * held_s
                         dotted = linear + Af * f0 / (held_s + f0)
                         a_up, a_dn = Am, Af
-                        fn_curve = lambda p: _model_2d(x_s, held_arr, *p)
-                        fn_dash = lambda p: p[0] + p[1] * x_s + p[2] * held_s
-                        fn_dot = lambda p: p[0] + p[1] * x_s + p[2] * held_s + p[4] * p[6] / (held_s + p[6])
+
+                        def fn_curve(p):
+                            return _model_2d(x_s, held_arr, *p)
+
+                        def fn_dash(p):
+                            return p[0] + p[1] * x_s + p[2] * held_s
+
+                        def fn_dot(p):
+                            return p[0] + p[1] * x_s + p[2] * held_s + p[4] * p[6] / (held_s + p[6])
                     else:
                         curve = _model_2d(held_arr, x_s, W, Nm, Nf, Am, Af, m0, f0)
                         linear = W + Nf * x_s + Nm * held_s
                         dotted = linear + Am * m0 / (held_s + m0)
                         a_up, a_dn = Af, Am
-                        fn_curve = lambda p: _model_2d(held_arr, x_s, *p)
-                        fn_dash = lambda p: p[0] + p[2] * x_s + p[1] * held_s
-                        fn_dot = lambda p: p[0] + p[2] * x_s + p[1] * held_s + p[3] * p[5] / (held_s + p[5])
+
+                        def fn_curve(p):
+                            return _model_2d(held_arr, x_s, *p)
+
+                        def fn_dash(p):
+                            return p[0] + p[2] * x_s + p[1] * held_s
+
+                        def fn_dot(p):
+                            return p[0] + p[2] * x_s + p[1] * held_s + p[3] * p[5] / (held_s + p[5])
+
                     # The solid/dashed gap splits at the dotted line (one
                     # Amdahl term set to 0): the upper part is the native cost
                     # of the plotted operation, the lower part the one of the
@@ -420,8 +432,13 @@ def _plot_cluster(
                     lower = (0.0, 0.0, 0.0, 1e-12)
                     curve = _model(x_s, W, N, A, s0)
                     linear = W + N * x_s
-                    fn_curve = lambda p: _model(x_s, p[0], p[1], p[2], p[3])
-                    fn_dash = lambda p: p[0] + p[1] * x_s
+
+                    def fn_curve(p):
+                        return _model(x_s, p[0], p[1], p[2], p[3])
+
+                    def fn_dash(p):
+                        return p[0] + p[1] * x_s
+
                     if float(curve[0]) > float(linear[0]):
                         y_lo, y_hi = float(linear[0]), float(curve[0])
                         ax.plot((x0, x0), (y_lo, y_hi), color=color, linewidth=1, alpha=0.8)
@@ -684,7 +701,9 @@ def fit_allocation_fraction(sleeptimes, runtimes, c_a: float | None = None) -> d
             "pcov": pcov,  # parameter covariance matrix (or None)
         }
 
-    f_free = lambda p: p[2] / (p[0] + p[2]) if p[0] + p[2] > 1e-12 else 0.0
+    def f_free(p):
+        return p[2] / (p[0] + p[2]) if p[0] + p[2] > 1e-12 else 0.0
+
     s_min_pos = s[s > 0].min() if np.any(s > 0) else s.max()
     lo = max(0.05 * s_min_pos, 1e-12)
     hi = 0.5 * (s.max() - s.min())
@@ -743,7 +762,10 @@ def fit_allocation_fraction(sleeptimes, runtimes, c_a: float | None = None) -> d
                 )
             return finish(W, N, A, s0, pcov, list(popt), f_free)
         c = c_a * 1e-9
-        f_ca = lambda p: (p[1] * c / (p[0] + p[1] * c) if p[0] + p[1] * c > 1e-12 else 0.0)
+
+        def f_ca(p):
+            return p[1] * c / (p[0] + p[1] * c) if p[0] + p[1] * c > 1e-12 else 0.0
+
         p0 = [max(gW, eps), max(gN, eps), float(np.clip(gs0, lo_b, hi_b))]
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", OptimizeWarning)
@@ -765,7 +787,7 @@ def fit_allocation_fraction(sleeptimes, runtimes, c_a: float | None = None) -> d
         return finish(W, N, A, s0, pcov, list(popt), f_ca)
     except (RuntimeError, ValueError) as err:
         # curve_fit failed to converge; report the robust linear solution.
-        notes.append(f"curve_fit did not converge ({str(err).splitlines()[0]}); " "using the robust linear solution")
+        notes.append(f"curve_fit did not converge ({str(err).splitlines()[0]}); using the robust linear solution")
         return finish(
             gW,
             gN,
@@ -812,8 +834,13 @@ def fit_allocation_fraction_2d(m_delays, f_delays, runtimes) -> dict:
         if fit_params is None:
             W_e = Nm_e = Nf_e = Am_e = Af_e = m0_e = f0_e = f_malloc_e = f_free_e = float("nan")
         else:
-            f_of_m = lambda p: (p[3] / (p[0] + p[3] + p[4]) if p[0] + p[3] + p[4] > 1e-12 else 0.0)
-            f_of_f = lambda p: (p[4] / (p[0] + p[3] + p[4]) if p[0] + p[3] + p[4] > 1e-12 else 0.0)
+
+            def f_of_m(p):
+                return p[3] / (p[0] + p[3] + p[4]) if p[0] + p[3] + p[4] > 1e-12 else 0.0
+
+            def f_of_f(p):
+                return p[4] / (p[0] + p[3] + p[4]) if p[0] + p[3] + p[4] > 1e-12 else 0.0
+
             W_e, Nm_e, Nf_e, Am_e, Af_e, m0_e, f0_e, f_malloc_e = _uncertainties(fit_params, pcov, f_of_m)
             f_free_e = _uncertainties(fit_params, pcov, f_of_f)[-1]
         return {
@@ -911,7 +938,7 @@ def fit_allocation_fraction_2d(m_delays, f_delays, runtimes) -> dict:
         return finish(W, N_m, N_f, A_m, A_f, m0, f0, pcov, list(popt))
     except (RuntimeError, ValueError) as err:
         # curve_fit failed to converge; report the robust linear solution.
-        notes.append(f"curve_fit did not converge ({str(err).splitlines()[0]}); " "using the robust linear solution")
+        notes.append(f"curve_fit did not converge ({str(err).splitlines()[0]}); using the robust linear solution")
         return finish(
             gW,
             gNm,
@@ -922,7 +949,7 @@ def fit_allocation_fraction_2d(m_delays, f_delays, runtimes) -> dict:
             gf0,
             None,
             None,
-            note="constrained fit unavailable; linear grid solution reported " "(A_malloc/A_free floored at 0)",
+            note="constrained fit unavailable; linear grid solution reported (A_malloc/A_free floored at 0)",
         )
 
 

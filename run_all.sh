@@ -37,7 +37,7 @@ for example in "${EXAMPLES[@]}"; do
     echo "Running example: $example"
     echo "Using allocator: FlatterScatter, malloc delay: $malloc_delay ns, free delay: $free_delay ns"
     echo "=============================="
-    bash run_folder.sh build/$example $FLAGSFOLDER/${example}.flags $PROFILE "$malloc_delay" "$free_delay"
+    bash run_folder.sh "build/$example" "$FLAGSFOLDER/${example}.flags" "$PROFILE" "$malloc_delay" "$free_delay"
     echo ""
   done
 done
