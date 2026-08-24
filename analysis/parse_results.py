@@ -1,5 +1,8 @@
 r"""Parse pre-filtered run logs into a pandas DataFrame for seaborn.
 
+SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
+SPDX-License-Identifier: MIT
+
 Input is the output of, e.g.
 
     grep "cd build/Foil\\|cd build/Kelvin\\|bin/picongpu \\|calculation" output/hal-sleeptimes/run_*

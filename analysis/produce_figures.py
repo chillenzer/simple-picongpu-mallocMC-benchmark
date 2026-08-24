@@ -1,5 +1,8 @@
 """Benchmark figures and runtime statistics from the run_all.sh cluster logs.
 
+SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
+SPDX-License-Identifier: MIT
+
 Reads the per-run simulation times from the `output/<cluster>/` logs,
 writes `figures/foil.pdf` (FoilLCT) and `figures/khi.pdf`
 (KelvinHelmholtz), and prints the per-grid timing statistics together with

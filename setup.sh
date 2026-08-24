@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
+# SPDX-License-Identifier: MIT
+
 set -e
 
 PROFILE=$1

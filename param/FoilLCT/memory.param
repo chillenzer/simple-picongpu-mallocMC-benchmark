@@ -1,5 +1,7 @@
 /* Copyright 2013-2024 Axel Huebl, Rene Widera, Benjamin Worpitz, Julian Lenz
  *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
  * This file is part of PIConGPU.
  *
  * PIConGPU is free software: you can redistribute it and/or modify

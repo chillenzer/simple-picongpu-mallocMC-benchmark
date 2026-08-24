@@ -1,5 +1,8 @@
 """Analyze PIConGPU/mallocMC allocation-latency benchmark logs.
 
+SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
+SPDX-License-Identifier: MIT
+
 Reads the raw `run_all.sh` logs directly (no pre-filtering; both the old
 per-variant layout and the current one) and fits each (example, grid) sweep
 to the constrained Amdahl allocation model. It then plots the runtime

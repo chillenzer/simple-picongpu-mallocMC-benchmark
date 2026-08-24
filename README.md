@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
+SPDX-License-Identifier: MIT
+-->
+
 # PIConGPU Allocations using mallocMC
 
 This repository benchmarks the runtime of PIConGPU simulations compiled with
