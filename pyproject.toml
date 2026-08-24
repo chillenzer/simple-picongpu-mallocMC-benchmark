@@ -3,14 +3,20 @@ line-length = 120
 target-version = "py314"
 
 [tool.ruff.lint]
-# Ruff's default selection (E4, E7, E9, F) plus import sorting (I) and the
-# bugbear, pyupgrade, flake8-{alias,blind-except,boolean-trap,bandit,
-# comprehensions,datetimez,errmsg,eradicate,future-annotations,pie,
-# return,simplify,ruff} families. E1/E2 indentation rules are left to
-# `ruff format`; E501 is enforced here as a hard line limit.
+# Ruff's default selection (E4, E7, E9, F) plus import sorting (I) and a
+# broad set of stable rule families (bugbear, pyupgrade, bandit,
+# flake8-{alias,blind-except,boolean-trap,builtins,comprehensions,
+# datetimez,errmsg,eradicate,future-annotations,import-conventions,
+# logging-format,return,simplify,unused-arguments} and the rest of the
+# list). E1/E2 indentation rules and COM trailing-comma rules are left to
+# `ruff format`; E501 is enforced here as a hard line limit. Notable
+# exclusions: pep8-naming (N) -- the fit parameters W, N, A, s0 are model
+# vocabulary -- and T20 (print is the output of these scripts).
 select = [
-    "A", "B", "BLE", "C4", "DTZ", "E4", "E501", "E7", "E9", "EM", "ERA", "F", "FA",
-    "FBT", "I", "PIE", "RET", "RUF", "S", "SIM", "UP", "W", "YTT",
+    "A", "AIR", "ARG", "B", "BLE", "C4", "DTZ", "E4", "E501", "E7", "E9", "EM", "ERA",
+    "EXE", "F", "FA", "FBT", "FIX", "FLY", "G", "ICN", "I", "INT", "ISC", "LOG", "NPY",
+    "PERF", "PGH", "PIE", "PT", "PTH", "PYI", "Q", "RET", "RSE", "RUF", "S", "SIM",
+    "T10", "TD", "TID", "TRY", "UP", "W", "YTT",
 ]
 # B023 (loop variable captured by a function): the plotting loops define
 # closures that are called within the same iteration, before the captured
