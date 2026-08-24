@@ -25,8 +25,9 @@ ignore = [
     # deferred (would need a dedicated pass or a policy decision):
     "ANN",  # type annotations (~150 findings)
     "D",  # docstring conventions (~40 findings)
-    "C90",  # mccabe complexity (5 functions above the default limit)
-    "PL",  # pylint (mostly magic-value and complexity noise here)
+    # self-documenting counts (len < 2, size < 3, ndim == 2) dominate this
+    # rule's findings; the meaningful tolerances are named constants:
+    "PLR2004",
     # no findings so far; not applicable to these scripts:
     "ASYNC",
     "DJ",
@@ -38,3 +39,15 @@ ignore = [
     "SLOT",
     "TC",
 ]
+
+# The fit/parsing routines (complexity 11-19, up to 74 statements) are
+# cohesive data transforms; these limits keep the rules active as a guard
+# against new bloat while admitting the existing functions.
+[tool.ruff.lint.mccabe]
+max-complexity = 20
+
+[tool.ruff.lint.pylint]
+max-args = 10
+max-positional-args = 10
+max-branches = 20
+max-statements = 80
