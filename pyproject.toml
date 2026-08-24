@@ -3,22 +3,38 @@ line-length = 120
 target-version = "py314"
 
 [tool.ruff.lint]
-# Ruff's default selection (E4, E7, E9, F) plus import sorting (I) and a
-# broad set of stable rule families (bugbear, pyupgrade, bandit,
-# flake8-{alias,blind-except,boolean-trap,builtins,comprehensions,
-# datetimez,errmsg,eradicate,future-annotations,import-conventions,
-# logging-format,return,simplify,unused-arguments} and the rest of the
-# list). E1/E2 indentation rules and COM trailing-comma rules are left to
-# `ruff format`; E501 is enforced here as a hard line limit. Notable
-# exclusions: pep8-naming (N) -- the fit parameters W, N, A, s0 are model
-# vocabulary -- and T20 (print is the output of these scripts).
-select = [
-    "A", "AIR", "ARG", "B", "BLE", "C4", "DTZ", "E4", "E501", "E7", "E9", "EM", "ERA",
-    "EXE", "F", "FA", "FBT", "FIX", "FLY", "G", "ICN", "I", "INT", "ISC", "LOG", "NPY",
-    "PERF", "PGH", "PIE", "PT", "PTH", "PYI", "Q", "RET", "RSE", "RUF", "S", "SIM",
-    "T10", "TD", "TID", "TRY", "UP", "W", "YTT",
-]
+# Select everything ruff offers and ignore what is not adopted yet, so the
+# ignore list doubles as a ledger of the rule families that are still off.
+# E1/E2 indentation rules and COM trailing-comma rules are left to
+# `ruff format`; E501 is enforced as a hard line limit.
+select = ["ALL"]
 # B023 (loop variable captured by a function): the plotting loops define
 # closures that are called within the same iteration, before the captured
 # variables are rebound, so late binding cannot bite.
-ignore = ["B023"]
+ignore = [
+    "B023",
+    # whitespace rules owned by `ruff format`:
+    "E1",
+    "E2",
+    "COM",
+    # not a fit for this codebase:
+    "N",  # W, N, A, s0 are Amdahl-model parameter names
+    "T20",  # print() is the output of these scripts
+    # deferred (would need a dedicated pass or a policy decision):
+    "ANN",  # type annotations (~150 findings)
+    "D",  # docstring conventions (~40 findings)
+    "C90",  # mccabe complexity (5 functions above the default limit)
+    "PL",  # pylint (mostly magic-value and complexity noise here)
+    "CPY",  # copyright headers (needs a license policy)
+    "INP",  # analysis/ is standalone scripts, not a package
+    # no findings so far; not applicable to these scripts:
+    "ASYNC",
+    "DJ",
+    "DOC",
+    "FAST",
+    "FURB",
+    "PD",
+    "SLF",
+    "SLOT",
+    "TC",
+]
