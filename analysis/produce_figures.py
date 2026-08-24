@@ -1,8 +1,8 @@
 from pathlib import Path
 
-import matplotlib
+import matplotlib as mpl
 
-matplotlib.use("pdf")
+mpl.use("pdf")
 from itertools import cycle
 
 import matplotlib.pyplot as plt
@@ -303,7 +303,7 @@ def compute_significance(timings, name):
         .apply(
             lambda x: (
                 kruskal(
-                    *x[["runtime in seconds"]].unstack("run_id").to_numpy(),
+                    *x[[name]].unstack("run_id").to_numpy(),
                     nan_policy="omit",
                 ).pvalue
             )

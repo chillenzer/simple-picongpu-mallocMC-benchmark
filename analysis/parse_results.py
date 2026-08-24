@@ -49,6 +49,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from pathlib import Path
 
 import pandas as pd
 
@@ -113,7 +114,7 @@ def parse_results(source) -> pd.DataFrame:
     rows = []
 
     if not (hasattr(source, "readline") or isinstance(source, (list, tuple))):
-        with open(source) as file:
+        with Path(source).open() as file:
             source = file.readlines()
     lines = source
     for raw in lines:

@@ -1157,7 +1157,7 @@ def _print_fraction_summary(fits: pd.DataFrame):
 
 def main(clusters: dict | None = None):
     per_cluster = []
-    for _, (log_dir, title) in (clusters or CLUSTERS).items():
+    for log_dir, title in (clusters or CLUSTERS).values():
         log_paths = sorted(Path(log_dir).glob("run_*"))
         if not log_paths:
             continue
