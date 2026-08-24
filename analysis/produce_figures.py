@@ -1,14 +1,14 @@
 from pathlib import Path
+
 import matplotlib
 
 matplotlib.use("pdf")
-import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
-import pandas as pd
-import numpy as np
-import parse
-from functools import reduce
 from itertools import cycle
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import parse
 import seaborn as sns
 from scipy.stats import kruskal
 
@@ -54,10 +54,7 @@ def generate_new_style():
     return {"marker": next(MARKER), "color": next(COLOR)}
 
 
-STYLE = {
-    algorithm: generate_new_style()
-    for algorithm in ["FlatterScatter", "Gallatin", "ScatterAlloc"]
-}
+STYLE = {algorithm: generate_new_style() for algorithm in ["FlatterScatter", "Gallatin", "ScatterAlloc"]}
 OUTPUT = Path("output")
 SIZE_OF_PARTICLE = 30
 TYPICAL_PARTICLES_PER_CELL = 25
@@ -90,9 +87,7 @@ def parse_log(log):
             text,
             {"tuple": parse_tuple},
         )
-        runtime = parse.findall(
-            "calculation  simulation time:{}= {seconds:f} sec", text
-        )
+        runtime = parse.findall("calculation  simulation time:{}= {seconds:f} sec", text)
         key = flags["first"][1] if flags["first"][0] == "g" else flags["second"][1]
         if len(key) == 2:
             key = key + (np.nan,)
@@ -133,8 +128,7 @@ def parse_full(file):
         {
             key: results
             for header, log in pairs(text.split("\n==============================\n"))
-            if (key := parse_header(header)) is not None
-            and (results := parse_log(log)) is not None
+            if (key := parse_header(header)) is not None and (results := parse_log(log)) is not None
         }
     )
 
@@ -156,9 +150,7 @@ def read_timings():
     timings = timings.T.reset_index(drop=False).set_index(names, append=True).T
     timings = (
         timings.stack(names)
-        .reorder_levels(
-            ["hardware", "benchmark", "grid_x", "grid_y", "grid_z", "algorithm"]
-        )
+        .reorder_levels(["hardware", "benchmark", "grid_x", "grid_y", "grid_z", "algorithm"])
         .sort_index()
     )
     timings.columns.names = ["run_id"]
@@ -196,9 +188,7 @@ def statistical_timings(timings):
 def compute_baselines(timings):
     return timings.groupby(["hardware", MEM_LABEL], axis=0).apply(
         lambda x: np.percentile(
-            x.set_index("algorithm", append=False, drop=True)["runtime in seconds"][
-                "ScatterAlloc"
-            ],
+            x.set_index("algorithm", append=False, drop=True)["runtime in seconds"]["ScatterAlloc"],
             50,
         )
     )
@@ -228,8 +218,7 @@ def plot_foil(timings):
     ax.get_figure().savefig("figures/foil.pdf")
     return compute_significance(
         timings.assign(**{MEM_LABEL: 1})[
-            (timings["algorithm"] == "FlatterScatter")
-            + (timings["algorithm"] == "ScatterAlloc")
+            (timings["algorithm"] == "FlatterScatter") + (timings["algorithm"] == "ScatterAlloc")
         ],
         "runtime in seconds",
     ).droplevel(MEM_LABEL)
@@ -257,16 +246,12 @@ def plot_khi(timings):
         include_groups=False,
     )
     timings = (
-        timings.set_index(["hardware", "algorithm", MEM_LABEL, "run_id"])
-        .assign(outlier=mask)
-        .reset_index(drop=False)
+        timings.set_index(["hardware", "algorithm", MEM_LABEL, "run_id"]).assign(outlier=mask).reset_index(drop=False)
     )
     baselines = compute_baselines(timings)
     timings["relative runtime"] = (
         timings.reset_index(drop=False)
-        .set_index(
-            baselines.index.names + ["algorithm", "run_id"], append=False, drop=True
-        )
+        .set_index(baselines.index.names + ["algorithm", "run_id"], append=False, drop=True)
         .unstack(["algorithm", "run_id"])
         .div(baselines, axis=0)["runtime in seconds"]
         .stack(["algorithm", "run_id"])
@@ -290,10 +275,7 @@ def plot_khi(timings):
     ax.set(ylim=(YMIN, YMAX))
     plt.tight_layout()
     ax.savefig("figures/khi.pdf")
-    flatter_vs_scatter = timings[
-        (timings["algorithm"] == "FlatterScatter")
-        + (timings["algorithm"] == "ScatterAlloc")
-    ]
+    flatter_vs_scatter = timings[(timings["algorithm"] == "FlatterScatter") + (timings["algorithm"] == "ScatterAlloc")]
     metadata = pd.concat(
         [
             baselines,
@@ -320,10 +302,12 @@ def compute_significance(timings, name):
         timings.set_index(["algorithm", "run_id"])
         .groupby(["hardware", MEM_LABEL])
         .apply(
-            lambda x: kruskal(
-                *x[["runtime in seconds"]].unstack("run_id").to_numpy(),
-                nan_policy="omit",
-            ).pvalue
+            lambda x: (
+                kruskal(
+                    *x[["runtime in seconds"]].unstack("run_id").to_numpy(),
+                    nan_policy="omit",
+                ).pvalue
+            )
         )
     )
 

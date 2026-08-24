@@ -1,4 +1,4 @@
-# Copyright 
+# Copyright
 #
 # This file is part of PIConGPU.
 #
