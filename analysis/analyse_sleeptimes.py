@@ -206,7 +206,10 @@ def parse_logs(log_paths: Iterable[Path]):
 
 
 def simple_statistics(full_results: pd.DataFrame):
-    return full_results.groupby(list(set(full_results.columns) - {"runtime in s", "name"}), dropna=False).apply(
+    # Group by the frame's column order (not a set): a set's iteration order
+    # is hash-randomized per process, which would shuffle the printed index.
+    group_cols = [c for c in full_results.columns if c not in {"runtime in s", "name"}]
+    return full_results.groupby(group_cols, dropna=False).apply(
         lambda df: df["runtime in s"].describe(), include_groups=False
     )
 
