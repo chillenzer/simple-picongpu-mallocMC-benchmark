@@ -7,8 +7,9 @@ Reads the raw `run_all.sh` logs directly (no pre-filtering; both the old
 per-variant layout and the current one) and fits each (example, grid) sweep
 to the constrained Amdahl allocation model. It then plots the runtime
 against the imposed delay (median with IQR error bars) in one figure per
-cluster (see `CLUSTERS`), the figure titled by the hardware the runs were
-made on, with the malloc sleep_time sweep (free sleep_time = 0) on the
+cluster (see `CLUSTERS`), saved to `figures/<cluster>.pdf`, the figure
+titled by the hardware the runs were made on, with the malloc sleep_time
+sweep (free sleep_time = 0) on the
 left and the free sleep_time sweep (malloc sleep_time = 0) on the right,
 each axis titled after the swept delay ("malloc time scan", "free time
 scan"), the two axes sharing the y-axis. Each swept
@@ -97,6 +98,8 @@ CLUSTERS = {
     "hal": (Path("output") / "hal-sleeptimes", "NVIDIA A30"),
     "rosi": (Path("output") / "rosi-sleeptimes", "NVIDIA V100"),
 }
+# the one figure per cluster is written to `figures/<cluster>.pdf`
+FIGURES = Path("figures")
 # The statistics, plot and fit are computed only for runs with this
 # configuration: "run-time" (delays injected via MALLOCMC_MALLOC_DELAY /
 # MALLOCMC_FREE_DELAY) or "compile-time" (per-variant builds); None uses all
@@ -1633,7 +1636,8 @@ def _print_fraction_summary(fits: pd.DataFrame) -> None:
 def main(clusters: dict | None = None) -> None:
     """Parse, fit and plot every cluster's delay sweeps."""
     per_cluster = []
-    for log_dir, title in (clusters or CLUSTERS).values():
+    cluster_names = []
+    for name, (log_dir, title) in (clusters or CLUSTERS).items():
         log_paths = sorted(Path(log_dir).glob("run_*"))
         if not log_paths:
             continue
@@ -1650,10 +1654,14 @@ def main(clusters: dict | None = None) -> None:
             print(fits.drop(columns=["cov"]).to_string(index=False, float_format=lambda v: f"{v:10.3g}"))
         _print_fraction_summary(fits)
         per_cluster.append((title, simple_results, fits))
+        cluster_names.append(name)
     if per_cluster:
         # One figure per cluster: the malloc sweep (left) and the free sweep
         # (right) next to each other.
-        _ = simple_plot(per_cluster)
+        figs = simple_plot(per_cluster)
+        FIGURES.mkdir(exist_ok=True)
+        for fig, name in zip(figs, cluster_names, strict=True):
+            fig.savefig(FIGURES / f"{name}.pdf")
         plt.show()
 
 

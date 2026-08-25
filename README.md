@@ -197,10 +197,12 @@ three-algorithm comparison from the no-delay runs: the per-cluster
 `output/<cluster>/` run logs (one full `run_all.sh` repetition per file) plus
 the (0, 0) baseline runs of the delay-combination sweeps (the
 `hal-sleeptimes` and `rosi-sleeptimes` dirs; the nanosleep runs are
-excluded). It writes the FoilLCT bar chart (`figures/foil.pdf`), the
+excluded). It writes the FoilLCT bar chart (`figures/foil_lct.pdf`), the
 KelvinHelmholtz violin chart of the runtime relative to the ScatterAlloc
-baseline (`figures/khi.pdf`), and prints the per-grid timing statistics. The
-delay-combination sweeps themselves are analyzed by `analyse_sleeptimes.py`.
+baseline (`figures/kelvin_helmholtz.pdf`), and prints the per-grid timing
+statistics. The delay-combination sweeps themselves are analyzed by
+`analyse_sleeptimes.py`, which saves one figure per cluster to
+`figures/<cluster>.pdf`.
 
 ## Code style
 

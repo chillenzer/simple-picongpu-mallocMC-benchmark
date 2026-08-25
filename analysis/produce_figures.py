@@ -6,9 +6,9 @@ SPDX-License-Identifier: MIT
 Reads the per-run no-delay simulation times from the `output/<cluster>/`
 logs — the old-layout three-algorithm runs plus the (0, 0) baseline runs of
 the delay-combination sweeps (the `*-sleeptimes` dirs, excluding the
-nanosleep runs) — writes `figures/foil.pdf` (FoilLCT) and `figures/khi.pdf`
-(KelvinHelmholtz), and prints the per-grid timing statistics together with
-the metadata of both figures.
+nanosleep runs) — writes `figures/foil_lct.pdf` (FoilLCT) and
+`figures/kelvin_helmholtz.pdf` (KelvinHelmholtz), and prints the per-grid
+timing statistics together with the metadata of both figures.
 """
 
 from pathlib import Path
@@ -42,6 +42,7 @@ MEM_LABEL = "estimated particle memory consumption in GB"
 YMIN, YMAX = 0.9, 1.1
 
 OUTPUT = Path("output")
+FIGURES = Path("figures")
 SIZE_OF_PARTICLE = 30
 TYPICAL_PARTICLES_PER_CELL = 25
 NUMBER_OF_SPECIES = 2
@@ -193,7 +194,7 @@ def plot_foil(timings: pd.DataFrame) -> pd.Series:
         hue_order=ALGORITHM_ORDER,
     )
     plt.tight_layout()
-    ax.get_figure().savefig("figures/foil.pdf")
+    ax.get_figure().savefig(FIGURES / "foil_lct.pdf")
     return compute_significance(
         timings.assign(**{MEM_LABEL: 1})[
             (timings["algorithm"] == "FlatterScatter") + (timings["algorithm"] == "ScatterAlloc")
@@ -270,7 +271,7 @@ def plot_khi(timings: pd.DataFrame) -> pd.DataFrame:
     ax.refline(y=1)
     ax.set(ylim=(YMIN, YMAX))
     plt.tight_layout()
-    ax.savefig("figures/khi.pdf")
+    ax.savefig(FIGURES / "kelvin_helmholtz.pdf")
     flatter_vs_scatter = timings[(timings["algorithm"] == "FlatterScatter") + (timings["algorithm"] == "ScatterAlloc")]
     return pd.concat(
         [
@@ -294,6 +295,7 @@ def plot_khi(timings: pd.DataFrame) -> pd.DataFrame:
 def main() -> None:
     """Read the timings, draw both figures and print the statistics."""
     timings = read_timings()
+    FIGURES.mkdir(exist_ok=True)
 
     stats = statistical_timings(timings)
     foil_metadata = plot_foil(timings[timings["benchmark"] == "FoilLCT"].drop(columns="benchmark"))
