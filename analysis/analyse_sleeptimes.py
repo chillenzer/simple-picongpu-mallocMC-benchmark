@@ -16,9 +16,9 @@ scan"), the two axes sharing the y-axis. Each swept
 curve overlays the fitted model (solid), the extrapolation to
 A_malloc = A_free = 0 (dashed) and, for two-operation fits, the
 intermediate extrapolation that keeps only the held operation's native
-cost (dotted); the gaps at the smallest delay are annotated with the
-native cost A and Amdahl fraction f of each operation. Each fit line
-carries a transparent sleeve, the 25/75-percentile envelope of the model
+cost (dotted); the gaps at the smallest delay are marked by a short
+line. Each fit line carries a transparent sleeve, the
+25/75-percentile envelope of the model
 evaluated at 512 parameter draws from the fitted parameters and their
 covariance (a bootstrap, since the parameters enter the model
 non-linearly):
@@ -116,10 +116,6 @@ _INF = float("inf")
 EPS_S = 1e-12
 # A gap marker is only drawn when the model difference exceeds this (s).
 VISIBLE_GAP_S = 1e-9
-# Label placement in axes fraction: boxes within this of touching count as
-# overlapping, and at least this much clear space is kept between them.
-LABEL_OVERLAP_EPS = 0.005
-LABEL_MIN_SPACE = 0.02
 
 
 def simple_statistics(full_results: pd.DataFrame) -> pd.DataFrame:
@@ -385,7 +381,6 @@ class Cluster(NamedTuple):
     secondary_short: str
     series_markers: dict
     fits_by_key: dict
-    gaps: list[tuple[float, float, str, str]]
 
 
 _ModelFn = Callable[[np.ndarray], np.ndarray]
@@ -450,7 +445,6 @@ def _collect_fits(fits: pd.DataFrame | None) -> dict[tuple, Fit1d | Fit2d]:
 
 def _draw_fit_2d(
     curve: Curve,
-    gaps: list[tuple[float, float, str, str]],
     sleeve: Callable[[_ModelFn, tuple], None],
 ) -> None:
     """Draw the 2-D fit of one curve and its two A/f gap markers.
@@ -458,9 +452,9 @@ def _draw_fit_2d(
     The solid line is the full model, the dashed line the linear
     extrapolation (both Amdahl terms at 0) and the dotted line the fit
     with only the plotted operation's Amdahl term at 0. The gap
-    markers (appended to `gaps`) split at the dotted line: the upper
-    part is the native cost of the plotted operation, the lower part
-    the one of the held operation.
+    markers split at the dotted line: the upper part is the native
+    cost of the plotted operation, the lower part the one of the held
+    operation.
     """
     x_s, held_s = curve.x_s, curve.held_s
     params = curve.params
@@ -474,7 +468,6 @@ def _draw_fit_2d(
         )
         linear = params.W + params.n_malloc * x_s + params.n_free * held_s
         dotted = linear + params.a_free * params.f0 / (held_s + params.f0)
-        a_up, a_dn = params.a_malloc, params.a_free
 
         def fn_curve(p: np.ndarray) -> np.ndarray:
             return _model_2d(x_s, held_arr, p)
@@ -492,7 +485,6 @@ def _draw_fit_2d(
         )
         linear = params.W + params.n_free * x_s + params.n_malloc * held_s
         dotted = linear + params.a_malloc * params.m0 / (held_s + params.m0)
-        a_up, a_dn = params.a_free, params.a_malloc
 
         def fn_curve(p: np.ndarray) -> np.ndarray:
             return _model_2d(held_arr, x_s, p)
@@ -503,22 +495,12 @@ def _draw_fit_2d(
         def fn_dot(p: np.ndarray) -> np.ndarray:
             return p[0] + p[2] * x_s + p[1] * held_s + p[3] * p[5] / (held_s + p[5])
 
-    t0 = params.W + params.a_malloc + params.a_free
-    held_name = "free" if curve.short == "malloc" else "malloc"
     if float(model[0]) - float(dotted[0]) > VISIBLE_GAP_S:
         y_lo, y_hi = float(dotted[0]), float(model[0])
         curve.ax.plot((curve.x0, curve.x0), (y_lo, y_hi), color=curve.color, linewidth=1, alpha=0.8)
-        f_val = a_up / t0 if t0 > EPS_S else 0.0
-        gaps.append(
-            (np.sqrt(y_lo * y_hi), curve.x0, curve.color, f"A_{curve.short} = {a_up:.2f} s, f = {100 * f_val:.1f}%")
-        )
     if float(dotted[0]) - float(linear[0]) > VISIBLE_GAP_S:
         y_lo, y_hi = float(linear[0]), float(dotted[0])
         curve.ax.plot((curve.x0, curve.x0), (y_lo, y_hi), color=curve.color, linewidth=1, alpha=0.8)
-        f_val = a_dn / t0 if t0 > EPS_S else 0.0
-        gaps.append(
-            (np.sqrt(y_lo * y_hi), curve.x0, curve.color, f"A_{held_name} = {a_dn:.2f} s, f = {100 * f_val:.1f}%")
-        )
     # The model takes second-based delays; the axis is in ns.
     sleeve(fn_dot, lower)
     curve.ax.plot(curve.x_ns, dotted, color=curve.color, linestyle=":", alpha=0.8)
@@ -530,17 +512,16 @@ def _draw_fit_2d(
 
 def _draw_fit_1d(
     curve: Curve,
-    gaps: list[tuple[float, float, str, str]],
     sleeve: Callable[[_ModelFn, tuple], None],
 ) -> None:
     """Draw the 1-D fit of one curve and its A/f gap marker.
 
     The solid line is the full model, the dashed line the linear
-    extrapolation to A = 0; the marker (appended to `gaps`) spans the
-    gap between them at the smallest delay.
+    extrapolation to A = 0; the marker spans the gap between them at
+    the smallest delay.
     """
     x_s, x_ns = curve.x_s, curve.x_ns
-    x0, params, short, color = curve.x0, curve.params, curve.short, curve.color
+    x0, params, color = curve.x0, curve.params, curve.color
     lower = (0.0, 0.0, 0.0, EPS_S)
     model = _model(x_s, params.W, params.N, params.A, params.s0)
     linear = params.W + params.N * x_s
@@ -554,8 +535,6 @@ def _draw_fit_1d(
     if float(model[0]) > float(linear[0]):
         y_lo, y_hi = float(linear[0]), float(model[0])
         curve.ax.plot((x0, x0), (y_lo, y_hi), color=color, linewidth=1, alpha=0.8)
-        f_val = params.A / (params.W + params.A) if params.W + params.A > EPS_S else 0.0
-        gaps.append((np.sqrt(y_lo * y_hi), x0, color, f"A_{short} = {params.A:.2f} s, f = {100 * f_val:.1f}%"))
     # The model takes second-based delays; the axis is in ns.
     sleeve(fn_curve, lower)
     curve.ax.plot(x_ns, model, color=color, linestyle="-", alpha=0.8)
@@ -563,10 +542,10 @@ def _draw_fit_1d(
     curve.ax.plot(x_ns, linear, color=color, linestyle="--", alpha=0.8)
 
 
-def _draw_fit_curves(curve: Curve, gaps: list[tuple[float, float, str, str]]) -> bool:
+def _draw_fit_curves(curve: Curve) -> bool:
     """Draw the fitted model lines of one curve and its A/f gap markers.
 
-    Dispatches on the fit type and appends the gap markers to `gaps`.
+    Dispatches on the fit type.
 
     Returns:
         bool: True when a 2-D fit was drawn.
@@ -586,9 +565,9 @@ def _draw_fit_curves(curve: Curve, gaps: list[tuple[float, float, str, str]]) ->
             curve.ax.fill_between(curve.x_ns, band[0], band[1], color=curve.color, alpha=0.3)
 
     if isinstance(curve.params, Fit2d):
-        _draw_fit_2d(curve, gaps, sleeve)
+        _draw_fit_2d(curve, sleeve)
         return True
-    _draw_fit_1d(curve, gaps, sleeve)
+    _draw_fit_1d(curve, sleeve)
     return False
 
 
@@ -607,25 +586,25 @@ def _draw_curve_fit(cluster: Cluster, x: np.ndarray, color: str, params: Fit1d |
     x_s = x_ns * 1e-9
     x0 = float(x_ns[0])
     curve = Curve(cluster.ax, x_ns, x_s, x0, held_s, params, cluster.short, color)
-    return _draw_fit_curves(curve, cluster.gaps)
+    return _draw_fit_curves(curve)
 
 
-def _draw_series(cluster: Cluster, result: pd.DataFrame, name: tuple) -> tuple[set, bool]:
+def _draw_series(cluster: Cluster, result: pd.DataFrame, name: tuple) -> bool:
     """Draw one curve: the errorbar points and, when a fit exists, the model lines.
 
     Returns:
-        tuple[set, bool]: (the positive x-delays, True when a 2-D fit was drawn).
+        bool: True when a 2-D fit was drawn.
 
     """
     x, ye_min, y, ye_max = np.sort(result.reset_index(drop=False)[[cluster.x_delay, "25%", "50%", "75%"]].to_numpy().T)
     # Only the pure sweep is shown: runs where the other (held) delay is
     # 0. Runs with both delays > 0 belong to neither figure.
     if name[5] != 0:
-        return set(), False
+        return False
     # A sweep needs at least two distinct x values above 0.
     x_pos = x[x > 0]
     if len(np.unique(x_pos)) < 2:
-        return set(), False
+        return False
     # The x-axis is logarithmic, so the zero-delay point is not representable
     # there (it is invisible on the plot anyway); drop it so it cannot corrupt
     # the autoscaled x limits.
@@ -645,10 +624,9 @@ def _draw_series(cluster: Cluster, result: pd.DataFrame, name: tuple) -> tuple[s
     # 2-D fit applies to either direction.
     if params is not None and isinstance(params, Fit1d) and params.direction != cluster.short:
         params = None
-    has_2d = False
-    if params is not None:
-        has_2d = _draw_curve_fit(cluster, x, color, params, float(name[5]) * 1e-9)
-    return set(x_pos), has_2d
+    if params is None:
+        return False
+    return _draw_curve_fit(cluster, x, color, params, float(name[5]) * 1e-9)
 
 
 def _plot_cluster(
@@ -663,17 +641,13 @@ def _plot_cluster(
     short = "malloc" if x_delay == MALLOC_DELAY else "free"
     secondary_short = "free" if secondary == FREE_DELAY else "malloc"
     fits_by_key = _collect_fits(fits)
-    gaps = []
-    cluster = Cluster(ax, x_delay, short, secondary_short, series_markers, fits_by_key, gaps)
+    cluster = Cluster(ax, x_delay, short, secondary_short, series_markers, fits_by_key)
     # One curve per (setup, algorithm, grid, held delay): the x-axis is
     # `x_delay`.
     results = simple_results.groupby([*GROUP_KEYS, secondary], dropna=False)
-    delays = set()
     has_2d = False
     for name, result in results:
-        curve_delays, curve_2d = _draw_series(cluster, result, name)
-        delays |= curve_delays
-        has_2d = curve_2d or has_2d
+        has_2d = _draw_series(cluster, result, name) or has_2d
     ax.set_title(f"{short} time scan")
     lines = ["solid: full fit"]
     if has_2d:
@@ -685,163 +659,7 @@ def _plot_cluster(
     ax.set_ylabel("runtime (s)")
     ax.set_xscale("log")
     ax.set_yscale("log")
-    _place_gap_labels(ax, gaps, delays)
     return ax
-
-
-def _label_boxes(ax: plt.Axes, placed: list, inv: plt.transforms.Transform) -> list[tuple[float, float, float, float]]:
-    """Compute the axes-fraction bounding box of each placed gap label.
-
-    Returns:
-        list[tuple[float, float, float, float]]: the (x0, x1, y0, y1) boxes.
-
-    """
-    boxes = []
-    for _arrow, lab, _lfy in placed:
-        c = inv.transform(lab.get_window_extent(ax.figure.canvas.get_renderer()).corners())
-        boxes.append((c[:, 0].min(), c[:, 0].max(), c[:, 1].min(), c[:, 1].max()))
-    return boxes
-
-
-def _separate_labels(
-    placed: list, boxes: list[tuple[float, float, float, float]], gc_frac: float, y_min: float
-) -> bool:
-    """Nudge any overlapping label pairs apart, vertically, in axes fraction.
-
-    Labels are never nudged below `y_min` (the data's level) so the
-    annotations stay at or above the data. The arrows follow their box
-    centres.
-
-    Returns:
-        bool: True when at least one label moved.
-
-    """
-    moved = False
-    for i in range(len(placed)):
-        for j in range(i + 1, len(placed)):
-            xi0, xi1, yi0, yi1 = boxes[i]
-            xj0, xj1, yj0, yj1 = boxes[j]
-            if min(xi1, xj1) - max(xi0, xj0) <= 0:
-                continue
-            y_overlap = min(yi1, yj1) - max(yi0, yj0)
-            if y_overlap > -LABEL_OVERLAP_EPS:
-                shift = 0.5 * (y_overlap + LABEL_MIN_SPACE)
-                if 0.5 * (yi0 + yi1) >= 0.5 * (yj0 + yj1):
-                    placed[i], placed[j] = (
-                        (placed[i][0], placed[i][1], min(max(placed[i][2] + shift, y_min), 1.0)),
-                        (placed[j][0], placed[j][1], min(max(placed[j][2] - shift, y_min), 1.0)),
-                    )
-                else:
-                    placed[i], placed[j] = (
-                        (placed[i][0], placed[i][1], min(max(placed[i][2] - shift, y_min), 1.0)),
-                        (placed[j][0], placed[j][1], min(max(placed[j][2] + shift, y_min), 1.0)),
-                    )
-                placed[i][1].set_position((gc_frac, placed[i][2]))
-                placed[j][1].set_position((gc_frac, placed[j][2]))
-                moved = True
-    return moved
-
-
-def _resolve_label_overlaps(ax: plt.Axes, placed: list, gc_frac: float, y_min: float) -> None:
-    """Separate vertically any overlapping gap labels.
-
-    A 2-D group contributes two labels (one per operation); the labels are
-    relaxed in axes fraction until their bounding boxes no longer overlap
-    (up to 64 passes), never dropping below `y_min`, and the arrows and
-    labels are re-anchored at their final box centres.
-    """
-    inv = ax.transAxes.inverted()
-    for _ in range(64):
-        ax.figure.canvas.draw()
-        if not _separate_labels(placed, _label_boxes(ax, placed, inv), gc_frac, y_min):
-            break
-    for arrow, lab, lfy in placed:
-        arrow.xyann = (gc_frac, lfy)
-        lab.set_position((gc_frac, lfy))
-
-
-def _data_top_frac_at(ax: plt.Axes, gc: float, ylim: tuple[float, float]) -> float:
-    """Return the axes-fraction height of the highest data point at x = gc.
-
-    Interpolates each drawn line that spans gc and returns the axes
-    fraction of their maximum; `ylim[1]` when no line spans gc.
-
-    Returns:
-        float: the axes-fraction y of the highest data point at gc.
-
-    """
-    tops = []
-    for line in ax.get_lines():
-        x = np.asarray(line.get_xdata(), dtype=float)
-        y = np.asarray(line.get_ydata(), dtype=float)
-        mask = np.isfinite(x) & np.isfinite(y)
-        x, y = x[mask], y[mask]
-        if x.size < 2 or not (x.min() < gc < x.max()):
-            continue
-        order = np.argsort(x)
-        tops.append(float(np.interp(gc, x[order], y[order])))
-    data_top = max(tops, default=ylim[1])
-    return (np.log10(data_top) - np.log10(ylim[0])) / (np.log10(ylim[1]) - np.log10(ylim[0]))
-
-
-def _place_gap_labels(ax: plt.Axes, gaps: list[tuple[float, float, str, str]], delays: set[float]) -> None:
-    """Place the A/f gap labels and their leader lines on the axis.
-
-    Each label sits in the clear band between the first and second
-    delays, at their geometric mean, and is kept at or above the data's
-    level at that column so the annotations never dangle below the
-    curves; a thin leader line joins it to its gap marker. Labels that
-    touch or overlap are separated vertically until they no longer do.
-    """
-    delay_xs = sorted(delays)
-    if not (gaps and len(delay_xs) >= 2):
-        return
-    ax.autoscale_view()
-    ylim = ax.get_ylim()
-    xlim = ax.get_xlim()
-    gc = float(10 ** (0.5 * (np.log10(delay_xs[0]) + np.log10(delay_xs[1]))))
-    gc_frac = (np.log10(gc) - np.log10(xlim[0])) / (np.log10(xlim[1]) - np.log10(xlim[0]))
-    # The data's level at the label column; the labels stay at or above it.
-    data_top_frac = _data_top_frac_at(ax, gc, ylim)
-    placed = []
-    for y_mid, x0, color, text in gaps:
-        mid_frac = (np.log10(y_mid) - np.log10(ylim[0])) / (np.log10(ylim[1]) - np.log10(ylim[0]))
-        lfy = min(max(mid_frac + LABEL_MIN_SPACE, data_top_frac + LABEL_MIN_SPACE), 0.96)
-        # The leader line is its own artist (a bbox-anchored arrow breaks
-        # matplotlib's layout path clipping). Its tail is anchored at
-        # the label centre in axes fraction -- the same coordinates as the
-        # text -- so it tracks the box through the layout. The box,
-        # drawn on top, hides the part of the line under it, so the visible
-        # segment runs from the box edge to the gap.
-        arrow = ax.annotate(
-            "",
-            xy=(x0, y_mid),
-            xytext=(gc_frac, lfy),
-            textcoords="axes fraction",
-            arrowprops={"arrowstyle": "->", "color": color, "linewidth": 0.8, "alpha": 0.8},
-            zorder=4,
-        )
-        lab = ax.text(
-            gc_frac,
-            lfy,
-            text,
-            transform=ax.transAxes,
-            ha="center",
-            va="center",
-            fontsize=8,
-            color=color,
-            bbox={
-                "boxstyle": "round,pad=0.25",
-                "facecolor": "white",
-                "edgecolor": color,
-                "alpha": 0.95,
-                "linewidth": 0.5,
-            },
-            zorder=5,
-        )
-        placed.append([arrow, lab, lfy])
-    if len(placed) > 1:
-        _resolve_label_overlaps(ax, placed, gc_frac, data_top_frac + LABEL_MIN_SPACE)
 
 
 def _model(s: np.ndarray, W: float, N: float, A: float, s0: float) -> np.ndarray:
