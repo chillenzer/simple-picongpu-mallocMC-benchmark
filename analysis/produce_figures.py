@@ -26,12 +26,22 @@ from scipy.stats import kruskal
 
 
 def fresh_markers() -> Iterator[str]:
-    """Return a cycling iterator over the marker styles."""
+    """Return a cycling iterator over the marker styles.
+
+    Returns:
+        Iterator[str]: a cycling iterator over the marker styles.
+
+    """
     return cycle(("o", "s", "v", "p", "^", "8", ">", "<"))
 
 
 def fresh_colours() -> Iterator[str]:
-    """Return a cycling iterator over the palette colours."""
+    """Return a cycling iterator over the palette colours.
+
+    Returns:
+        Iterator[str]: a cycling iterator over the palette colours.
+
+    """
     return cycle(
         [
             "#1f77b4",
@@ -65,7 +75,12 @@ YMIN, YMAX = 0.9, 1.1
 
 
 def generate_new_style() -> dict[str, str]:
-    """Take the next marker and colour pair for an algorithm."""
+    """Take the next marker and colour pair for an algorithm.
+
+    Returns:
+        dict[str, str]: the next (marker, color) pair for an algorithm.
+
+    """
     return {"marker": next(MARKER), "color": next(COLOR)}
 
 
@@ -81,7 +96,12 @@ REFERENCE_ALGORITHM = "ScatterAlloc"
 
 
 def parse_header(header: str) -> tuple[str, str] | None:
-    """Parse an example/algorithm header; None if it does not match."""
+    """Parse an example/algorithm header; None if it does not match.
+
+    Returns:
+        tuple[str, str] | None: (example, algorithm), or None if it does not match.
+
+    """
     parsed = parse.parse(
         "Running example: {example}\nUsing algorithm: {algorithm}",
         header.strip("=").strip(),
@@ -92,12 +112,22 @@ def parse_header(header: str) -> tuple[str, str] | None:
 
 
 def parse_tuple(text: str) -> tuple[str, tuple[int, ...]]:
-    """Split a flag like `g 16 32` into its leading letter and integer values."""
+    """Split a flag like `g 16 32` into its leading letter and integer values.
+
+    Returns:
+        tuple[str, tuple[int, ...]]: the leading letter and the integer values.
+
+    """
     return text.strip()[0], tuple(map(int, text.strip()[1:].strip().split(" ")))
 
 
 def parse_log(log: str) -> pd.Series | None:
-    """Parse one log section into a Series of runtimes keyed by grid."""
+    """Parse one log section into a Series of runtimes keyed by grid.
+
+    Returns:
+        pd.Series | None: the runtimes keyed by grid, or None if the section has no runs.
+
+    """
     results = {}
     for text in log.split("+ bin/picongpu ")[1:]:
         flags = parse.parse(
@@ -121,7 +151,12 @@ def parse_log(log: str) -> pd.Series | None:
 
 
 def pairs(iterable: Iterable[str]) -> Iterator[tuple[str, str]]:
-    """Yield successive (header, log) pairs from an iterable."""
+    """Yield successive (header, log) pairs from an iterable.
+
+    Yields:
+        tuple[str, str]: successive (header, log) pairs.
+
+    """
     # Zip the same iterator against itself to group consecutive segments;
     # a trailing incomplete segment (odd count) is dropped, not raised.
     it = iter(iterable)
@@ -129,7 +164,12 @@ def pairs(iterable: Iterable[str]) -> Iterator[tuple[str, str]]:
 
 
 def parse_full(file: Path) -> pd.DataFrame:
-    """Parse a whole run_all log file into a per-run DataFrame."""
+    """Parse a whole run_all log file into a per-run DataFrame.
+
+    Returns:
+        pd.DataFrame: one column per (example, algorithm) header, indexed by grid.
+
+    """
     with file.open("r", encoding="utf-8") as f:
         text = f.read()
     return pd.DataFrame(
@@ -142,13 +182,23 @@ def parse_full(file: Path) -> pd.DataFrame:
 
 
 def read_data(cluster: Path) -> pd.DataFrame:
-    """Concatenate every log file of a cluster directory."""
+    """Concatenate every log file of a cluster directory.
+
+    Returns:
+        pd.DataFrame: every log file of the cluster concatenated along the columns.
+
+    """
     files = list(cluster.glob("*"))
     return pd.concat([parse_full(file) for file in files], axis=1)
 
 
 def read_timings() -> pd.DataFrame:
-    """Read all clusters into a long (hardware, grid, algorithm) timings frame."""
+    """Read all clusters into a long (hardware, grid, algorithm) timings frame.
+
+    Returns:
+        pd.DataFrame: the long (hardware, grid, algorithm) timings frame.
+
+    """
     clusters = list(OUTPUT.glob("*"))
     timings = pd.concat(
         [read_data(cluster) for cluster in clusters],
@@ -173,12 +223,22 @@ def read_timings() -> pd.DataFrame:
 
 
 def memory(grid_sizes: pd.DataFrame) -> np.ndarray:
-    """Estimate particle memory in GB for each grid size."""
+    """Estimate particle memory in GB for each grid size.
+
+    Returns:
+        np.ndarray: the estimated particle memory in GB for each grid size.
+
+    """
     return np.ceil(np.prod(grid_sizes, axis=1) * MEMORY_PER_CELL / 1024**3).astype(int)
 
 
 def statistical_timings(timings: pd.DataFrame) -> pd.DataFrame:
-    """Describe the runtime of every (hardware, grid, algorithm) group."""
+    """Describe the runtime of every (hardware, grid, algorithm) group.
+
+    Returns:
+        pd.DataFrame: the runtime description of every (hardware, grid, algorithm) group.
+
+    """
     return (
         timings.reset_index(drop=False)
         .set_index(
@@ -198,7 +258,12 @@ def statistical_timings(timings: pd.DataFrame) -> pd.DataFrame:
 
 
 def compute_baselines(timings: pd.DataFrame) -> pd.Series:
-    """Compute the median ScatterAlloc runtime per (hardware, memory) group."""
+    """Compute the median ScatterAlloc runtime per (hardware, memory) group.
+
+    Returns:
+        pd.Series: the median ScatterAlloc runtime per (hardware, memory) group.
+
+    """
     return timings.groupby(["hardware", MEM_LABEL], axis=0).apply(
         lambda x: np.percentile(
             x.set_index("algorithm", append=False, drop=True)["runtime in seconds"]["ScatterAlloc"],
@@ -217,7 +282,12 @@ def print_results(results: pd.DataFrame | pd.Series, name: str) -> None:
 
 
 def plot_foil(timings: pd.DataFrame) -> pd.Series:
-    """Plot the FoilLCT bar chart and return its significance metadata."""
+    """Plot the FoilLCT bar chart and return its significance metadata.
+
+    Returns:
+        pd.Series: the Kruskal significance metadata of the chart.
+
+    """
     plt.figure()
     ax = sns.barplot(
         timings,
@@ -240,7 +310,12 @@ def plot_foil(timings: pd.DataFrame) -> pd.Series:
 
 
 def outlier_mask(timings: pd.Series, safety_factor: float = 1.5) -> pd.Series:
-    """Flag values outside the Tukey fences as outliers."""
+    """Flag values outside the Tukey fences as outliers.
+
+    Returns:
+        pd.Series: a boolean mask of the values outside the Tukey fences.
+
+    """
     # according to Tukey's criterion
     perc_25, perc_75 = timings.describe()[["25%", "75%"]]
     interval = (
@@ -251,7 +326,13 @@ def outlier_mask(timings: pd.Series, safety_factor: float = 1.5) -> pd.Series:
 
 
 def plot_khi(timings: pd.DataFrame) -> pd.DataFrame:
-    """Plot the KelvinHelmholtz violin chart and return its metadata."""
+    """Plot the KelvinHelmholtz violin chart and return its metadata.
+
+    Returns:
+        pd.DataFrame: the chart's metadata (reference runtime, outliers,
+        kruskal p-value, relative runtime).
+
+    """
     plt.figure()
     timings = (
         timings.assign(**{MEM_LABEL: memory(timings[["grid_x", "grid_y", "grid_z"]])})
@@ -314,7 +395,12 @@ def plot_khi(timings: pd.DataFrame) -> pd.DataFrame:
 
 
 def compute_significance(timings: pd.DataFrame, name: str) -> pd.Series:
-    """Compute the Kruskal p-value of `name` across algorithms per group."""
+    """Compute the Kruskal p-value of `name` across algorithms per group.
+
+    Returns:
+        pd.Series: the Kruskal p-value of `name` across algorithms per group.
+
+    """
     return (
         timings.set_index(["algorithm", "run_id"])
         .groupby(["hardware", MEM_LABEL])

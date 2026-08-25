@@ -143,7 +143,12 @@ LABEL_MIN_SPACE = 0.02
 
 
 def parse_setup(line: str) -> dict | None:
-    """Parse the run context of a `cd` trace line; None if the line is unrelated."""
+    """Parse the run context of a `cd` trace line; None if the line is unrelated.
+
+    Returns:
+        dict | None: the parsed setup context, or None if the line is unrelated.
+
+    """
     path = line.rsplit(maxsplit=1)[-1]
     m = VARIANT_CD_RE.search(path)
     if m:
@@ -169,7 +174,12 @@ def parse_setup(line: str) -> dict | None:
 
 
 def parse_grid(line: str) -> dict[str, int]:
-    """Parse the `-g` grid dimensions out of a picongpu command line."""
+    """Parse the `-g` grid dimensions out of a picongpu command line.
+
+    Returns:
+        dict[str, int]: the grid dimensions, keyed by x, y, z.
+
+    """
     return {
         key: int(val)
         for key, val in zip(
@@ -183,12 +193,22 @@ def parse_grid(line: str) -> dict[str, int]:
 
 
 def parse_simulation_time(line: str) -> dict[str, float]:
-    """Parse a `calculation  simulation time` line into a runtime dict."""
+    """Parse a `calculation  simulation time` line into a runtime dict.
+
+    Returns:
+        dict[str, float]: the simulation runtime in seconds.
+
+    """
     return {"runtime in s": float(line.split("=")[1][: -len("sec")])}
 
 
 def parse_log(log_path: Path) -> Iterator[dict]:
-    """Yield one record per picongpu run of a single run log."""
+    """Yield one record per picongpu run of a single run log.
+
+    Yields:
+        dict: one record per picongpu run of the log.
+
+    """
     with log_path.open("r", encoding="utf-8") as file:
         context = {}
         pending = None
@@ -229,23 +249,43 @@ def parse_log(log_path: Path) -> Iterator[dict]:
 
 
 def run_to_df(run: dict) -> pd.DataFrame:
-    """Build a DataFrame from one run's records, tagged with its name."""
+    """Build a DataFrame from one run's records, tagged with its name.
+
+    Returns:
+        pd.DataFrame: the run's records, tagged with the run's name.
+
+    """
     return pd.DataFrame(run["runs"]).assign(name=run["name"])
 
 
 def runs_to_df(runs: Iterable[dict]) -> pd.DataFrame:
-    """Concatenate the per-run DataFrames, filling a missing z with NaN."""
+    """Concatenate the per-run DataFrames, filling a missing z with NaN.
+
+    Returns:
+        pd.DataFrame: the concatenated per-run frames, a missing z filled with NaN.
+
+    """
     tmp = pd.concat(map(run_to_df, runs))
     return tmp.assign(z=tmp.get("z", np.nan))
 
 
 def parse_logs(log_paths: Iterable[Path]) -> pd.DataFrame:
-    """Parse every run log into a single DataFrame."""
+    """Parse every run log into a single DataFrame.
+
+    Returns:
+        pd.DataFrame: every run log parsed into one frame.
+
+    """
     return runs_to_df({"name": p, "runs": parse_log(p)} for p in log_paths)
 
 
 def simple_statistics(full_results: pd.DataFrame) -> pd.DataFrame:
-    """Group the parsed runs and describe the runtime of each group."""
+    """Group the parsed runs and describe the runtime of each group.
+
+    Returns:
+        pd.DataFrame: the runtime description of each (setup, algorithm, grid, delay) group.
+
+    """
     # Group by the frame's column order (not a set): a set's iteration order
     # is hash-randomized per process, which would shuffle the printed index.
     group_cols = [c for c in full_results.columns if c not in {"runtime in s", "name"}]
@@ -255,7 +295,12 @@ def simple_statistics(full_results: pd.DataFrame) -> pd.DataFrame:
 
 
 def label(info: tuple, secondary: str = "free") -> str:
-    """Format a (setup, algorithm, grid, held-delay) group key as a legend label."""
+    """Format a (setup, algorithm, grid, held-delay) group key as a legend label.
+
+    Returns:
+        str: the formatted legend label.
+
+    """
     # Plot group key (setup, algorithm, x, y, z, <secondary delay>); the
     # suffix names the held (secondary) delay when it is non-zero. The
     # algorithm is not part of the label: in multi-algorithm figures each
@@ -286,7 +331,10 @@ def simple_plot(cluster_results: list[tuple[str, pd.DataFrame, pd.DataFrame | No
     the left column names the row's algorithm. Each (setup, grid) series
     gets a distinct marker, consistently on all axes and figures; the
     legend is shown on each figure's left-most axis that has a curve.
-    Returns the list of figures.
+
+    Returns:
+        list[plt.Figure]: one figure per cluster.
+
     """
     # Assign each (setup, algorithm, grid) series its marker once, in plot
     # order, so the same series is drawn with the same marker on every axis
@@ -394,6 +442,10 @@ def _collect_fits(fits: pd.DataFrame | None) -> dict[tuple, Fit1d | Fit2d]:
 
     Rows without a complete fit (missing or NaN parameters) are
     omitted; `fits` of None yields an empty dict.
+
+    Returns:
+        dict[tuple, Fit1d | Fit2d]: the usable fits, keyed by group key.
+
     """
     fits_by_key = {}
     if fits is not None:
@@ -587,8 +639,11 @@ def _draw_fit_curves(
 ) -> bool:
     """Draw the fitted model lines of one curve and its A/f gap markers.
 
-    Dispatches on the fit type; appends the gap markers to `gaps` and
-    returns True when a 2-D fit was drawn.
+    Dispatches on the fit type and appends the gap markers to `gaps`.
+
+    Returns:
+        bool: True when a 2-D fit was drawn.
+
     """
 
     def sleeve(fn: _ModelFn, lower: tuple) -> None:
@@ -815,9 +870,13 @@ def _bootstrap_band(
     sleeve is a resampling bootstrap rather than an analytic error
     propagation: draw `n` parameter vectors from the multivariate normal of
     the fitted parameters and their covariance, evaluate the line's model
-    function `fn` on the x-grid `x_s` (in seconds) for each, and return the
-    pointwise (lo, hi) percentiles of the resulting model values. Returns
-    None when `pcov` is unavailable or non-finite (no sleeve).
+    function `fn` on the x-grid `x_s` (in seconds) for each.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray] | None: the pointwise (lo, hi)
+        percentiles of the resampled model values, or None when `pcov` is
+        unavailable or non-finite (no sleeve).
+
     """
     cov = np.asarray(pcov, dtype=float)
     if not np.all(np.isfinite(cov)):
@@ -850,7 +909,12 @@ def _bootstrap_band(
 
 
 def _fit_lsq(h: np.ndarray, s: np.ndarray, t: np.ndarray) -> tuple[float, float, float, float]:
-    """Least squares for t = W + N*s + A*h; returns (W, N, A, ss_res)."""
+    """Least squares for t = W + N*s + A*h.
+
+    Returns:
+        tuple[float, float, float, float]: W, N, A, and the residual sum of squares.
+
+    """
     sol, *_ = np.linalg.lstsq(np.vstack([np.ones_like(s), s, h]).T, t, rcond=None)
     res = t - (sol[0] + sol[1] * s + sol[2] * h)
     return (*[float(v) for v in sol], float(np.sum(res**2)))
@@ -859,7 +923,9 @@ def _fit_lsq(h: np.ndarray, s: np.ndarray, t: np.ndarray) -> tuple[float, float,
 def _grid_guess(s: np.ndarray, t: np.ndarray, lo: float, hi: float) -> tuple[float, float, float, float]:
     """Robust unconstrained solution: linear in (W, N, A) for each s0 on a log grid.
 
-    Returns (W, N, A, s0).
+    Returns:
+        tuple[float, float, float, float]: W, N, A, and the best s0 from the log grid.
+
     """
     hi_g = max(float(hi), lo * 1.5)
     best = None
@@ -875,6 +941,10 @@ def _uncertainties(p: np.ndarray, pcov: np.ndarray | None, f_of_p: Callable[[np.
     """Compute the standard errors for the fitted parameters p and for f = f_of_p(p).
 
     Derived from the parameter covariance; NaNs if the covariance is unavailable.
+
+    Returns:
+        list[float]: the standard errors of the fitted parameters, then that of f.
+
     """
     if pcov is None or not np.all(np.isfinite(np.asarray(pcov))):
         return [float("nan")] * (len(p) + 1)
@@ -896,9 +966,14 @@ def _uncertainties(p: np.ndarray, pcov: np.ndarray | None, f_of_p: Callable[[np.
 def fit_allocation_fraction(sleeptimes: pd.Series, runtimes: pd.Series, c_a: float | None = None) -> dict:
     """Fit one sleeptime sweep to the constrained Amdahl model.
 
-    Returns a dict with W, N, A, s0, T0, f, r2 plus their standard errors
-    (W_err, N_err, A_err, s0_err, f_err, NaN when unavailable), warnings, and
-    the data with per-point residuals.
+    Returns:
+        dict: W, N, A, s0, T0, f, r2 plus their standard errors (W_err, N_err,
+        A_err, s0_err, f_err, NaN when unavailable), warnings, and the data
+        with per-point residuals.
+
+    Raises:
+        ValueError: if the arrays have unequal shapes or fewer than 3 points.
+
     """
     s = np.asarray(sleeptimes, dtype=float) * 1e-9  # ns -> s
     t = np.asarray(runtimes, dtype=float)
@@ -1068,9 +1143,14 @@ def fit_allocation_fraction_2d(m_delays: pd.Series, f_delays: pd.Series, runtime
 
     The model is T(m, f) = W + N_m*m + N_f*f + A_m*m0/(m+m0) + A_f*f0/(f+f0).
 
-    Returns a dict with W, N_m, N_f, A_m, A_f, m0, f0, T0, f_malloc, f_free,
-    r2 plus their standard errors (NaN when unavailable), warnings, and the
-    data with per-point residuals.
+    Returns:
+        dict: W, N_m, N_f, A_m, A_f, m0, f0, T0, f_malloc, f_free, r2 plus
+        their standard errors (NaN when unavailable), warnings, and the data
+        with per-point residuals.
+
+    Raises:
+        ValueError: if the arrays have unequal shapes or fewer than 3 points.
+
     """
     m = np.asarray(m_delays, dtype=float) * 1e-9  # ns -> s
     f = np.asarray(f_delays, dtype=float) * 1e-9
@@ -1235,7 +1315,12 @@ def _to_ns(value: float) -> float:
 
 
 def _fit_cov(res: dict) -> tuple | None:
-    """(fit_params, pcov) for the bootstrap sleeves, or None if unavailable."""
+    """Extract the fitted parameter vector and its covariance for the bootstrap sleeves.
+
+    Returns:
+        tuple | None: (fit_params, pcov) for the bootstrap sleeves, or None if unavailable.
+
+    """
     return (res["fit_params"], res["pcov"]) if res["fit_params"] is not None else None
 
 
@@ -1246,9 +1331,13 @@ def fit_sweep(df: pd.DataFrame, c_a: float | None = None, configuration: str | N
     the two-operation model of `fit_allocation_fraction_2d`; groups spanning
     only one delay fall back to the 1-D model of `fit_allocation_fraction`
     on that delay. `df` is the output of `parse_logs`; `configuration`, if
-    given, restricts the fit to that configuration. The `cov` column carries
-    the fitted parameter vector and its covariance (or None) so the plot can
-    draw bootstrap sleeves around the fit lines.
+    given, restricts the fit to that configuration.
+
+    Returns:
+        pd.DataFrame: one row per group with the fitted parameters; the
+        `cov` column carries the fitted parameter vector and its covariance
+        (or None) so the plot can draw bootstrap sleeves around the fit lines.
+
     """
     if configuration is not None:
         df = df[df["configuration"] == configuration]

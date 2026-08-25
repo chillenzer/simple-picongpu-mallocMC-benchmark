@@ -100,11 +100,14 @@ COLUMNS = [
 def parse_results(source: str | Path | Iterable[str]) -> pd.DataFrame:
     """Parse the pre-filtered run log `source` (path or line iterable).
 
-    Returns a DataFrame with one row per picongpu run; see the module docstring
-    for the expected input format and the columns. `sleep_time` (the malloc
-    delay) and `free_sleep_time` (the free delay, `0` for pre-rename and
-    compile-time runs) are in nanoseconds, `time_seconds` is the simulation
-    wall time in seconds.
+    See the module docstring for the expected input format and the columns.
+    `sleep_time` (the malloc delay) and `free_sleep_time` (the free delay, `0`
+    for pre-rename and compile-time runs) are in nanoseconds, `time_seconds`
+    is the simulation wall time in seconds.
+
+    Returns:
+        pd.DataFrame: one row per picongpu run.
+
     """
     ctx = {
         "example": None,
@@ -224,7 +227,12 @@ def parse_results(source: str | Path | Iterable[str]) -> pd.DataFrame:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Parse a pre-filtered run log and print (and optionally write) the frame."""
+    """Parse a pre-filtered run log and print (and optionally write) the frame.
+
+    Returns:
+        int: a process exit status; 0 on success.
+
+    """
     parser = argparse.ArgumentParser(description="Parse pre-filtered run logs into a DataFrame")
     parser.add_argument("results", help="pre-filtered log (output of the grep)")
     parser.add_argument("--csv", metavar="OUT", help="also write the DataFrame to a CSV file")
