@@ -11,11 +11,16 @@ target-version = "py314"
 # E1/E2 indentation rules and COM trailing-comma rules are left to
 # `ruff format`; E501 is enforced as a hard line limit.
 select = ["ALL"]
-# B023 (loop variable captured by a function): the plotting loops define
-# closures that are called within the same iteration, before the captured
+# Preview-mode rules are on: the pydoclint (DOC) family and a handful of
+# others (explicit encodings, try-clause size, ...) are preview-only in
+# this ruff version. The pre-commit pin keeps the preview set from
+# shifting under us between deliberate ruff bumps.
+preview = true
+# function-uses-loop-variable (B023): the plotting loops define closures
+# that are called within the same iteration, before the captured
 # variables are rebound, so late binding cannot bite.
 ignore = [
-    "B023",
+    "function-uses-loop-variable",
     # whitespace rules owned by `ruff format`:
     "E1",
     "E2",
@@ -26,7 +31,7 @@ ignore = [
     "INP",  # analysis/ holds standalone CLI scripts, not an importable package
     # self-documenting counts (len < 2, size < 3, ndim == 2) dominate this
     # rule's findings; the meaningful tolerances are named constants:
-    "PLR2004",
+    "magic-value-comparison",
     # pandas-vet reshape preferences (.melt over .stack, .pivot_table over
     # .unstack): the MultiIndex reshaping needs stack/unstack semantics,
     # which melt/pivot_table do not cover:
@@ -34,10 +39,15 @@ ignore = [
     # stdlib imports used only for types: these are CLI scripts, so the
     # runtime import cost a TYPE_CHECKING block would save is negligible:
     "TC",
+    # preview-mode pydocstyle picks multi-line-summary-first-line (D212)
+    # and no-blank-line-before-class (D211) over their incompatible
+    # counterparts; ignoring the counterparts explicitly stops ruff from
+    # warning about the incompatible pair:
+    "incorrect-blank-line-before-class",
+    "multi-line-summary-second-line",
     # no findings; not applicable to these scripts:
     "ASYNC",
     "DJ",
-    "DOC",
     "FAST",
     "FURB",
     "SLF",
@@ -55,6 +65,12 @@ max-args = 10
 max-positional-args = 10
 max-branches = 20
 max-statements = 80
+# The parse/fit/plot routines carry 20-30 locals, up to 6 nested blocks
+# (the label-overlap loop) and up to 20 statements in a try clause; these
+# limits admit the existing functions while capping new bloat.
+max-locals = 30
+max-nested-blocks = 6
+max-statements-in-try = 20
 
 # The copyright notice is the SPDX-FileCopyrightText tag in each file's
 # header; the REUSE hook validates it repo-wide, this rule only guards

@@ -1088,7 +1088,7 @@ def fit_allocation_fraction(sleeptimes: pd.Series, runtimes: pd.Series, c_a: flo
             W, N, A, s0 = (float(v) for v in popt)
             # ruff's SIM300 "fix" would move the constant expression to the
             # left of the comparison, i.e. create a genuine Yoda condition.
-            if gA < -1e-6 * max(abs(gW), 1e-9) and A <= 1e-6 * max(abs(W), 1e-9):  # ruff: ignore[SIM300]
+            if gA < -1e-6 * max(abs(gW), 1e-9) and A <= 1e-6 * max(abs(W), 1e-9):  # ruff: ignore[yoda-conditions]
                 notes.append(
                     "unconstrained fit wanted A<0 (smallest-sleeptime runtime below the Amdahl "
                     "line); A constrained to 0 so f is floored at 0"
