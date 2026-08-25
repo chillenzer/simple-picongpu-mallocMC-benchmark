@@ -90,17 +90,27 @@ import pandas as pd
 from scipy.optimize import OptimizeWarning, curve_fit
 
 ALGORITHM = "FlatterScatter"
+# The creation policies the benchmark can run, in the row order of the
+# figures; a figure only shows the algorithms present in its data.
+ALGORITHM_ORDER = ("FlatterScatter", "ScatterAlloc", "Gallatin")
 CD_CMD = "+ cd "
 RUN_CMD = "bin/picongpu "
 MALLOC_DELAY_CMD = "MALLOCMC_MALLOC_DELAY="
 FREE_DELAY_CMD = "MALLOCMC_FREE_DELAY="
 # Pre-rename logs: the malloc delay was then injected via MALLOCMC_SLEEP_TIME.
 LEGACY_MALLOC_DELAY_CMD = "MALLOCMC_SLEEP_TIME="
-# `cd` trace lines that carry run context: the old per-variant layout
-# (`cd build/<Example>/<Algorithm>-sleep<N>`) and the current one-build-per
-# example layout (`cd .../build/<Example>`); every other `cd` (for example
-# the `cd $WD` return in run_folder.sh) is ignored.
+# `cd` trace lines that carry run context: the oldest per-variant layout
+# (`cd build/<Example>/<Algorithm>-sleep<N>`, delays compiled in), the
+# current one-build-per-(example, algorithm) layout
+# (`cd .../build/<Example>/<Algorithm>`, delays still run-time), and the
+# interim one-build-per-example layout (`cd .../build/<Example>`, which
+# always ran FlatterScatter); every other `cd` (for example the `cd $WD`
+# return in run_folder.sh) is ignored. The three patterns are mutually
+# exclusive: `-sleep` breaks the trailing `\w+$` of the other two, and the
+# per-algorithm path has one word component too many for the per-example
+# one.
 VARIANT_CD_RE = re.compile(r"(?:^|/)build/(\w+)/(\w+)-sleep(\d+)$")
+BUILD_ALGO_CD_RE = re.compile(r"(?:^|/)build/(\w+)/(\w+)$")
 BUILD_CD_RE = re.compile(r"(?:^|/)build/(\w+)$")
 # cluster name -> (run-log directory, hardware name for the figure title)
 CLUSTERS = {
@@ -113,7 +123,7 @@ CLUSTERS = {
 # of them. The parsed results are always complete.
 CONFIGURATION = None
 
-GROUP_KEYS = ("setup", "x", "y", "z")
+GROUP_KEYS = ("setup", "algorithm", "x", "y", "z")
 MALLOC_DELAY = "malloc_sleeptime"
 FREE_DELAY = "free_sleeptime"
 DELAY_COLUMNS = (MALLOC_DELAY, FREE_DELAY)
@@ -146,6 +156,12 @@ def parse_setup(line: str) -> dict | None:
             "free_sleeptime": 0,
             "configuration": "compile-time",
         }
+    m = BUILD_ALGO_CD_RE.search(path)
+    if m:
+        # One build per (example, algorithm): the creation policy is
+        # compiled into the binary; the delays are still injected at run
+        # time via the MALLOCMC_*_DELAY environment variables.
+        return {"setup": m[1], "algorithm": m[2]}
     m = BUILD_CD_RE.search(path)
     if m:
         return {"setup": m[1], "algorithm": ALGORITHM}
@@ -239,11 +255,13 @@ def simple_statistics(full_results: pd.DataFrame) -> pd.DataFrame:
 
 
 def label(info: tuple, secondary: str = "free") -> str:
-    """Format a (setup, grid, held-delay) group key as a legend label."""
-    # Plot group key (setup, x, y, z, <secondary delay>); the suffix names the
-    # held (secondary) delay when it is non-zero.
-    grid_string = "x".join(map(str, map(int, np.asarray(info[1:4])[~np.isnan(info[1:4])])))
-    suffix = "" if info[4] == 0 else f", {secondary}: {int(info[4])} ns"
+    """Format a (setup, algorithm, grid, held-delay) group key as a legend label."""
+    # Plot group key (setup, algorithm, x, y, z, <secondary delay>); the
+    # suffix names the held (secondary) delay when it is non-zero. The
+    # algorithm is not part of the label: in multi-algorithm figures each
+    # row is one algorithm and is named by its row header.
+    grid_string = "x".join(map(str, map(int, np.asarray(info[2:5])[~np.isnan(info[2:5])])))
+    suffix = "" if info[5] == 0 else f", {secondary}: {int(info[5])} ns"
     return f"{info[0]} {grid_string}{suffix}"
 
 
@@ -254,21 +272,25 @@ def _group_key(name: tuple) -> tuple:
 
 
 def simple_plot(cluster_results: list[tuple[str, pd.DataFrame, pd.DataFrame | None]]) -> list[plt.Figure]:
-    """One figure per cluster, the two sweeps next to each other.
+    """One figure per cluster, one row per algorithm, the two sweeps side by side.
 
     `cluster_results` is a list of `(title, simple_results, fits)` entries,
     one per cluster; `title` is the hardware the runs were made on. Each
-    figure is titled by the hardware and has two axes, titled "malloc time
-    scan" and "free time scan", sharing the y-axis (only the left axis shows
-    its tick labels and label): the malloc sleep_time sweep (free
-    sleep_time = 0) on the left and the free sleep_time sweep (malloc
-    sleep_time = 0) on the right. Each (setup, grid) series gets a distinct
-    marker, consistently on all axes and figures; the legend is shown on
-    each figure's left-most axis that has a curve. Returns the list of
-    figures.
+    figure is titled by the hardware; each row is one creation policy
+    (only the algorithms present in the data, in `ALGORITHM_ORDER`) with
+    two axes, titled "malloc time scan" and "free time scan", sharing the
+    y-axis with all other axes of the figure (only the left axis shows its
+    tick labels and label): the malloc delay sweep (free delay 0) on the
+    left and the free delay sweep (malloc delay 0) on the right. A figure
+    with a single algorithm has exactly the one-row layout; with several,
+    the left column names the row's algorithm. Each (setup, grid) series
+    gets a distinct marker, consistently on all axes and figures; the
+    legend is shown on each figure's left-most axis that has a curve.
+    Returns the list of figures.
     """
-    # Assign each (setup, grid) series its marker once, in plot order, so the
-    # same series is drawn with the same marker on every axis of every figure.
+    # Assign each (setup, algorithm, grid) series its marker once, in plot
+    # order, so the same series is drawn with the same marker on every axis
+    # of every figure.
     series_markers = {}
     for _, simple_results, _ in cluster_results:
         for name, _ in simple_results.groupby(list(GROUP_KEYS), dropna=False):
@@ -276,21 +298,57 @@ def simple_plot(cluster_results: list[tuple[str, pd.DataFrame, pd.DataFrame | No
             if key not in series_markers:
                 series_markers[key] = MARKERS[len(series_markers) % len(MARKERS)]
     if len(series_markers) > len(MARKERS):
-        warnings.warn(f"more than {len(MARKERS)} (setup, grid) series; the markers repeat", stacklevel=2)
+        warnings.warn(f"more than {len(MARKERS)} (setup, algorithm, grid) series; the markers repeat", stacklevel=2)
     figs = []
     for title, simple_results, fits in cluster_results:
-        fig, axes = plt.subplots(1, 2, figsize=(6.5 * 2, 5.5), sharey=True, layout="constrained")
-        fig.suptitle(title)
-        _plot_cluster(axes[0], simple_results, fits, series_markers, x_delay=MALLOC_DELAY)
-        _plot_cluster(axes[1], simple_results, fits, series_markers, x_delay=FREE_DELAY)
-        # The y-axis is shared: subplots already hides the right axis' tick
-        # labels, drop its label too.
-        axes[1].set_ylabel("")
-        # Legend on the left-most axis that actually has a curve (one
-        # cluster's delay sweep may not have arrived yet).
-        for ax in axes:
-            if ax.get_legend_handles_labels()[0]:
-                ax.legend()
+        # `simple_results` is the groupby output of `simple_statistics`: the
+        # group keys (including the algorithm) are index levels, not columns.
+        present = set(simple_results.index.get_level_values("algorithm"))
+        algorithms = [algorithm for algorithm in ALGORITHM_ORDER if algorithm in present]
+        if len(algorithms) <= 1:
+            # Backwards-compatible layout: the single-row figure, exactly as
+            # before multi-algorithm sweeps existed.
+            fig, axes = plt.subplots(1, 2, figsize=(6.5 * 2, 5.5), sharey=True, layout="constrained")
+            fig.suptitle(title)
+            _plot_cluster(axes[0], simple_results, fits, series_markers, x_delay=MALLOC_DELAY)
+            _plot_cluster(axes[1], simple_results, fits, series_markers, x_delay=FREE_DELAY)
+            # The y-axis is shared: subplots already hides the right axis'
+            # tick labels, drop its label too.
+            axes[1].set_ylabel("")
+            # Legend on the left-most axis that actually has a curve (one
+            # cluster's delay sweep may not have arrived yet).
+            for ax in axes:
+                if ax.get_legend_handles_labels()[0]:
+                    ax.legend()
+                    break
+        else:
+            fig = plt.figure(figsize=(6.5 * 2 + 1.2, 5.5 * len(algorithms)), layout="constrained")
+            fig.suptitle(title)
+            gridspec = fig.add_gridspec(len(algorithms), 3, width_ratios=[0.16, 1, 1])
+            row_axes = []
+            for i, algorithm in enumerate(algorithms):
+                # Keep the full MultiIndex (drop nothing): `_plot_cluster`
+                # re-groups on the level names.
+                sub = simple_results[simple_results.index.get_level_values("algorithm") == algorithm]
+                fits_sub = None if fits is None else fits[fits["algorithm"] == algorithm]
+                malloc_ax = fig.add_subplot(gridspec[i, 1], sharey=None if i == 0 else row_axes[0][0])
+                free_ax = fig.add_subplot(gridspec[i, 2], sharey=malloc_ax)
+                # The left column names the row's algorithm.
+                label_ax = fig.add_subplot(gridspec[i, 0])
+                label_ax.axis("off")
+                label_ax.text(0.9, 0.5, algorithm, rotation=90, ha="right", va="center", fontsize=12)
+                _plot_cluster(malloc_ax, sub, fits_sub, series_markers, x_delay=MALLOC_DELAY)
+                _plot_cluster(free_ax, sub, fits_sub, series_markers, x_delay=FREE_DELAY)
+                free_ax.set_ylabel("")
+                row_axes.append((malloc_ax, free_ax))
+            # Legend on the left-most axis of the first row that has a curve.
+            for malloc_ax, free_ax in row_axes:
+                for ax in (malloc_ax, free_ax):
+                    if ax.get_legend_handles_labels()[0]:
+                        ax.legend()
+                        break
+                else:
+                    continue
                 break
         figs.append(fig)
     return figs
@@ -332,7 +390,7 @@ _ModelFn = Callable[[np.ndarray], np.ndarray]
 
 
 def _collect_fits(fits: pd.DataFrame | None) -> dict[tuple, Fit1d | Fit2d]:
-    """Collect the usable fits, keyed by (setup, grid) group key.
+    """Collect the usable fits, keyed by (setup, algorithm, grid) group key.
 
     Rows without a complete fit (missing or NaN parameters) are
     omitted; `fits` of None yields an empty dict.
@@ -564,7 +622,8 @@ def _plot_cluster(
     short = "malloc" if x_delay == MALLOC_DELAY else "free"
     secondary_short = "free" if secondary == FREE_DELAY else "malloc"
     fits_by_key = _collect_fits(fits)
-    # One curve per (grid, held delay): the x-axis is `x_delay`.
+    # One curve per (setup, algorithm, grid, held delay): the x-axis is
+    # `x_delay`.
     plot_keys = (*GROUP_KEYS, secondary)
     results = simple_results.groupby(list(plot_keys), dropna=False)
     gaps = []
@@ -574,7 +633,7 @@ def _plot_cluster(
         x, ye_min, y, ye_max = np.sort(result.reset_index(drop=False)[[x_delay, "25%", "50%", "75%"]].to_numpy().T)
         # Only the pure sweep is shown: runs where the other (held) delay is
         # 0. Runs with both delays > 0 belong to neither figure.
-        if float(name[4]) != 0:
+        if float(name[5]) != 0:
             continue
         # A sweep needs at least two distinct x values above 0.
         if len(np.unique(x[x > 0])) < 2:
@@ -590,17 +649,17 @@ def _plot_cluster(
             y,
             yerr=(y - ye_min, ye_max - y),
             linestyle="none",
-            marker=series_markers[_group_key(name[:4])],
+            marker=series_markers[_group_key(name[:5])],
             label=label(name, secondary_short),
         )
         color = eb.lines[0].get_color()
-        params = fits_by_key.get(_group_key(name[:4]))
+        params = fits_by_key.get(_group_key(name[:5]))
         # A 1-D fit only applies when it was made on the plotted delay; the
         # 2-D fit applies to either direction.
         if params is not None and isinstance(params, Fit1d) and params.direction != short:
             params = None
         if params is not None:
-            held_s = float(name[4]) * 1e-9
+            held_s = float(name[5]) * 1e-9
             # Draw the fitted model over the x-delay range this curve covers.
             x_data = x[x > 0]
             if len(x_data) > 1 and float(x_data[-1]) > float(x_data[0]):
@@ -1181,7 +1240,7 @@ def _fit_cov(res: dict) -> tuple | None:
 
 
 def fit_sweep(df: pd.DataFrame, c_a: float | None = None, configuration: str | None = None) -> pd.DataFrame:
-    """Fit every (setup, x, y, z) group of a parsed sweep DataFrame.
+    """Fit every (setup, algorithm, x, y, z) group of a parsed sweep DataFrame.
 
     Groups whose runs span both the malloc and the free delay are fitted with
     the two-operation model of `fit_allocation_fraction_2d`; groups spanning
@@ -1302,6 +1361,9 @@ def fit_sweep(df: pd.DataFrame, c_a: float | None = None, configuration: str | N
 
 
 def _print_fraction_summary(fits: pd.DataFrame) -> None:
+    # Name the algorithm only when more than one is present: single-policy
+    # output stays exactly as before multi-algorithm sweeps.
+    show_algorithm = fits["algorithm"].nunique() > 1
     ok = fits[fits["f_malloc"].between(0, 1, inclusive="neither") | fits["f_free"].between(0, 1, inclusive="neither")]
     if len(ok):
         print("\nAmdahl fraction of runtime spent in the operation (f = A/T0):")
@@ -1312,8 +1374,9 @@ def _print_fraction_summary(fits: pd.DataFrame) -> None:
                     err = "" if r[f"{name}_err"] != r[f"{name}_err"] else f" +/- {100 * r[f'{name}_err']:.1f}"
                     fractions.append(f"{name} = {100 * r[name]:.1f}{err}%")
             extra = [f"A_{tag} = {r[f'A_{tag}']:.2f} s" for tag in ("malloc", "free") if r[f"A_{tag}"] == r[f"A_{tag}"]]
+            algorithm = f"{r.algorithm:<14s} " if show_algorithm else ""
             print(
-                f"  {r.setup:<16s} grid {int(r.x)}x{int(r.y)}"
+                f"  {r.setup:<16s} {algorithm}grid {int(r.x)}x{int(r.y)}"
                 + (f"x{int(r.z)}" if pd.notna(r.z) else "")
                 + f" [{r.model}] : "
                 + ", ".join(fractions)

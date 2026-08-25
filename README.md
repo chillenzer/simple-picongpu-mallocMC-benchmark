@@ -7,34 +7,38 @@ SPDX-License-Identifier: MIT
 
 This repository benchmarks the runtime of PIConGPU simulations compiled with
 different configurations of the [mallocMC](https://github.com/chillenzer/mallocMC)
-device allocator. The current setup benchmarks the **FlatterScatter** creation
-policy while sweeping (malloc delay, free delay) combinations: nanosecond
-delays injected into every allocation and every free request, implemented in
-mallocMC as a busy-wait on the 64-bit device global timer (injected at the
-top of `DeviceAllocator::malloc` / `DeviceAllocator::free`, independent of
-the creation policy; the `__nanosleep` intrinsic's wake-up guarantee turned
-out too weak and produced step-like sweeps) to study the impact of
-allocation and free latency on simulation runtime.
+device allocator. The setup benchmarks the **FlatterScatter**,
+**ScatterAlloc** and **Gallatin** creation policies, each while sweeping
+(malloc delay, free delay) combinations: nanosecond delays injected into
+every allocation and every free request, implemented in mallocMC as a
+busy-wait on the 64-bit device global timer (injected at the top of
+`DeviceAllocator::malloc` / `DeviceAllocator::free`, independent of the
+creation policy; the `__nanosleep` intrinsic's wake-up guarantee turned out
+too weak and produced step-like sweeps) to study the impact of allocation
+and free latency on simulation runtime.
 
 ## Benchmarked configuration
 
-- **Allocation policies**: `FlatterScatter` only
+- **Allocation policies**: `FlatterScatter`, `ScatterAlloc`, `Gallatin`
+  (see `ALGORITHMS` in `run_all.sh` and `param/<Algorithm>/mallocMC.param`)
 - **Delay combinations** (nanoseconds, see `COMBINATIONS` in `run_all.sh`):
   a `(0, 0)` baseline, the malloc-delay sweep with free delay 0 and the
-  free-delay sweep with malloc delay 0 over the 11 log-spaced values
-  `100`…`10000000`, plus a 3x3 joint grid over `10000`, `1000000`,
-  `10000000` (32 runs per example)
+  free-delay sweep with malloc delay 0 over the 12 log-spaced values
+  `100`…`100000000` (1/4-decade steps, skipping the intermediate steps
+  between `1e5` and `1e6`), plus a 3x3 joint grid over `10000`, `1000000`,
+  `10000000` (34 runs per example and algorithm)
 - **Examples**: `KelvinHelmholtz` (3D, grid sizes 128^3, 256x128x128,
   256x128x256, 1500 steps) and `FoilLCT` (2D, 256x1280 cells, 2000 steps)
   (see `EXAMPLES` in `run_all.sh` and `flags/*.flags`)
-- **One build per example**: the delays are not a compile-time option;
-  mallocMC reads them at run time from the `MALLOCMC_MALLOC_DELAY` and
-  `MALLOCMC_FREE_DELAY` environment variables (set by `run_all.sh` /
-  `run_folder.sh` for every run). Changing the sweep therefore never
-  requires recompiling.
-- **Layout**: `build/<Example>/` holds the one build; its flag lines are run
-  once per combination: `MALLOCMC_MALLOC_DELAY=<M> MALLOCMC_FREE_DELAY=<F>
-  bin/picongpu ...`
+- **One build per (example, algorithm)**: the creation policy is compiled
+  in via `param/<Algorithm>/mallocMC.param`; the delays are not a
+  compile-time option, mallocMC reads them at run time from the
+  `MALLOCMC_MALLOC_DELAY` and `MALLOCMC_FREE_DELAY` environment variables
+  (set by `run_all.sh` / `run_folder.sh` for every run). Changing the sweep
+  therefore never requires recompiling.
+- **Layout**: `build/<Example>/<Algorithm>/` holds one build; its flag
+  lines are run once per combination:
+  `MALLOCMC_MALLOC_DELAY=<M> MALLOCMC_FREE_DELAY=<F> bin/picongpu ...`
 
 `setup.sh` pins the dependency versions:
 
@@ -46,13 +50,14 @@ allocation and free latency on simulation runtime.
 ## Repository layout
 
 - `setup.sh` — clones the pinned PIConGPU and mallocMC, prepares one input
-  directory per example (`pic-create` + parameter overlay) and builds it
-  (`pic-build`). The `mallocMC.param` is generated here
-  (`write_mallocmc_param`): FlatterScatter; the malloc/free delays are read
-  at run time from `MALLOCMC_MALLOC_DELAY` / `MALLOCMC_FREE_DELAY`.
-- `run_all.sh` — for every example and every `(malloc delay, free delay)`
-  combination in `COMBINATIONS`, runs the example's flag lines with both
-  environment variables set.
+  directory per (example, algorithm) (`pic-create` + parameter overlay) and
+  builds it (`pic-build`). The overlay copies `param/<Algorithm>/*.param`
+  (the algorithm's `mallocMC.param`, i.e. the creation policy),
+  `param/<Example>/*.param` and any per-(example, algorithm) overrides from
+  `param/<Example>/<Algorithm>/`.
+- `run_all.sh` — for every example, every algorithm and every `(malloc
+  delay, free delay)` combination in `COMBINATIONS`, runs the example's
+  flag lines from the matching build with both environment variables set.
 - `run_folder.sh` — runs one already-built example folder, once per flag
   line; takes optional fourth (malloc delay, default `0`) and fifth (free
   delay, default `0`) arguments in nanoseconds, passed via the
@@ -60,26 +65,29 @@ allocation and free latency on simulation runtime.
 - `profiles/` — HPC environment profiles (module/spack setup, `PIC_BACKEND`,
   `PICSRC`). One per machine.
 - `flags/` — one `picongpu` command line per benchmark run, per example.
-- `param/` — parameter files overlaying the example defaults. Currently only
-  example-specific files (`param/FoilLCT/`); the allocator configuration is
-  generated by `setup.sh`.
+- `param/` — parameter files overlaying the example defaults: one
+  `mallocMC.param` per algorithm (`param/<Algorithm>/`, defining the
+  creation policy), example-specific files (`param/FoilLCT/`), and optional
+  per-(example, algorithm) overrides (`param/<Example>/<Algorithm>/`).
 - `analysis/parse_results.py` — parses pre-filtered run logs into a pandas
   DataFrame for seaborn (see below).
 - `analysis/analyse_sleeptimes.py` — reads the raw `run_all.sh` logs directly
   (no pre-filtering). For a sweep that varies only one delay it fits the
-  (example, grid) group to the Amdahl model `T(s) = W + N*s + A*s0/(s+s0)`
-  (large-s Amdahl line `W + N*s` plus a small-s native-cost correction `A`);
-  for a (malloc, free) combination sweep it fits the two-operation model
+  (example, algorithm, grid) group to the Amdahl model
+  `T(s) = W + N*s + A*s0/(s+s0)` (large-s Amdahl line `W + N*s` plus a
+  small-s native-cost correction `A`); for a (malloc, free) combination
+  sweep it fits the two-operation model
   `T(m, f) = W + N_m*m + N_f*f + A_m*m0/(m+m0) + A_f*f0/(f+f0)` and reports
   the runtime fractions spent in allocations and in frees separately
   (`f_malloc = A_m/T0`, `f_free = A_f/T0`, `T0 = W + A_m + A_f`). Both fits
   use a bounded `scipy.optimize.curve_fit` (bounds `W, N, A >= 0` keep each
   `f` in `[0, 1)`), and print the fractions, the call counts `N`, and
   `W`/`A`, each with a standard error (the full model is documented in the
-  script docstring). It plots runtime against the malloc delay per example,
-  grid and free delay with IQR error bars and the fitted curve overlaid, in
-  one figure with one axis per cluster (see `CLUSTERS` in the script),
-  titled by the hardware the runs were made on.
+  script docstring). It plots runtime against the delay per example,
+  algorithm, grid and held delay with IQR error bars and the fitted curve
+  overlaid, in one figure per cluster (see `CLUSTERS` in the script) titled
+  by the hardware the runs were made on: one row per algorithm present in
+  the data (`ALGORITHM_ORDER`), two columns (malloc | free delay sweep).
   Each run is labeled with a `configuration` column (`compile-time`
   per-variant sweep vs `run-time` env-var sweep), so both log layouts can be
   analyzed side by side (pre-rename logs that used `MALLOCMC_SLEEP_TIME`
@@ -89,15 +97,16 @@ allocation and free latency on simulation runtime.
   results stay complete).
 - `analysis/produce_figures.py` — produces the plots for the paper (see note
   below).
-- `build/` — created by `setup.sh`; one CMake project per example.
+- `build/` — created by `setup.sh`; one CMake project per (example,
+  algorithm).
 
 ## Usage
 
 Everything runs on the HPC machine with the matching profile; the scripts
 must be invoked from the repository root.
 
-1. Build all examples (slow the first time: one full PIConGPU build per
-   example):
+1. Build all examples and algorithms (slow the first time: one full
+   PIConGPU build per example and algorithm):
 
    ```
    bash setup.sh profiles/hal.sh param
@@ -110,16 +119,17 @@ must be invoked from the repository root.
 
    - `src/` is re-cloned only if the directory is not a git checkout at the
      pinned commit; a changed pin triggers `git fetch && git checkout`.
-   - An input directory (`build/<Ex>/`) is regenerated when the PIConGPU pin
-     or the `param/<Ex>*` files change (`.input-stamp` records this).
+   - An input directory (`build/<Ex>/<Algo>/`) is regenerated when the
+     PIConGPU pin or the `param/<Algo>*/`, `param/<Ex>*` files change
+     (`.input-stamp` records this).
    - A build (`pic-build`) is skipped when the input, the build `FLAGS`,
      the profile and the toolchain versions (gcc/cmake/nvcc) are unchanged
      (`.build-stamp` records this); otherwise `pic-build` runs
      incrementally.
 
    To force a clean state, delete `src/` and `build/` (or just a single
-   `build/<Ex>/` folder, or only a `.build-stamp` to re-run `pic-build` for
-   one example).
+   `build/<Ex>/<Algo>/` folder, or only a `.build-stamp` to re-run
+   `pic-build` for one example and algorithm).
 
 2. Run the benchmarks:
 
@@ -127,18 +137,18 @@ must be invoked from the repository root.
    bash run_all.sh profiles/hal.sh flags
    ```
 
-    For every example and every `(malloc delay, free delay)` combination in
-    `COMBINATIONS`, each flag line is run as
-    `MALLOCMC_MALLOC_DELAY=<M> MALLOCMC_FREE_DELAY=<F> bin/picongpu ...`.
-    Stdout contains one
-    `Running example: <Ex> / Using allocator: FlatterScatter, malloc delay:
-    <M> ns, free delay: <F> ns` section per run; each run's result is
-    picongpu's `calculation ... simulation time:` line.
+     For every example, every algorithm and every `(malloc delay, free
+     delay)` combination in `COMBINATIONS`, each flag line is run as
+     `MALLOCMC_MALLOC_DELAY=<M> MALLOCMC_FREE_DELAY=<F> bin/picongpu ...`
+     from `build/<Ex>/<Algo>/`. Stdout contains one
+     `Running example: <Ex> / Using allocator: <Algo>, malloc delay: <M> ns,
+     free delay: <F> ns` section per run; each run's result is picongpu's
+     `calculation ... simulation time:` line.
 
-Single run (one example folder, one combination):
+Single run (one built folder, one combination):
 
 ```
-bash run_folder.sh build/FoilLCT flags/FoilLCT.flags profiles/hal.sh 10000 0
+bash run_folder.sh build/FoilLCT/FlatterScatter flags/FoilLCT.flags profiles/hal.sh 10000 0
 ```
 
 ## Changing what is benchmarked
@@ -149,13 +159,16 @@ bash run_folder.sh build/FoilLCT flags/FoilLCT.flags profiles/hal.sh 10000 0
   requires no rebuild.
 - **Grids / steps / other picongpu flags**: edit `flags/<Example>.flags`
   (one command line per run).
-- **Allocator configuration**: `write_mallocmc_param` in `setup.sh`
-  generates the `DeviceHeap` definition; the heap config
-  (`DefaultHeapConfig<block, page, waste>`) can be changed there.
+- **Allocator configuration**: `param/<Algorithm>/mallocMC.param` defines
+  the `DeviceHeap`; the creation policy and, for FlatterScatter, the heap
+  config (`DefaultHeapConfig<block, page, waste>`) live there. Editing a
+  file invalidates exactly the affected (example, algorithm) inputs.
 - **PIConGPU / mallocMC version**: the `*_URL` / `*_HASH` variables at the
   top of `setup.sh`.
 - **New example**: add it to `EXAMPLES` in both scripts, provide
   `flags/<Example>.flags`, and optionally `param/<Example>/*.param`.
+- **New algorithm**: add it to `ALGORITHMS` in both scripts and provide
+  `param/<Algorithm>/mallocMC.param`.
 
 ## Analysis
 
@@ -165,8 +178,8 @@ To tabulate the runtimes, pre-filter the run logs with a grep, e.g.
 grep -E "cd .*build/(FoilLCT|KelvinHelmholtz)|bin/picongpu |calculation" output/hal-sleeptimes/run_* > results.txt
 ```
 
-(older per-variant logs use relative `cd build/<Ex>/<Variant>` paths, so
-`cd build/Foil\|cd build/Kelvin` works there), then
+(the current layout is `cd .../build/<Ex>/<Algo>`; older per-variant logs
+use relative `cd build/<Ex>/<Variant>` paths; both match this grep), then
 
 ```
 python3 analysis/parse_results.py results.txt            # print the DataFrame
@@ -182,23 +195,24 @@ parse.
 
 `analysis/analyse_sleeptimes.py` skips the pre-filtering: it reads the raw
 `output/<cluster>-sleeptimes/run_*` logs directly (all of the above layouts)
-and plots the runtime against the malloc delay (log-log, median with IQR
-error bars) per example, grid and free delay, with the fitted Amdahl curve
-overlaid, in one figure with one axis per cluster (see `CLUSTERS` in the
-script), titled by the hardware the runs were made on. It also fits every
-(example, grid) sweep to the model and prints the extracted fraction of
-runtime spent in allocations / frees:
+and plots the runtime against the delay (log-log, median with IQR error
+bars) per example, algorithm, grid and held delay, with the fitted Amdahl
+curve overlaid, in one figure per cluster (see `CLUSTERS` in the script)
+titled by the hardware the runs were made on, with one row per algorithm
+present in the data (a single-algorithm dataset yields the plain
+two-axis figure). It also fits every (example, algorithm, grid) sweep to
+the model and prints the extracted fraction of runtime spent in
+allocations / frees:
 
 ```
 python3 analysis/analyse_sleeptimes.py
 ```
 
-`analysis/produce_figures.py` reads the `run_all.sh` output files from
-`output/<cluster>/` and produces the figures. **Note:** it still encodes the
-old three-algorithm comparison (`ScatterAlloc`/`FlatterScatter`/`Gallatin`)
-and has not been adapted to the delay-combination sweep yet; the sweep
-labels appear in the logs as `Using allocator: FlatterScatter, malloc delay:
-<M> ns, free delay: <F> ns`.
+`analysis/produce_figures.py` is the legacy plotting script of the original
+three-algorithm comparison; it predates the delay-combination sweep and is
+superseded by `analyse_sleeptimes.py`, which handles both the delay
+combinations and the multiple algorithms. The sweep labels appear in the
+logs as `Using allocator: <Algo>, malloc delay: <M> ns, free delay: <F> ns`.
 
 ## Code style
 
