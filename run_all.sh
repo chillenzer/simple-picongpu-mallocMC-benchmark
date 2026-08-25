@@ -14,18 +14,17 @@ EXAMPLES=("FoilLCT" "KelvinHelmholtz")
 #
 # Full sweep for the two-operation Amdahl fit: a (0, 0) baseline, the
 # malloc-delay arm (free delay 0) and the free-delay arm (malloc delay 0)
-# on the same 1/4-decade log grid from 100 ns to 1e7 ns, and a 3x3 joint
-# grid coupling both delays so the fit is constrained off the arms. Both
-# arms are extended symmetrically by four further 1/4-decade points (to
-# 1e8 ns) so that each Amdahl term A*s0/(d+s0) decays into its 1/d tail
-# and the asymptote W + A + N*d gets anchored at large delay; the
-# extension matters most for free, whose native cost fades slowly.
-DELAY_SWEEP=(100 10000 100000 177828 316228 562341 1000000 1778279 3162278 5623413 10000000)
-EXTENDED_SWEEP=(17782794 31622777 56234133 100000000)
+# on a log grid from 100 ns to 1e8 ns with 1/4-decade steps (skipping the
+# intermediate steps between 1e5 and 1e6 ns), and a 3x3 joint grid
+# coupling both delays so the fit is constrained off the arms. The large
+# delays let each Amdahl term A*s0/(d+s0) decay into its 1/d tail so the
+# asymptote W + A + N*d gets anchored; this matters most for free, whose
+# native cost fades slowly.
+DELAY_SWEEP=(100 10000 100000 1000000 1778279 3162278 5623413 10000000 17782794 31622777 56234133 100000000)
 JOINT=(10000 1000000 10000000)
 
 COMBINATIONS=("0 0")
-for delay in "${DELAY_SWEEP[@]}" "${EXTENDED_SWEEP[@]}"; do
+for delay in "${DELAY_SWEEP[@]}"; do
   COMBINATIONS+=("$delay 0" "0 $delay")
 done
 for malloc_delay in "${JOINT[@]}"; do
