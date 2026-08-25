@@ -160,10 +160,14 @@ def _group_key(name: tuple) -> tuple:
 
 
 def _legend_first(axes: Iterable[plt.Axes]) -> None:
-    """Show the legend on the left-most axis that actually has a curve."""
+    """Show the legend, pinned to the top, on the left-most axis with a curve.
+
+    The location is fixed (rather than matplotlib's auto "best") so the
+    legend stays at the top even as the data or the A/f labels move.
+    """
     for ax in axes:
         if ax.get_legend_handles_labels()[0]:
-            ax.legend()
+            ax.legend(loc="upper right")
             break
 
 
