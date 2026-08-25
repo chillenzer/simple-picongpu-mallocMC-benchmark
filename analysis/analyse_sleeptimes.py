@@ -25,8 +25,7 @@ cost (dotted); the gaps at the smallest delay are marked by a short
     `figures/runtime-stack.pdf`: for each scenario (setup, algorithm, grid),
      a group of neighbouring bars, one per cluster's hardware, each stacking
      the fitted W, A_malloc and A_free up to the total runtime, overlaid with
-     the measured zero-delay runtime and its IQR error bar (the runs are highly
-     reproducible, so the bar is floored at a minimum visible length).
+     the measured zero-delay runtime and its IQR error bar.
 
 Model
 -----
@@ -117,13 +116,6 @@ MARKERS = ("o", "s", "^", "D", "v", "P", "h", "X", "8")
 # the stacked segments of the runtime-budget figure, in stacking order
 # (bottom to top), as (legend label, colour) pairs.
 RUNTIME_SEGMENTS = (("W", "#8c8c8c"), ("A_malloc", "#1f77b4"), ("A_free", "#ff7f0e"))
-# A measured point's IQR can be far below the plot's resolution (the runs are
-# highly reproducible, several scenarios a single run), so its error bar would
-# collapse to its caps and hide behind the point marker. Floor each side at
-# this fraction of the y-axis so the bar clearly extends past the marker as a
-# visible vertical mark. (The shown bar is a minimum-visible size, not the
-# exact IQR, whenever the IQR is below the plot's resolution.)
-MIN_ERROR_FRAC = 0.011
 _INF = float("inf")
 # Near-zero floor for second-based runtimes: the Amdahl fraction is
 # reported as 0 when the total runtime drops below it, and the fade
@@ -442,27 +434,19 @@ def _draw_runtime_bars(ax: plt.Axes, keys: list[tuple], budget: list[tuple[str, 
     return max_total
 
 
-def _baseline_hi(baseline: list[tuple[str, dict]]) -> float:
-    """Return the highest measured zero-delay 75th percentile.
-
-    Returns:
-        float: the top of the highest error bar, or 0 when there are none.
-
-    """
-    return max((hi for _hw, by_key in baseline for _lo, _med, hi in by_key.values()), default=0.0)
-
-
-def _draw_baseline_points(
-    ax: plt.Axes, keys: list[tuple], baseline: list[tuple[str, dict]], bar_w: float, min_half: float
-) -> None:
+def _draw_baseline_points(ax: plt.Axes, keys: list[tuple], baseline: list[tuple[str, dict]], bar_w: float) -> float:
     """Overlay the measured zero-delay point (median, IQR error bar) on each bar.
 
-    Each side of the error bar is floored at `min_half` so a highly
-    reproducible measurement -- whose spread is below the plot's resolution --
-    still shows as a visible vertical mark instead of collapsing to its caps.
+    The error bar is the true IQR of the (0, 0) runs, drawn without caps so it
+    reads as a plain vertical mark.
+
+    Returns:
+        float: the highest error-bar top (0 when there are no points).
+
     """
     n_hw = len(baseline)
     labels_set = False
+    max_hi = 0.0
     for i, key in enumerate(keys):
         for h, (_hw, by_key) in enumerate(baseline):
             if key not in by_key:
@@ -472,19 +456,18 @@ def _draw_baseline_points(
             ax.errorbar(
                 [x],
                 [med],
-                yerr=[[max(med - lo, min_half)], [max(hi - med, min_half)]],
+                yerr=[[med - lo], [hi - med]],
                 fmt="none",
                 ecolor="k",
-                elinewidth=1.2,
-                capsize=2,
-                capthick=1,
+                elinewidth=1,
+                capsize=0,
                 zorder=5,
             )
             ax.plot(
                 [x],
                 [med],
                 marker="o",
-                markersize=4,
+                markersize=5,
                 mfc="k",
                 mec="w",
                 mew=0.5,
@@ -492,6 +475,8 @@ def _draw_baseline_points(
                 label=None if labels_set else "measured (0 delay)",
             )
             labels_set = True
+            max_hi = max(max_hi, hi)
+    return max_hi
 
 
 def _set_runtime_xaxis(
@@ -553,10 +538,8 @@ def stacked_runtime_fig(per_cluster: list[tuple[str, pd.DataFrame, pd.DataFrame 
     bar_w = 0.8 / len(budget)
     max_total = _draw_runtime_bars(ax, keys, budget, bar_w)
     # the measured points can sit a touch above the fitted total; keep them
-    # (and their floored error bars) inside the axis.
-    max_total = max(max_total, _baseline_hi(baseline))
-    min_half = MIN_ERROR_FRAC * max_total * 1.12
-    _draw_baseline_points(ax, keys, baseline, bar_w, min_half)
+    # inside the axis.
+    max_total = max(max_total, _draw_baseline_points(ax, keys, baseline, bar_w))
     _set_runtime_xaxis(ax, keys, _scenario_labels(keys), budget, bar_w)
     ax.set_xlim(-0.6, len(keys) - 0.4)
     ax.set_ylim(0, max_total * 1.12)
