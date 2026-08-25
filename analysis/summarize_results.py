@@ -1,0 +1,133 @@
+"""Print summary tables of the computed benchmark results.
+
+SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
+SPDX-License-Identifier: MIT
+
+Reads `output/results.h5` (the output of `compute_results.py`) and prints
+the summary tables: per machine, the parsed runs (with `--raw`) and the
+group runtime statistics; the Amdahl fit tables and the fraction summary;
+the no-delay runtimes; and the FoilLCT / KelvinHelmholtz figure metadata.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+import pandas as pd
+from results_io import RESULTS, load_results, no_delay_mask, read_table
+
+BANNER = "+" * 35
+
+
+def print_table(name: str, text: str) -> None:
+    """Print a results frame under a banner.
+
+    Args:
+        name: the table's banner line.
+        text: the table text to print.
+
+    """
+    print(BANNER)
+    print(name)
+    print(BANNER)
+    print(text)
+    print()
+
+
+def print_fraction_summary(fits: pd.DataFrame) -> None:
+    """Print the Amdahl fraction of every fit with a fraction in (0, 1).
+
+    Args:
+        fits: the fits table of the results file.
+
+    """
+    fit = fits[fits["f_malloc"].between(0, 1, inclusive="neither") | fits["f_free"].between(0, 1, inclusive="neither")]
+    if len(fit):
+        # Name the algorithm only when more than one is present: single-policy
+        # output stays exactly as before multi-algorithm sweeps.
+        show_algorithm = fits["algorithm"].nunique() > 1
+        print("\nAmdahl fraction of runtime spent in the operation (f = A/T0):")
+        for _, r in fit.iterrows():
+            fractions = []
+            for name in ("f_malloc", "f_free"):
+                if r[name] == r[name]:
+                    err = "" if r[f"{name}_err"] != r[f"{name}_err"] else f" +/- {100 * r[f'{name}_err']:.1f}"
+                    fractions.append(f"{name} = {100 * r[name]:.1f}{err}%")
+            extra = [f"A_{tag} = {r[f'A_{tag}']:.2f} s" for tag in ("malloc", "free") if r[f"A_{tag}"] == r[f"A_{tag}"]]
+            algorithm = f"{r.algorithm:<14s} " if show_algorithm else ""
+            print(
+                f"  {r.machine:<14s} {r.setup:<16s} {algorithm}grid {int(r.x)}x{int(r.y)}"
+                + (f"x{int(r.z)}" if pd.notna(r.z) else "")
+                + f" [{r.model}] : "
+                + ", ".join(fractions)
+                + f"   (W = {r.W:.2f} s"
+                + (", " + ", ".join(extra) if extra else "")
+                + ")"
+            )
+            if r["note"]:
+                print(f"      note: {r.note}")
+
+
+def main(*, results: Path = RESULTS, raw: bool = False) -> int:
+    """Print the summary tables of one results file.
+
+    Args:
+        results: the results file, e.g. `output/results.h5`.
+        raw: also print the raw parsed runs per machine.
+
+    Returns:
+        int: the process exit code.
+
+    """
+    try:
+        file = load_results(results)
+    except OSError as err:
+        print(f"{err}\nno results file: run `python3 analysis/compute_results.py` first", file=sys.stderr)
+        return 1
+    with file:
+        runs = read_table(file, "runs")
+        group_stats = read_table(file, "group_stats")
+        fits = read_table(file, "fits")
+        foil = read_table(file, "foil")
+        foil_pvalue = read_table(file, "foil_pvalue")
+        khi = read_table(file, "khi")
+    if runs.empty:
+        print("no runs found in the results file")
+        return 0
+    for machine in runs["machine"].drop_duplicates():
+        if raw:
+            print_table(f"Parsed runs: {machine}", runs[runs["machine"] == machine].to_string(index=False))
+        print_table(
+            f"Group statistics: {machine}",
+            group_stats[group_stats["machine"] == machine].to_string(index=False),
+        )
+    print_table("Fits", fits.to_string(index=False, float_format=lambda v: f"{v:10.3g}"))
+    print_fraction_summary(fits)
+    print_table("No-delay runtimes", runs[no_delay_mask(runs)].to_string(index=False))
+    print_table(
+        "Foil metadata",
+        foil.merge(foil_pvalue, on="hardware", how="left").to_string(index=False),
+    )
+    print_table("Khi metadata", khi.to_string(index=False))
+    return 0
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Print summary tables of the computed benchmark results (output/results.h5)."
+    )
+    parser.add_argument(
+        "--results",
+        type=Path,
+        default=RESULTS,
+        help="the results file to summarize (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--raw",
+        action="store_true",
+        help="also print the raw parsed runs per machine",
+    )
+    args = parser.parse_args()
+    sys.exit(main(results=args.results, raw=args.raw))

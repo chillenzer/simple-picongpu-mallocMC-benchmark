@@ -1,0 +1,674 @@
+"""Per-machine delay-sweep figures from the computed results.
+
+SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
+SPDX-License-Identifier: MIT
+
+Reads `output/results.h5` (the output of `compute_results.py`) and draws,
+for every machine with delay runs, one figure titled by the hardware the
+runs were made on: one row per algorithm present in the data (in the
+`algorithm_order` of the file), the malloc delay sweep (free delay 0) on
+the left and the free delay sweep (malloc delay 0) on the right, each axis
+titled after the swept delay, the axes sharing the y-axis. Each swept
+curve shows the median with IQR error bars and overlays the fitted model
+(solid), the extrapolation to A_malloc = A_free = 0 (dashed) and, for
+two-operation fits, the intermediate extrapolation that keeps only the held
+operation's native cost (dotted); the gaps at the smallest delay are marked
+by a short line. Each fit line carries a transparent sleeve, the
+25/75-percentile envelope of the model evaluated at 512 parameter draws
+from the fitted parameters and their covariance (a bootstrap, since the
+parameters enter the model non-linearly). The figure is saved to
+`figures/sweeps-<machine>.pdf`; by default every machine gets its figure,
+`--machine` restricts the run to one.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+import warnings
+from collections.abc import Callable, Iterable
+from pathlib import Path
+from typing import NamedTuple
+
+import amdahl
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from results_io import (
+    RESULTS,
+    algorithm_order,
+    grid_label,
+    load_results,
+    read_fit_covs,
+    read_table,
+)
+from run_logs import FREE_DELAY, GROUP_KEYS, MALLOC_DELAY
+
+mpl.use("pdf")
+
+FIGURES = Path("figures")
+
+# one distinct marker per (setup, grid) series, shared by all axes
+MARKERS = ("o", "s", "^", "D", "v", "P", "h", "X", "8")
+# A gap marker is only drawn when the model difference exceeds this (s).
+VISIBLE_GAP_S = 1e-9
+
+
+class Fit1d(NamedTuple):
+    """1-D Amdahl fit on a single delay; `direction` names that delay.
+
+    `cov` is the `(fit_params, pcov)` pair used for the bootstrap sleeves,
+    or None when the covariance is unavailable.
+    """
+
+    direction: str
+    W: float
+    N: float
+    A: float
+    s0: float
+    cov: tuple | None
+
+
+class Fit2d(NamedTuple):
+    """2-D Amdahl fit (both delays vary); the delays are in seconds.
+
+    `cov` is the `(fit_params, pcov)` pair used for the bootstrap sleeves,
+    or None when the covariance is unavailable.
+    """
+
+    W: float
+    n_malloc: float
+    n_free: float
+    a_malloc: float
+    a_free: float
+    m0: float
+    f0: float
+    cov: tuple | None
+
+
+class Curve(NamedTuple):
+    """The per-curve drawing context for a fitted model line.
+
+    `x_ns` is the x-grid in nanoseconds (the axis), `x_s` the same grid in
+    seconds (the model), `x0` the smallest delay of the curve, and `held_s`
+    the held (secondary) delay in seconds.
+    """
+
+    ax: plt.Axes
+    x_ns: np.ndarray
+    x_s: np.ndarray
+    x0: float
+    held_s: float
+    params: Fit1d | Fit2d
+    short: str
+    color: str
+
+
+class Cluster(NamedTuple):
+    """The per-cluster drawing context shared by all of its curves."""
+
+    ax: plt.Axes
+    x_delay: str
+    short: str
+    secondary_short: str
+    series_markers: dict
+    fits_by_key: dict
+
+
+class MachineData(NamedTuple):
+    """One machine's drawing data, as read from the results file.
+
+    `covs` is this machine's (setup, algorithm, grid label) to
+    (fit_params, pcov) map (the `fits/cov/` entries).
+    """
+
+    machine: str
+    stats: pd.DataFrame
+    fits: pd.DataFrame
+    covs: dict
+
+
+_ModelFn = Callable[[np.ndarray], np.ndarray]
+
+
+def _group_key(name: tuple) -> tuple:
+    # NaN group values (missing z in 2D runs) do not compare equal, so
+    # canonicalize them; the key is only used for dictionary lookups.
+    return tuple(None if isinstance(k, float) and np.isnan(k) else k for k in name)
+
+
+def series_label(info: tuple, secondary: str = "free") -> str:
+    """Format a (setup, algorithm, grid, held-delay) group key as a legend label.
+
+    Args:
+        info: the group key (setup, algorithm, x, y, z, <secondary delay>).
+        secondary: the name of the held (secondary) delay.
+
+    Returns:
+        str: the formatted legend label.
+
+    """
+    # The algorithm is not part of the label: in multi-algorithm figures each
+    # row is one algorithm and is named by its row header.
+    grid_string = "x".join(map(str, map(int, np.asarray(info[2:5])[~np.isnan(info[2:5])])))
+    suffix = "" if info[5] == 0 else f", {secondary}: {int(info[5])} ns"
+    return f"{info[0]} {grid_string}{suffix}"
+
+
+def legend_first(axes: Iterable[plt.Axes]) -> None:
+    """Show the legend, pinned to the top, on the left-most axis with a curve.
+
+    The location is fixed (rather than matplotlib's auto "best") so the
+    legend stays at the top even as the data or the A/f labels move.
+
+    Args:
+        axes: the axes, left to right.
+
+    """
+    for ax in axes:
+        if ax.get_legend_handles_labels()[0]:
+            ax.legend(loc="upper right")
+            break
+
+
+def collect_fits(fits: pd.DataFrame, covs: dict) -> dict[tuple, Fit1d | Fit2d]:
+    """Collect the usable fits of one machine, keyed by (setup, algorithm, grid) group key.
+
+    The per-fit `(fit_params, pcov)` pair comes from the `fits/cov/` groups
+    of the results file. Rows without a complete fit (missing or NaN
+    parameters) are omitted.
+
+    Args:
+        fits: the fits table, restricted to one machine.
+        covs: this machine's `fits/cov/` entries, keyed by (setup,
+        algorithm, grid label).
+
+    Returns:
+        dict[tuple, Fit1d | Fit2d]: the usable fits, keyed by group key.
+
+    """
+    fits_by_key = {}
+    for _, row in fits.iterrows():
+        key = _group_key(tuple(row[k] for k in GROUP_KEYS))
+        cov = covs.get((row["setup"], row["algorithm"], grid_label(row["x"], row["y"], row["z"])))
+        if row["model"] == "2d" and all(
+            pd.notna(row[k])
+            for k in (
+                "W",
+                "N_malloc",
+                "N_free",
+                "A_malloc",
+                "A_free",
+                "m0_ns",
+                "f0_ns",
+            )
+        ):
+            fits_by_key[key] = Fit2d(
+                W=float(row["W"]),
+                n_malloc=float(row["N_malloc"]),
+                n_free=float(row["N_free"]),
+                a_malloc=float(row["A_malloc"]),
+                a_free=float(row["A_free"]),
+                m0=float(row["m0_ns"]) * 1e-9,
+                f0=float(row["f0_ns"]) * 1e-9,
+                cov=cov,
+            )
+        elif row["model"] == "1d-malloc" and all(pd.notna(row[k]) for k in ("W", "N_malloc", "A_malloc", "m0_ns")):
+            fits_by_key[key] = Fit1d(
+                direction="malloc",
+                W=float(row["W"]),
+                N=float(row["N_malloc"]),
+                A=float(row["A_malloc"]),
+                s0=float(row["m0_ns"]) * 1e-9,
+                cov=cov,
+            )
+        elif row["model"] == "1d-free" and all(pd.notna(row[k]) for k in ("W", "N_free", "A_free", "f0_ns")):
+            fits_by_key[key] = Fit1d(
+                direction="free",
+                W=float(row["W"]),
+                N=float(row["N_free"]),
+                A=float(row["A_free"]),
+                s0=float(row["f0_ns"]) * 1e-9,
+                cov=cov,
+            )
+    return fits_by_key
+
+
+def draw_fit_2d(
+    curve: Curve,
+    sleeve: Callable[[_ModelFn, tuple], None],
+) -> None:
+    """Draw the 2-D fit of one curve and its two A/f gap markers.
+
+    The solid line is the full model, the dashed line the linear
+    extrapolation (both Amdahl terms at 0) and the dotted line the fit
+    with only the plotted operation's Amdahl term at 0. The gap
+    markers split at the dotted line: the upper part is the native
+    cost of the plotted operation, the lower part the one of the held
+    operation.
+
+    Args:
+        curve: the per-curve drawing context.
+        sleeve: draws the bootstrap sleeve of a model line.
+
+    """
+    x_s, held_s = curve.x_s, curve.held_s
+    params = curve.params
+    held_arr = np.full_like(x_s, held_s)
+    lower = (0.0, 0.0, 0.0, 0.0, 0.0, amdahl.EPS_S, amdahl.EPS_S)
+    if curve.short == "malloc":
+        model = amdahl.model_2d(
+            x_s,
+            held_arr,
+            (params.W, params.n_malloc, params.n_free, params.a_malloc, params.a_free, params.m0, params.f0),
+        )
+        linear = params.W + params.n_malloc * x_s + params.n_free * held_s
+        dotted = linear + params.a_free * params.f0 / (held_s + params.f0)
+
+        def fn_curve(p: np.ndarray) -> np.ndarray:
+            return amdahl.model_2d(x_s, held_arr, p)
+
+        def fn_dash(p: np.ndarray) -> np.ndarray:
+            return p[0] + p[1] * x_s + p[2] * held_s
+
+        def fn_dot(p: np.ndarray) -> np.ndarray:
+            return p[0] + p[1] * x_s + p[2] * held_s + p[4] * p[6] / (held_s + p[6])
+    else:
+        model = amdahl.model_2d(
+            held_arr,
+            x_s,
+            (params.W, params.n_malloc, params.n_free, params.a_malloc, params.a_free, params.m0, params.f0),
+        )
+        linear = params.W + params.n_free * x_s + params.n_malloc * held_s
+        dotted = linear + params.a_malloc * params.m0 / (held_s + params.m0)
+
+        def fn_curve(p: np.ndarray) -> np.ndarray:
+            return amdahl.model_2d(held_arr, x_s, p)
+
+        def fn_dash(p: np.ndarray) -> np.ndarray:
+            return p[0] + p[2] * x_s + p[1] * held_s
+
+        def fn_dot(p: np.ndarray) -> np.ndarray:
+            return p[0] + p[2] * x_s + p[1] * held_s + p[3] * p[5] / (held_s + p[5])
+
+    if float(model[0]) - float(dotted[0]) > VISIBLE_GAP_S:
+        y_lo, y_hi = float(dotted[0]), float(model[0])
+        curve.ax.plot((curve.x0, curve.x0), (y_lo, y_hi), color=curve.color, linewidth=1, alpha=0.8)
+    if float(dotted[0]) - float(linear[0]) > VISIBLE_GAP_S:
+        y_lo, y_hi = float(linear[0]), float(dotted[0])
+        curve.ax.plot((curve.x0, curve.x0), (y_lo, y_hi), color=curve.color, linewidth=1, alpha=0.8)
+    # The model takes second-based delays; the axis is in ns.
+    sleeve(fn_dot, lower)
+    curve.ax.plot(curve.x_ns, dotted, color=curve.color, linestyle=":", alpha=0.8)
+    sleeve(fn_curve, lower)
+    curve.ax.plot(curve.x_ns, model, color=curve.color, linestyle="-", alpha=0.8)
+    sleeve(fn_dash, lower)
+    curve.ax.plot(curve.x_ns, linear, color=curve.color, linestyle="--", alpha=0.8)
+
+
+def draw_fit_1d(
+    curve: Curve,
+    sleeve: Callable[[_ModelFn, tuple], None],
+) -> None:
+    """Draw the 1-D fit of one curve and its A/f gap marker.
+
+    The solid line is the full model, the dashed line the linear
+    extrapolation to A = 0; the marker spans the gap between them at
+    the smallest delay.
+
+    Args:
+        curve: the per-curve drawing context.
+        sleeve: draws the bootstrap sleeve of a model line.
+
+    """
+    x_s, x_ns = curve.x_s, curve.x_ns
+    x0, params, color = curve.x0, curve.params, curve.color
+    lower = (0.0, 0.0, 0.0, amdahl.EPS_S)
+    model = amdahl.model_1d(x_s, params.W, params.N, params.A, params.s0)
+    linear = params.W + params.N * x_s
+
+    def fn_curve(p: np.ndarray) -> np.ndarray:
+        return amdahl.model_1d(x_s, p[0], p[1], p[2], p[3])
+
+    def fn_dash(p: np.ndarray) -> np.ndarray:
+        return p[0] + p[1] * x_s
+
+    if float(model[0]) > float(linear[0]):
+        y_lo, y_hi = float(linear[0]), float(model[0])
+        curve.ax.plot((x0, x0), (y_lo, y_hi), color=color, linewidth=1, alpha=0.8)
+    # The model takes second-based delays; the axis is in ns.
+    sleeve(fn_curve, lower)
+    curve.ax.plot(x_ns, model, color=color, linestyle="-", alpha=0.8)
+    sleeve(fn_dash, lower)
+    curve.ax.plot(x_ns, linear, color=color, linestyle="--", alpha=0.8)
+
+
+def draw_fit_curves(curve: Curve) -> bool:
+    """Draw the fitted model lines of one curve and its A/f gap markers.
+
+    Dispatches on the fit type.
+
+    Args:
+        curve: the per-curve drawing context.
+
+    Returns:
+        bool: True when a 2-D fit was drawn.
+
+    """
+
+    def sleeve(fn: _ModelFn, lower: tuple) -> None:
+        # Bootstrap sleeve of a fit line: draw the fitted
+        # parameters from their covariance (the model is
+        # non-linear in them) and fill the 25/75-percentile
+        # envelope of the model values, the IQR convention of
+        # the data's error bars. No covariance -> no sleeve.
+        if curve.params.cov is None:
+            return
+        band = amdahl.bootstrap_band(curve.x_s, fn, curve.params.cov[0], curve.params.cov[1], lower=lower)
+        if band is not None:
+            curve.ax.fill_between(curve.x_ns, band[0], band[1], color=curve.color, alpha=0.3)
+
+    if isinstance(curve.params, Fit2d):
+        draw_fit_2d(curve, sleeve)
+        return True
+    draw_fit_1d(curve, sleeve)
+    return False
+
+
+def draw_model_lines(cluster: Cluster, x: np.ndarray, color: str, params: Fit1d | Fit2d, held_s: float) -> bool:
+    """Draw the fitted model lines of one curve over its x range.
+
+    Args:
+        cluster: the per-cluster drawing context.
+        x: the curve's x values (delays in nanoseconds).
+        color: the curve's color.
+        params: the fitted model parameters.
+        held_s: the held (secondary) delay in seconds.
+
+    Returns:
+        bool: True when a 2-D fit was drawn.
+
+    """
+    # Draw the fitted model over the x-delay range this curve covers.
+    x_data = x[x > 0]
+    if not (len(x_data) > 1 and float(x_data[-1]) > float(x_data[0])):
+        return False
+    x_ns = np.geomspace(float(x_data[0]), float(x_data[-1]), 100)
+    x_s = x_ns * 1e-9
+    x0 = float(x_ns[0])
+    curve = Curve(cluster.ax, x_ns, x_s, x0, held_s, params, cluster.short, color)
+    return draw_fit_curves(curve)
+
+
+def draw_series(cluster: Cluster, result: pd.DataFrame, name: tuple) -> bool:
+    """Draw one curve: the errorbar points and, when a fit exists, the model lines.
+
+    Args:
+        cluster: the per-cluster drawing context.
+        result: the statistics rows of the curve's group.
+        name: the curve's group key (setup, algorithm, grid, held delay).
+
+    Returns:
+        bool: True when a 2-D fit was drawn.
+
+    """
+    frame = result.reset_index(drop=False)
+    # One permutation sorts the points by delay; sorting each column
+    # separately would misalign the IQR bounds against the delays.
+    order = frame[cluster.x_delay].to_numpy().argsort()
+    x, ye_min, y, ye_max = frame.iloc[order][[cluster.x_delay, "p25", "p50", "p75"]].to_numpy().T
+    # Only the pure sweep is shown: runs where the other (held) delay is
+    # 0. Runs with both delays > 0 belong to neither figure.
+    if name[5] != 0:
+        return False
+    # A sweep needs at least two distinct x values above 0.
+    x_pos = x[x > 0]
+    if len(np.unique(x_pos)) < 2:
+        return False
+    # The x-axis is logarithmic, so the zero-delay point is not representable
+    # there (it is invisible on the plot anyway); drop it so it cannot corrupt
+    # the autoscaled x limits.
+    pos = x > 0
+    x, ye_min, y, ye_max = x[pos], ye_min[pos], y[pos], ye_max[pos]
+    eb = cluster.ax.errorbar(
+        x,
+        y,
+        yerr=(y - ye_min, ye_max - y),
+        linestyle="none",
+        marker=cluster.series_markers[_group_key(name[:5])],
+        label=series_label(name, cluster.secondary_short),
+    )
+    color = eb.lines[0].get_color()
+    params = cluster.fits_by_key.get(_group_key(name[:5]))
+    # A 1-D fit only applies when it was made on the plotted delay; the
+    # 2-D fit applies to either direction.
+    if params is not None and isinstance(params, Fit1d) and params.direction != cluster.short:
+        params = None
+    if params is None:
+        return False
+    return draw_model_lines(cluster, x, color, params, float(name[5]) * 1e-9)
+
+
+def plot_delay_axis(ax: plt.Axes, data: MachineData, series_markers: dict, x_delay: str = MALLOC_DELAY) -> plt.Axes:
+    """Fill one sweep axis: the data curves, the fits, and the axis decoration.
+
+    The x-axis shows `x_delay`; the other delay is held per curve.
+
+    Args:
+        ax: the axis to fill.
+        data: the machine's drawing data.
+        series_markers: the per-series marker assignment.
+        x_delay: the swept delay column, MALLOC_DELAY or FREE_DELAY.
+
+    Returns:
+        plt.Axes: the filled axis.
+
+    """
+    secondary = FREE_DELAY if x_delay == MALLOC_DELAY else MALLOC_DELAY
+    short = "malloc" if x_delay == MALLOC_DELAY else "free"
+    secondary_short = "free" if secondary == FREE_DELAY else "malloc"
+    fits_by_key = collect_fits(data.fits, data.covs)
+    cluster = Cluster(ax, x_delay, short, secondary_short, series_markers, fits_by_key)
+    # One curve per (setup, algorithm, grid, held delay): the x-axis is
+    # `x_delay`.
+    has_2d = False
+    for name, result in data.stats.groupby([*GROUP_KEYS, secondary], dropna=False):
+        has_2d = draw_series(cluster, result, name) or has_2d
+    ax.set_title(f"{short} time scan")
+    lines = ["solid: full fit"]
+    if has_2d:
+        lines += [f"dotted: A_{short} = 0", "dashed: A_malloc = A_free = 0"]
+    else:
+        lines.append("dashed: extrapolation to A = 0")
+    ax.text(0.98, 0.02, "\n".join(lines), transform=ax.transAxes, ha="right", va="bottom", fontsize=8, color="0.35")
+    ax.set_xlabel(f"{short} sleep_time (ns)")
+    ax.set_ylabel("runtime (s)")
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    return ax
+
+
+def single_algorithm_figure(title: str, data: MachineData, series_markers: dict) -> plt.Figure:
+    """Build the single-row figure: the two sweeps side by side, y-axis shared.
+
+    Args:
+        title: the figure title (the hardware the runs were made on).
+        data: the machine's drawing data.
+        series_markers: the per-series marker assignment.
+
+    Returns:
+        plt.Figure: the figure.
+
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(6.5 * 2, 5.5), sharey=True, layout="constrained")
+    fig.suptitle(title)
+    plot_delay_axis(axes[0], data, series_markers, x_delay=MALLOC_DELAY)
+    plot_delay_axis(axes[1], data, series_markers, x_delay=FREE_DELAY)
+    # The y-axis is shared: subplots already hides the right axis'
+    # tick labels, drop its label too.
+    axes[1].set_ylabel("")
+    # Legend on the left-most axis that actually has a curve (one
+    # cluster's delay sweep may not have arrived yet).
+    legend_first(axes)
+    return fig
+
+
+def multi_algorithm_figure(title: str, data: MachineData, series_markers: dict, algorithms: list[str]) -> plt.Figure:
+    """Build the multi-row figure: one row per algorithm, the left column names it.
+
+    Args:
+        title: the figure title (the hardware the runs were made on).
+        data: the machine's drawing data.
+        series_markers: the per-series marker assignment.
+        algorithms: the algorithms present in the data, in row order.
+
+    Returns:
+        plt.Figure: the figure.
+
+    """
+    stats = data.stats
+    fits = data.fits
+    sub_data = {
+        algorithm: MachineData(
+            machine=data.machine,
+            stats=stats[stats["algorithm"] == algorithm],
+            fits=fits[fits["algorithm"] == algorithm],
+            covs=data.covs,
+        )
+        for algorithm in algorithms
+    }
+    fig = plt.figure(figsize=(6.5 * 2 + 1.2, 5.5 * len(algorithms)), layout="constrained")
+    fig.suptitle(title)
+    gridspec = fig.add_gridspec(len(algorithms), 3, width_ratios=[0.16, 1, 1])
+    row_axes = []
+    for i, algorithm in enumerate(algorithms):
+        malloc_ax = fig.add_subplot(gridspec[i, 1], sharey=None if i == 0 else row_axes[0][0])
+        free_ax = fig.add_subplot(gridspec[i, 2], sharey=malloc_ax)
+        # The left column names the row's algorithm.
+        label_ax = fig.add_subplot(gridspec[i, 0])
+        label_ax.axis("off")
+        label_ax.text(0.9, 0.5, algorithm, rotation=90, ha="right", va="center", fontsize=12)
+        plot_delay_axis(malloc_ax, sub_data[algorithm], series_markers, x_delay=MALLOC_DELAY)
+        plot_delay_axis(free_ax, sub_data[algorithm], series_markers, x_delay=FREE_DELAY)
+        free_ax.set_ylabel("")
+        row_axes.append((malloc_ax, free_ax))
+    # Legend on the left-most axis of the first row that has a curve.
+    legend_first(ax for malloc_ax, free_ax in row_axes for ax in (malloc_ax, free_ax))
+    return fig
+
+
+def machine_figure(title: str, data: MachineData, algorithms: list[str]) -> plt.Figure:
+    """Build one machine's figure: one row per algorithm, the two sweeps side by side.
+
+    Args:
+        title: the figure title (the hardware the runs were made on).
+        data: the machine's drawing data.
+        algorithms: the figure's algorithm row order (the file's
+        `algorithm_order`).
+
+    Returns:
+        plt.Figure: the figure.
+
+    """
+    stats = data.stats
+    # Assign each (setup, grid) series its marker once, in plot order, so
+    # the same series is drawn with the same marker on every axis.
+    series_markers = {}
+    for name, _ in stats.groupby(list(GROUP_KEYS), dropna=False):
+        key = _group_key(name)
+        if key not in series_markers:
+            series_markers[key] = MARKERS[len(series_markers) % len(MARKERS)]
+    if len(series_markers) > len(MARKERS):
+        warnings.warn(f"more than {len(MARKERS)} (setup, algorithm, grid) series; the markers repeat", stacklevel=2)
+    present = set(stats["algorithm"])
+    present_algorithms = [algorithm for algorithm in algorithms if algorithm in present]
+    if len(present_algorithms) <= 1:
+        # Single-row layout: one algorithm only, no row header.
+        return single_algorithm_figure(title, data, series_markers)
+    return multi_algorithm_figure(title, data, series_markers, present_algorithms)
+
+
+def _machines_with_delay_runs(runs: pd.DataFrame) -> list[str]:
+    """Return the machines with at least one delay-injected run, in first-appearance order.
+
+    Args:
+        runs: the runs table of the results file.
+
+    Returns:
+        list[str]: the machine labels eligible for a sweep figure.
+
+    """
+    eligible = runs[runs[MALLOC_DELAY].notna() | runs[FREE_DELAY].notna()]
+    return list(eligible["machine"].drop_duplicates())
+
+
+def main(*, machine: str | None = None, show: bool = False, results: Path = RESULTS) -> int:
+    """Draw the per-machine sweep figures from one results file.
+
+    Args:
+        machine: the machine to draw, or None for every machine with delay runs.
+        show: display the figures in a window (blocking).
+        results: the results file, e.g. `output/results.h5`.
+
+    Returns:
+        int: the process exit code.
+
+    """
+    try:
+        file = load_results(results)
+    except OSError as err:
+        print(f"{err}\nno results file: run `python3 analysis/compute_results.py` first", file=sys.stderr)
+        return 1
+    with file:
+        runs = read_table(file, "runs")
+        group_stats = read_table(file, "group_stats")
+        fits = read_table(file, "fits")
+        covs = read_fit_covs(file)
+        algorithms = algorithm_order(file)
+    machines = _machines_with_delay_runs(runs)
+    if machine is not None:
+        if machine not in machines:
+            print(
+                f"machine {machine!r} has no delay runs (available: {', '.join(machines) or 'none'})", file=sys.stderr
+            )
+            return 1
+        machines = [machine]
+    FIGURES.mkdir(exist_ok=True)
+    for m in machines:
+        data = MachineData(
+            machine=m,
+            stats=group_stats[group_stats["machine"] == m].drop(columns=["machine"]),
+            fits=fits[fits["machine"] == m].drop(columns=["machine"]),
+            covs={key[1:]: value for key, value in covs.items() if key[0] == m},
+        )
+        hardware = runs.loc[runs["machine"] == m, "hardware"].iloc[0]
+        fig = machine_figure(str(hardware), data, algorithms)
+        fig.savefig(FIGURES / f"sweeps-{m}.pdf")
+        print(f"wrote {FIGURES / f'sweeps-{m}.pdf'}")
+    if show:
+        plt.show()
+    return 0
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Per-machine delay-sweep figures from output/results.h5 (figures/sweeps-<machine>.pdf)."
+    )
+    parser.add_argument(
+        "--machine",
+        help="draw only this machine's figure (default: every machine with delay runs)",
+    )
+    parser.add_argument(
+        "--show",
+        action="store_true",
+        help="display the figures in a window (blocking); by default they are only saved",
+    )
+    parser.add_argument(
+        "--results",
+        type=Path,
+        default=RESULTS,
+        help="the results file (default: %(default)s)",
+    )
+    args = parser.parse_args()
+    sys.exit(main(machine=args.machine, show=args.show, results=args.results))
