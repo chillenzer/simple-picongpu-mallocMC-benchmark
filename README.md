@@ -20,16 +20,18 @@ and free latency on simulation runtime.
 ## Benchmarked configuration
 
 - **Allocation policies**: `FlatterScatter`, `ScatterAlloc`, `Gallatin`
-  (see `ALGORITHMS` in `run_all.sh` and `param/<Algorithm>/mallocMC.param`)
-- **Delay combinations** (nanoseconds, see `COMBINATIONS` in `run_all.sh`):
-  a `(0, 0)` baseline, the malloc-delay sweep with free delay 0 and the
-  free-delay sweep with malloc delay 0 over the 12 log-spaced values
-  `100`…`100000000` (1/4-decade steps, skipping the intermediate steps
-  between `1e5` and `1e6`), plus a 3x3 joint grid over `10000`, `1000000`,
-  `10000000` (34 runs per example and algorithm)
+  (the `algorithms` list in `config.yaml` and
+  `param/<Algorithm>/mallocMC.param`)
+- **Delay combinations** (nanoseconds, the `delays` section of `config.yaml`;
+  `run_all.sh` derives the full combination set from it): a `(0, 0)`
+  baseline, the malloc-delay sweep with free delay 0 and the free-delay sweep
+  with malloc delay 0 over the 12 log-spaced values `100`…`100000000`
+  (1/4-decade steps, skipping the intermediate steps between `1e5` and
+  `1e6`), plus a 3x3 joint grid over `10000`, `1000000`, `10000000` (34 runs
+  per example and algorithm)
 - **Examples**: `KelvinHelmholtz` (3D, grid sizes 128^3, 256x128x128,
   256x128x256, 1500 steps) and `FoilLCT` (2D, 256x1280 cells, 2000 steps)
-  (see `EXAMPLES` in `run_all.sh` and `flags/*.flags`)
+  (the `examples` list in `config.yaml` and `flags/*.flags`)
 - **One build per (example, algorithm)**: the creation policy is compiled
   in via `param/<Algorithm>/mallocMC.param`; the delays are not a
   compile-time option, mallocMC reads them at run time from the
@@ -40,7 +42,8 @@ and free latency on simulation runtime.
   lines are run once per combination:
   `MALLOCMC_MALLOC_DELAY=<M> MALLOCMC_FREE_DELAY=<F> bin/picongpu ...`
 
-`setup.sh` pins the dependency versions:
+`setup.sh` pins the dependency versions (the `dependencies` section of
+`config.yaml`):
 
 | dependency | source | pinned to |
 |------------|--------|-----------|
@@ -49,19 +52,37 @@ and free latency on simulation runtime.
 
 ## Repository layout
 
+- `config.yaml` — the single source of truth for what the harness runs and
+  builds: the `examples` and `algorithms` lists, the `delays` sweep (the
+  (malloc, free) combination values, documented in the file), the pinned
+  `dependencies` and the build flags, and the per-machine `machines` table
+  (profile to source, output directory for the run logs, hardware name,
+  modules to load).
+- `config.py` — the python3+PyYAML bridge the bash scripts use to read
+  `config.yaml` (`get` / `list` lookups) and to validate it (`check` also
+  verifies the referenced flag, parameter, and profile files).
 - `setup.sh` — clones the pinned PIConGPU and mallocMC, prepares one input
   directory per (example, algorithm) (`pic-create` + parameter overlay) and
-  builds it (`pic-build`). The overlay copies `param/<Algorithm>/*.param`
+  builds it (`pic-build`). Reads its configuration from `config.yaml`
+  (validated up front); `bash setup.sh --check` prints the resolved build
+  configuration and stops. The overlay copies `param/<Algorithm>/*.param`
   (the algorithm's `mallocMC.param`, i.e. the creation policy),
   `param/<Example>/*.param` and any per-(example, algorithm) overrides from
   `param/<Example>/<Algorithm>/`.
 - `run_all.sh` — for every example, every algorithm and every `(malloc
-  delay, free delay)` combination in `COMBINATIONS`, runs the example's
-  flag lines from the matching build with both environment variables set.
+  delay, free delay)` combination derived from the `delays` section of
+  `config.yaml`, runs the example's flag lines from the matching build with
+  both environment variables set; `bash run_all.sh --check` prints the
+  derived run matrix and stops.
 - `run_folder.sh` — runs one already-built example folder, once per flag
   line; takes optional fourth (malloc delay, default `0`) and fifth (free
   delay, default `0`) arguments in nanoseconds, passed via the
   `MALLOCMC_MALLOC_DELAY` / `MALLOCMC_FREE_DELAY` environment variables.
+- `log_{setup,run}_<machine>.sh` — per-machine launchers (hal, rosi,
+  rosi-a100): log the environment, load the machine's modules, and run
+  `setup.sh` / `run_all.sh` with the machine's profile from the `machines`
+  table in `config.yaml`, writing the logs to the machine's output
+  directory.
 - `profiles/` — HPC environment profiles (module/spack setup, `PIC_BACKEND`,
   `PICSRC`). One per machine.
 - `flags/` — one `picongpu` command line per benchmark run, per example.
@@ -87,9 +108,10 @@ and free latency on simulation runtime.
   `W`/`A`, each with a standard error (the full model is documented in the
   script docstring). It plots runtime against the delay per example,
   algorithm, grid and held delay with IQR error bars and the fitted curve
-  overlaid, in one figure per cluster (see `CLUSTERS` in the script) titled
-  by the hardware the runs were made on: one row per algorithm present in
-  the data (`ALGORITHM_ORDER`), two columns (malloc | free delay sweep).
+  overlaid, in one figure per machine of the `machines` table in
+  `config.yaml` (machines without run logs are skipped), titled by the
+  hardware the runs were made on: one row per algorithm present in the data
+  (`ALGORITHM_ORDER`), two columns (malloc | free delay sweep).
   Each run is labeled with a `configuration` column (`compile-time`
   per-variant sweep vs `run-time` env-var sweep), so both log layouts can be
   analyzed side by side (pre-rename logs that used `MALLOCMC_SLEEP_TIME`
@@ -105,7 +127,16 @@ and free latency on simulation runtime.
 ## Usage
 
 Everything runs on the HPC machine with the matching profile; the scripts
-must be invoked from the repository root.
+must be invoked from the repository root. The benchmark configuration
+(examples, algorithms, delay sweep, dependency pins, build flags, and the
+per-machine profiles and output directories) lives in `config.yaml`. Both
+entry points validate it first and can stop right after resolving it, which
+is the way to sanity-check a change before a long build or benchmark:
+
+```
+bash setup.sh --check
+bash run_all.sh --check
+```
 
 1. Build all examples and algorithms (slow the first time: one full
    PIConGPU build per example and algorithm):
@@ -139,8 +170,9 @@ must be invoked from the repository root.
    bash run_all.sh profiles/hal.sh flags
    ```
 
-     For every example, every algorithm and every `(malloc delay, free
-     delay)` combination in `COMBINATIONS`, each flag line is run as
+      For every example, every algorithm and every `(malloc delay, free
+      delay)` combination derived from the `delays` section of `config.yaml`,
+      each flag line is run as
      `MALLOCMC_MALLOC_DELAY=<M> MALLOCMC_FREE_DELAY=<F> bin/picongpu ...`
      from `build/<Ex>/<Algo>/`. Stdout contains one
      `Running example: <Ex> / Using allocator: <Algo>, malloc delay: <M> ns,
@@ -155,9 +187,14 @@ bash run_folder.sh build/FoilLCT/FlatterScatter flags/FoilLCT.flags profiles/hal
 
 ## Changing what is benchmarked
 
-- **Delay combinations**: edit `COMBINATIONS` (and the `DELAY_SWEEP` /
-  `JOINT` that build it) in `run_all.sh`. The delays are applied at run time
-  via `MALLOCMC_MALLOC_DELAY` / `MALLOCMC_FREE_DELAY`, so changing the sweep
+Most of it is now in `config.yaml` (run `python3 config.py check` after
+editing; `bash setup.sh --check` / `bash run_all.sh --check` show what
+would be done).
+
+- **Delay combinations**: edit the `delays` section of `config.yaml`
+  (`baseline`, `arms.values`, `joint.values`); `run_all.sh` derives the full
+  combination set from it. The delays are applied at run time via
+  `MALLOCMC_MALLOC_DELAY` / `MALLOCMC_FREE_DELAY`, so changing the sweep
   requires no rebuild.
 - **Grids / steps / other picongpu flags**: edit `flags/<Example>.flags`
   (one command line per run).
@@ -165,12 +202,16 @@ bash run_folder.sh build/FoilLCT/FlatterScatter flags/FoilLCT.flags profiles/hal
   the `DeviceHeap`; the creation policy and, for FlatterScatter, the heap
   config (`DefaultHeapConfig<block, page, waste>`) live there. Editing a
   file invalidates exactly the affected (example, algorithm) inputs.
-- **PIConGPU / mallocMC version**: the `*_URL` / `*_HASH` variables at the
-  top of `setup.sh`.
-- **New example**: add it to `EXAMPLES` in both scripts, provide
+- **PIConGPU / mallocMC version**: the `dependencies` section of
+  `config.yaml` (URL, checkout path, pinned hash).
+- **Build flags**: the `build` section of `config.yaml`.
+- **New example**: add it to `examples` in `config.yaml`, provide
   `flags/<Example>.flags`, and optionally `param/<Example>/*.param`.
-- **New algorithm**: add it to `ALGORITHMS` in both scripts and provide
+- **New algorithm**: add it to `algorithms` in `config.yaml` and provide
   `param/<Algorithm>/mallocMC.param`.
+- **New machine**: add an entry to the `machines` table in `config.yaml`
+  (profile, output directory, hardware name, modules) and a pair of
+  `log_{setup,run}_<machine>.sh` launchers based on the existing ones.
 
 ## Analysis
 
@@ -181,10 +222,11 @@ shared parsing lives in `analysis/run_logs.py`.
 `output/<cluster>-sleeptimes/run_*` logs (every historical layout) and plots
 the runtime against the delay (log-log, median with IQR error
 bars) per example, algorithm, grid and held delay, with the fitted Amdahl
-curve overlaid, in one figure per cluster (see `CLUSTERS` in the script)
-titled by the hardware the runs were made on, with one row per algorithm
-present in the data (a single-algorithm dataset yields the plain
-two-axis figure). It also fits every (example, algorithm, grid) sweep to
+curve overlaid, in one figure per machine of the `machines` table in
+`config.yaml` (machines without run logs are skipped), titled by the
+hardware the runs were made on, with one row per algorithm present in the
+data (a single-algorithm dataset yields the plain two-axis figure). It also
+fits every (example, algorithm, grid) sweep to
 the model and prints the extracted fraction of runtime spent in
 allocations / frees:
 

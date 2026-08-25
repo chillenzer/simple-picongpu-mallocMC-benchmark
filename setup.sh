@@ -5,30 +5,46 @@
 
 set -e
 
-PROFILE=$1
-PARAM_DIR=$2
-
+# What to build (examples, algorithms, dependency pins, build flags) comes
+# from config.yaml; `check` validates it and the lookups below read the
+# individual values into the variables this script already uses.
+python3 config.py check
+mapfile -t EXAMPLES < <(python3 config.py list examples)
+mapfile -t ALGORITHMS < <(python3 config.py list algorithms)
+PICONGPU_URL=$(python3 config.py get dependencies.picongpu.url)
+PICONGPU_SRC=$(python3 config.py get dependencies.picongpu.path)
+PICONGPU_HASH=$(python3 config.py get dependencies.picongpu.hash)
 # add-delay branch: FlatterScatter delay support, run-time malloc/free delays
 # via the MALLOCMC_MALLOC_DELAY / MALLOCMC_FREE_DELAY environment variables
 # (read into the device-side allocator by mallocMC::Allocator::alloc), and
 # the delays as busy-waits on the device global timer (replacing the
 # __nanosleep intrinsic, whose wake-up guarantee was too weak for a
 # controlled delay).
-MALLOCMC_URL="https://github.com/chillenzer/mallocMC"
-MALLOCMC_SRC="src/picongpu/thirdParty/mallocMC"
-MALLOCMC_HASH="2eb8a18e3298afc18060edcd6e24b09316e2ee18"
-PICONGPU_URL="https://github.com/ComputationalRadiationPhysics/picongpu"
-PICONGPU_SRC="src/picongpu"
-PICONGPU_HASH="6e7d58bb97300ac74cd7a09e13b3c03fdd3863ae"
-EXAMPLES=("KelvinHelmholtz" "FoilLCT")
-ALGORITHMS=("FlatterScatter" "ScatterAlloc" "Gallatin")
+MALLOCMC_URL=$(python3 config.py get dependencies.mallocmc.url)
+MALLOCMC_SRC=$(python3 config.py get dependencies.mallocmc.path)
+MALLOCMC_HASH=$(python3 config.py get dependencies.mallocmc.hash)
 
 MALLOCMC_SRC="$(pwd -P)/$MALLOCMC_SRC"
 PICONGPU_SRC="$(pwd -P)/$PICONGPU_SRC"
 # Nasty little bug here: GCC has a constexpr std::source_location but nvcc does not.
 # So, Boost gets confused and tries to use std::source_location constexpr.
-CXX_FLAGS="-DBOOST_DISABLE_CURRENT_LOCATION"
-FLAGS="-DCMAKE_CXX_FLAGS=\"$CXX_FLAGS\" -DCMAKE_CUDA_FLAGS=\"$CXX_FLAGS\" -Dalpaka_CXX_STANDARD=20 -DmallocMC_USE_Gallatin=ON_ALLOW_FETCH"
+CXX_FLAGS=$(python3 config.py get build.cxx_flags)
+mapfile -t EXTRA_CMAKE_FLAGS < <(python3 config.py list build.extra_cmake_flags)
+FLAGS="-DCMAKE_CXX_FLAGS=\"$CXX_FLAGS\" -DCMAKE_CUDA_FLAGS=\"$CXX_FLAGS\" ${EXTRA_CMAKE_FLAGS[*]}"
+
+if [ "${1:-}" = "--check" ]; then
+  # Print the resolved build configuration and stop without touching the
+  # source tree; used to validate the setup before a long build.
+  printf 'examples:   %s\n' "${EXAMPLES[*]}"
+  printf 'algorithms: %s\n' "${ALGORITHMS[*]}"
+  printf 'picongpu:   %s @ %s\n' "$PICONGPU_SRC" "${PICONGPU_HASH:0:8}"
+  printf 'mallocmc:   %s @ %s\n' "$MALLOCMC_SRC" "${MALLOCMC_HASH:0:8}"
+  printf 'flags:      %s\n' "$FLAGS"
+  exit 0
+fi
+
+PROFILE=$1
+PARAM_DIR=$2
 
 function clone() {
   URL=$1

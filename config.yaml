@@ -1,0 +1,99 @@
+# SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
+# SPDX-License-Identifier: MIT
+#
+# Single source of truth for what the benchmark harness runs and builds.
+#
+# Read by the bash harness (setup.sh, run_all.sh, the per-machine log_*.sh
+# launchers) through the `config.py` helper (python3 + PyYAML; `config.py
+# check` validates this file), and by analysis/analyse_sleeptimes.py, which
+# takes the machine table (output directory, hardware title) from it.
+#
+# The benchmark is the cartesian product of `examples` x `algorithms` x
+# delay combinations. The delays are injected at run time through the
+# MALLOCMC_MALLOC_DELAY / MALLOCMC_FREE_DELAY environment variables, so
+# changing this file never requires a rebuild.
+
+# PIConGPU examples to benchmark; each needs a flags/<Example>.flags file.
+examples:
+  - KelvinHelmholtz
+  - FoilLCT
+
+# mallocMC creation policies to benchmark; each needs a
+# param/<Algorithm>/mallocMC.param file (the policy is compiled in).
+algorithms:
+  - FlatterScatter
+  - ScatterAlloc
+  - Gallatin
+
+# The (malloc_delay, free_delay) sweep in nanoseconds. run_all.sh derives
+# the full combination set from these three parts:
+#
+#   baseline: the (0, 0) reference run without any injected delay;
+#   arms:     the single-delay sweeps, one value at a time, with the other
+#             delay held at 0 - the malloc-delay arm (free 0) and the
+#             free-delay arm (malloc 0) on a log grid from 100 ns to 1e8 ns
+#             with 1/4-decade steps (skipping the intermediate steps between
+#             1e5 and 1e6 ns);
+#   joint:    a 3x3 grid coupling both delays so the two-operation fit is
+#             constrained off the arms.
+#
+# The large delays let each Amdahl term A*s0/(d+s0) decay into its 1/d tail
+# so the asymptote W + A + N*d gets anchored; this matters most for free,
+# whose native cost fades slowly.
+delays:
+  baseline: [0, 0]
+  arms:
+    values: [100, 10000, 100000, 1000000, 1778279, 3162278, 5623413, 10000000, 17782794, 31622777, 56234133, 100000000]
+  joint:
+    values: [10000, 1000000, 10000000]
+
+# Pinned dependencies, cloned (or synced) to `path` by setup.sh.
+dependencies:
+  picongpu:
+    url: https://github.com/ComputationalRadiationPhysics/picongpu
+    path: src/picongpu
+    hash: 6e7d58bb97300ac74cd7a09e13b3c03fdd3863ae
+  mallocmc:
+    # add-delay branch: run-time malloc/free delays via the
+    # MALLOCMC_MALLOC_DELAY / MALLOCMC_FREE_DELAY environment variables,
+    # injected as busy-waits on the device global timer.
+    url: https://github.com/chillenzer/mallocMC
+    path: src/picongpu/thirdParty/mallocMC
+    hash: 2eb8a18e3298afc18060edcd6e24b09316e2ee18
+
+# Build flags for pic-build (setup.sh). cxx_flags is passed to both
+# CMAKE_CXX_FLAGS and CMAKE_CUDA_FLAGS (the Boost std::source_location
+# constexpr bug is in the C++ compiled by nvcc, not a CUDA-specific flag);
+# extra_cmake_flags are appended verbatim.
+build:
+  cxx_flags: -DBOOST_DISABLE_CURRENT_LOCATION
+  extra_cmake_flags:
+    - -Dalpaka_CXX_STANDARD=20
+    - -DmallocMC_USE_Gallatin=ON_ALLOW_FETCH
+
+# Per-machine table: the profile to source (module/spack environment,
+# PIC_BACKEND), the directory the log_*.sh launchers write their run logs
+# to, the hardware name used for the analysis figure titles, and the
+# modules to load before the profile (empty for spack-based machines).
+machines:
+  hal:
+    profile: profiles/hal.sh
+    output: output/hal-sleeptimes
+    hardware: NVIDIA A30
+    modules: []
+  rosi:
+    profile: profiles/rosi-v100.profile
+    output: output/rosi-sleeptimes
+    hardware: NVIDIA V100
+    modules:
+      - hopper
+      - GCCcore/14.3.0
+      - git/2.50.1
+  rosi-a100:
+    profile: profiles/rosi-a100.profile
+    output: output/rosi-a100-sleeptimes
+    hardware: NVIDIA A100
+    modules:
+      - hopper
+      - GCCcore/14.3.0
+      - git/2.50.1

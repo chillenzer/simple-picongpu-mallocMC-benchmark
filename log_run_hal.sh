@@ -6,7 +6,10 @@
 set -x
 set -e
 
-FOLDER="output/hal-sleeptimes"
+# The machine-specific values (output folder, profile) come from config.yaml.
+MACHINE=hal
+FOLDER=$(python3 config.py get "machines.$MACHINE.output")
+PROFILE=$(python3 config.py get "machines.$MACHINE.profile")
 FILENAME="$FOLDER/run_$(date --rfc-3339=seconds | sed 's/ /_/g').txt"
 mkdir -p "$FOLDER"
 
@@ -28,4 +31,4 @@ mkdir -p "$FOLDER"
   echo "========================"
 } >>"$FILENAME"
 
-bash run_all.sh profiles/hal.sh flags/ 2>&1 | tee -a "$FILENAME"
+bash run_all.sh "$PROFILE" flags/ 2>&1 | tee -a "$FILENAME"

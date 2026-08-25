@@ -6,12 +6,26 @@
 set -x
 set -e
 
-FOLDER="output/hal-sleeptimes"
+# The machine-specific values (output folder, profile, modules) come from
+# config.yaml.
+MACHINE=hal
+FOLDER=$(python3 config.py get "machines.$MACHINE.output")
+PROFILE=$(python3 config.py get "machines.$MACHINE.profile")
 FILENAME="$FOLDER/setup_$(date --rfc-3339=seconds | sed 's/ /_/g').txt"
 
 # setup.sh reuses an existing src/ and build/ and only re-runs the parts that
 # are not up to date any more; delete them manually for a fully clean run.
 mkdir -p "$FOLDER"
+
+{
+  echo "========================"
+  echo "Loading environment"
+  echo "========================"
+} >>"$FILENAME"
+
+while IFS= read -r MODULE; do
+  module load "$MODULE"
+done < <(python3 config.py list "machines.$MACHINE.modules")
 
 {
   echo "========================"
@@ -31,4 +45,4 @@ mkdir -p "$FOLDER"
   echo "========================"
 } >>"$FILENAME"
 
-bash setup.sh profiles/hal.sh param/ 2>&1 | tee -a "$FILENAME"
+bash setup.sh "$PROFILE" param/ 2>&1 | tee -a "$FILENAME"

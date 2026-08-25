@@ -6,7 +6,11 @@
 set -x
 set -e
 
-FOLDER="output/rosi-a100-sleeptimes"
+# The machine-specific values (output folder, profile, modules) come from
+# config.yaml.
+MACHINE=rosi-a100
+FOLDER=$(python3 config.py get "machines.$MACHINE.output")
+PROFILE=$(python3 config.py get "machines.$MACHINE.profile")
 FILENAME="$FOLDER/setup_$(date --rfc-3339=seconds | sed 's/ /_/g').txt"
 
 # setup.sh reuses an existing src/ and build/ and only re-runs the parts that
@@ -17,7 +21,9 @@ echo "========================" | tee -a "$FILENAME"
 echo "Loading environment" | tee -a "$FILENAME"
 echo "========================" | tee -a "$FILENAME"
 
-module load hopper GCCcore/14.3.0 git/2.50.1
+while IFS= read -r MODULE; do
+  module load "$MODULE"
+done < <(python3 config.py list "machines.$MACHINE.modules")
 
 echo "========================" | tee -a "$FILENAME"
 echo "Logging environment" | tee -a "$FILENAME"
@@ -32,4 +38,4 @@ echo "========================" | tee -a "$FILENAME"
 echo "Starting setup" | tee -a "$FILENAME"
 echo "========================" | tee -a "$FILENAME"
 
-bash setup.sh profiles/rosi-a100.profile param/ 2>&1 | tee -a "$FILENAME"
+bash setup.sh "$PROFILE" param/ 2>&1 | tee -a "$FILENAME"

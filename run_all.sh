@@ -3,31 +3,27 @@
 # SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
 # SPDX-License-Identifier: MIT
 
-PROFILE=$1
-FLAGSFOLDER=$(pwd -P)/$2
+# What to run (examples, algorithms, delay sweep) comes from config.yaml;
+# `check` validates it and the lookups below read the individual values into
+# the variables this script already uses. (run_all.sh has no `set -e`, so
+# the check's failure must abort explicitly.)
+if ! python3 config.py check; then
+  echo "run_all.sh: config.yaml is invalid (see above)" >&2
+  exit 1
+fi
+mapfile -t EXAMPLES < <(python3 config.py list examples)
+mapfile -t ALGORITHMS < <(python3 config.py list algorithms)
+# The (malloc_delay, free_delay) combinations are in nanoseconds and injected
+# at run time by mallocMC through the MALLOCMC_MALLOC_DELAY /
+# MALLOCMC_FREE_DELAY environment variables (run_folder.sh sets them), so one
+# build per example serves the whole sweep. The sweep values themselves (the
+# single-delay arms and the joint grid) live in config.yaml, where the design
+# of the sweep is documented.
+mapfile -t DELAY_SWEEP < <(python3 config.py list delays.arms.values)
+mapfile -t JOINT < <(python3 config.py list delays.joint.values)
+mapfile -t BASELINE < <(python3 config.py list delays.baseline)
 
-EXAMPLES=("KelvinHelmholtz" "FoilLCT")
-# One build per (example, algorithm): the creation policy is compiled into
-# the binary by param/<Algorithm>/mallocMC.param (setup.sh), so the
-# algorithm is a build-level choice, like the example.
-ALGORITHMS=("FlatterScatter" "ScatterAlloc" "Gallatin")
-# (malloc_delay, free_delay) combinations in nanoseconds, injected at run
-# time by mallocMC through the MALLOCMC_MALLOC_DELAY / MALLOCMC_FREE_DELAY
-# environment variables (run_folder.sh sets them), so one build per example
-# serves the whole sweep.
-#
-# Full sweep for the two-operation Amdahl fit: a (0, 0) baseline, the
-# malloc-delay arm (free delay 0) and the free-delay arm (malloc delay 0)
-# on a log grid from 100 ns to 1e8 ns with 1/4-decade steps (skipping the
-# intermediate steps between 1e5 and 1e6 ns), and a 3x3 joint grid
-# coupling both delays so the fit is constrained off the arms. The large
-# delays let each Amdahl term A*s0/(d+s0) decay into its 1/d tail so the
-# asymptote W + A + N*d gets anchored; this matters most for free, whose
-# native cost fades slowly.
-DELAY_SWEEP=(100 10000 100000 1000000 1778279 3162278 5623413 10000000 17782794 31622777 56234133 100000000)
-JOINT=(10000 1000000 10000000)
-
-COMBINATIONS=("0 0")
+COMBINATIONS=("${BASELINE[0]} ${BASELINE[1]}")
 for delay in "${DELAY_SWEEP[@]}"; do
   COMBINATIONS+=("$delay 0" "0 $delay")
 done
@@ -36,6 +32,19 @@ for malloc_delay in "${JOINT[@]}"; do
     COMBINATIONS+=("$malloc_delay $free_delay")
   done
 done
+
+if [ "${1:-}" = "--check" ]; then
+  # Print the resolved run matrix and stop without running anything; used to
+  # validate the configuration before a long benchmark.
+  printf 'examples:     %s\n' "${EXAMPLES[*]}"
+  printf 'algorithms:   %s\n' "${ALGORITHMS[*]}"
+  printf 'combinations: %d\n' "${#COMBINATIONS[@]}"
+  printf '%s\n' "${COMBINATIONS[@]}"
+  exit 0
+fi
+
+PROFILE=$1
+FLAGSFOLDER=$(pwd -P)/$2
 
 echo "All combinations:"
 echo "${COMBINATIONS[@]}"

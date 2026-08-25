@@ -7,8 +7,9 @@ Reads the raw `run_all.sh` logs directly (no pre-filtering; both the old
 per-variant layout and the current one) and fits each (example, grid) sweep
 to the constrained Amdahl allocation model. It then plots the runtime
 against the imposed delay (median with IQR error bars) in one figure per
-cluster (see `CLUSTERS`), saved to `figures/<cluster>.pdf`, the figure
-titled by the hardware the runs were made on, with the malloc sleep_time
+machine of the `machines` table in `config.yaml`, saved to
+`figures/<machine>.pdf`, the figure titled by the hardware the runs were
+made on, with the malloc sleep_time
 sweep (free sleep_time = 0) on the
 left and the free sleep_time sweep (malloc sleep_time = 0) on the right,
 each axis titled after the swept delay ("malloc time scan", "free time
@@ -92,18 +93,36 @@ from typing import NamedTuple
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import yaml
 from run_logs import FREE_DELAY, GROUP_KEYS, MALLOC_DELAY, parse_logs
 from scipy.optimize import OptimizeWarning, curve_fit
 
 # The creation policies the benchmark can run, in the row order of the
 # figures; a figure only shows the algorithms present in its data.
 ALGORITHM_ORDER = ("FlatterScatter", "ScatterAlloc", "Gallatin")
-# cluster name -> (run-log directory, hardware name for the figure title)
-CLUSTERS = {
-    "hal": (Path("output") / "hal-sleeptimes", "NVIDIA A30"),
-    "rosi": (Path("output") / "rosi-sleeptimes", "NVIDIA V100"),
-}
-# the one figure per cluster is written to `figures/<cluster>.pdf`
+
+
+def _load_clusters() -> dict[str, tuple[Path, str]]:
+    """Load the machine table from the harness `config.yaml`.
+
+    The bash harness writes each machine's run logs to its `output`
+    directory and titles the figures after its `hardware`; both come from
+    the same `machines` table the bash scripts read, so there is a single
+    source of truth. A machine without (yet) run logs is skipped by `main`.
+
+    Returns:
+        dict[str, tuple[Path, str]]: cluster name -> (run-log directory, hardware title).
+
+    """
+    config_path = Path(__file__).resolve().parent.parent / "config.yaml"
+    with config_path.open(encoding="utf-8") as handle:
+        machines = yaml.safe_load(handle)["machines"]
+    return {name: (Path(machine["output"]), machine["hardware"]) for name, machine in machines.items()}
+
+
+# machine name -> (run-log directory, hardware name for the figure title)
+CLUSTERS = _load_clusters()
+# the one figure per machine is written to `figures/<machine>.pdf`
 FIGURES = Path("figures")
 # The statistics, plot and fit are computed only for runs with this
 # configuration: "run-time" (delays injected via MALLOCMC_MALLOC_DELAY /
