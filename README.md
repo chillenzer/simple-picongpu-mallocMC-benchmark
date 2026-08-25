@@ -193,12 +193,14 @@ python3 analysis/analyse_sleeptimes.py
 ```
 
 `analysis/produce_figures.py` produces the paper plots of the original
-three-algorithm comparison from the per-cluster `output/<cluster>/` run logs
-(one full `run_all.sh` repetition per file): the FoilLCT bar chart
-(`figures/foil.pdf`), the KelvinHelmholtz violin chart of the runtime
-relative to the ScatterAlloc baseline (`figures/khi.pdf`) and the per-grid
-timing statistics. It predates the delay-combination sweep, which
-`analyse_sleeptimes.py` analyzes.
+three-algorithm comparison from the no-delay runs: the per-cluster
+`output/<cluster>/` run logs (one full `run_all.sh` repetition per file) plus
+the (0, 0) baseline runs of the delay-combination sweeps (the
+`hal-sleeptimes` and `rosi-sleeptimes` dirs; the nanosleep runs are
+excluded). It writes the FoilLCT bar chart (`figures/foil.pdf`), the
+KelvinHelmholtz violin chart of the runtime relative to the ScatterAlloc
+baseline (`figures/khi.pdf`), and prints the per-grid timing statistics. The
+delay-combination sweeps themselves are analyzed by `analyse_sleeptimes.py`.
 
 ## Code style
 

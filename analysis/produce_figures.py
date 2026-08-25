@@ -3,8 +3,10 @@
 SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
 SPDX-License-Identifier: MIT
 
-Reads the per-run simulation times from the `output/<cluster>/` logs,
-writes `figures/foil.pdf` (FoilLCT) and `figures/khi.pdf`
+Reads the per-run no-delay simulation times from the `output/<cluster>/`
+logs — the old-layout three-algorithm runs plus the (0, 0) baseline runs of
+the delay-combination sweeps (the `*-sleeptimes` dirs, excluding the
+nanosleep runs) — writes `figures/foil.pdf` (FoilLCT) and `figures/khi.pdf`
 (KelvinHelmholtz), and prints the per-grid timing statistics together with
 the metadata of both figures.
 """
@@ -19,7 +21,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
-from run_logs import parse_logs
+from run_logs import FREE_DELAY, MALLOC_DELAY, parse_logs
 from scipy.stats import kruskal
 
 HARDWARE = {
@@ -29,6 +31,10 @@ HARDWARE = {
     "hemera-v100": "V100",
     "lumi": "MI250X (1 GCD)",
     "jedi": "GH200",
+    # the (0, 0) baseline runs of the delay-combination sweeps, read as well
+    # (the `hal-sleeptimes-nanosleep` dir is deliberately left out):
+    "hal-sleeptimes": "A30",
+    "rosi-sleeptimes": "V100",
 }
 HARDWARE_ORDER = ["V100", "A100", "A30", "GH200", "MI250X (1 GCD)"]
 ALGORITHM_ORDER = ["ScatterAlloc", "FlatterScatter", "Gallatin"]
@@ -45,11 +51,28 @@ MEMORY_PER_CELL = SIZE_OF_PARTICLE * TYPICAL_PARTICLES_PER_CELL * NUMBER_OF_SPEC
 REFERENCE_ALGORITHM = "ScatterAlloc"
 
 
-def read_data(cluster: Path) -> pd.DataFrame:
-    """Parse every run log of a cluster directory into per-run records.
+def _no_delay_runs(df: pd.DataFrame) -> pd.DataFrame:
+    """Keep only the no-delay baseline runs (malloc and free delay both 0).
+
+    Runs parsed from the delay-combination sweep carry `malloc_sleeptime` /
+    `free_sleeptime`; only their (0, 0) baseline is a no-delay run. The
+    old-layout runs carry no delay columns, so they all pass through.
 
     Returns:
-        pd.DataFrame: one record per parsed run, tagged with the cluster's hardware.
+        pd.DataFrame: the no-delay subset of the runs.
+
+    """
+    for col in (MALLOC_DELAY, FREE_DELAY):
+        if col in df.columns:
+            df = df[df[col] == 0]
+    return df
+
+
+def read_data(cluster: Path) -> pd.DataFrame:
+    """Parse a cluster's run logs into its no-delay per-run records.
+
+    Returns:
+        pd.DataFrame: one record per no-delay run, tagged with the cluster's hardware.
 
     """
     files = [f for f in sorted(cluster.glob("*")) if f.is_file()]
@@ -67,6 +90,7 @@ def read_data(cluster: Path) -> pd.DataFrame:
             "runtime in s": "runtime in seconds",
         }
     )
+    df = _no_delay_runs(df)
     drop = [c for c in ("name", "malloc_sleeptime", "free_sleeptime", "configuration") if c in df.columns]
     return df.drop(columns=drop).assign(hardware=HARDWARE[cluster.name])
 
