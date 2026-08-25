@@ -7,6 +7,10 @@ PROFILE=$1
 FLAGSFOLDER=$(pwd -P)/$2
 
 EXAMPLES=("KelvinHelmholtz" "FoilLCT")
+# One build per (example, algorithm): the creation policy is compiled into
+# the binary by param/<Algorithm>/mallocMC.param (setup.sh), so the
+# algorithm is a build-level choice, like the example.
+ALGORITHMS=("FlatterScatter" "ScatterAlloc" "Gallatin")
 # (malloc_delay, free_delay) combinations in nanoseconds, injected at run
 # time by mallocMC through the MALLOCMC_MALLOC_DELAY / MALLOCMC_FREE_DELAY
 # environment variables (run_folder.sh sets them), so one build per example
@@ -36,16 +40,18 @@ done
 echo "All combinations:"
 echo "${COMBINATIONS[@]}"
 for example in "${EXAMPLES[@]}"; do
-  # Quoted: the combinations contain spaces ("100 0"), and unquoted
-  # ${COMBINATIONS[@]} word-splits each of them into bare numbers, so the
-  # free delay is lost and defaults to 0.
-  for combination in "${COMBINATIONS[@]}"; do
-    read -r malloc_delay free_delay <<<"$combination"
-    echo "=============================="
-    echo "Running example: $example"
-    echo "Using allocator: FlatterScatter, malloc delay: $malloc_delay ns, free delay: $free_delay ns"
-    echo "=============================="
-    bash run_folder.sh "build/$example" "$FLAGSFOLDER/${example}.flags" "$PROFILE" "$malloc_delay" "$free_delay"
-    echo ""
+  for algorithm in "${ALGORITHMS[@]}"; do
+    # Quoted: the combinations contain spaces ("100 0"), and unquoted
+    # ${COMBINATIONS[@]} word-splits each of them into bare numbers, so the
+    # free delay is lost and defaults to 0.
+    for combination in "${COMBINATIONS[@]}"; do
+      read -r malloc_delay free_delay <<<"$combination"
+      echo "=============================="
+      echo "Running example: $example"
+      echo "Using allocator: $algorithm, malloc delay: $malloc_delay ns, free delay: $free_delay ns"
+      echo "=============================="
+      bash run_folder.sh "build/$example/$algorithm" "$FLAGSFOLDER/${example}.flags" "$PROFILE" "$malloc_delay" "$free_delay"
+      echo ""
+    done
   done
 done
