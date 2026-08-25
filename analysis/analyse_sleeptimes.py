@@ -202,6 +202,26 @@ def parse_simulation_time(line: str) -> dict[str, float]:
     return {"runtime in s": float(line.split("=")[1][: -len("sec")])}
 
 
+def _update_delays(line: str, malloc_delay: int | None, free_delay: int | None) -> tuple[int | None, int | None]:
+    """Update the remembered delay env values from a traced `set -x` line.
+
+    With `set -x`, the delay env prefixes are traced on their own line(s)
+    before the picongpu line; the new layout puts both on the same line.
+    Pre-rename logs only carry the malloc prefix, under the legacy name.
+
+    Returns:
+        tuple[int | None, int | None]: the updated (malloc_delay, free_delay).
+
+    """
+    if MALLOC_DELAY_CMD in line:
+        malloc_delay = int(line.split(MALLOC_DELAY_CMD, 1)[1].split(maxsplit=1)[0])
+    elif LEGACY_MALLOC_DELAY_CMD in line:
+        malloc_delay = int(line.split(LEGACY_MALLOC_DELAY_CMD, 1)[1].split(maxsplit=1)[0])
+    if FREE_DELAY_CMD in line:
+        free_delay = int(line.split(FREE_DELAY_CMD, 1)[1].split(maxsplit=1)[0])
+    return malloc_delay, free_delay
+
+
 def parse_log(log_path: Path) -> Iterator[dict]:
     """Yield one record per picongpu run of a single run log.
 
@@ -223,16 +243,7 @@ def parse_log(log_path: Path) -> Iterator[dict]:
                     malloc_delay = None
                     free_delay = None
             elif line.startswith("+ "):
-                # With `set -x`, the delay env prefixes are traced on their
-                # own line(s) before the picongpu line; the new layout puts
-                # both on the same line. Pre-rename logs only carry the malloc
-                # prefix, under the legacy name.
-                if MALLOC_DELAY_CMD in line:
-                    malloc_delay = int(line.split(MALLOC_DELAY_CMD, 1)[1].split()[0])
-                elif LEGACY_MALLOC_DELAY_CMD in line:
-                    malloc_delay = int(line.split(LEGACY_MALLOC_DELAY_CMD, 1)[1].split()[0])
-                if FREE_DELAY_CMD in line:
-                    free_delay = int(line.split(FREE_DELAY_CMD, 1)[1].split()[0])
+                malloc_delay, free_delay = _update_delays(line, malloc_delay, free_delay)
                 if RUN_CMD in line and "setup" in context:
                     # In the run-time layout the env vars override the variant
                     # sleeptime; in the per-variant layout they are absent.
@@ -316,6 +327,73 @@ def _group_key(name: tuple) -> tuple:
     return tuple(None if isinstance(k, float) and np.isnan(k) else k for k in name)
 
 
+def _legend_first(axes: Iterable[plt.Axes]) -> None:
+    """Show the legend on the left-most axis that actually has a curve."""
+    for ax in axes:
+        if ax.get_legend_handles_labels()[0]:
+            ax.legend()
+            break
+
+
+def _plot_single_algorithm_fig(
+    title: str, simple_results: pd.DataFrame, fits: pd.DataFrame | None, series_markers: dict
+) -> plt.Figure:
+    """Build the single-row figure: the two sweeps side by side, y-axis shared.
+
+    Returns:
+        plt.Figure: the figure.
+
+    """
+    fig, axes = plt.subplots(1, 2, figsize=(6.5 * 2, 5.5), sharey=True, layout="constrained")
+    fig.suptitle(title)
+    _plot_cluster(axes[0], simple_results, fits, series_markers, x_delay=MALLOC_DELAY)
+    _plot_cluster(axes[1], simple_results, fits, series_markers, x_delay=FREE_DELAY)
+    # The y-axis is shared: subplots already hides the right axis'
+    # tick labels, drop its label too.
+    axes[1].set_ylabel("")
+    # Legend on the left-most axis that actually has a curve (one
+    # cluster's delay sweep may not have arrived yet).
+    _legend_first(axes)
+    return fig
+
+
+def _plot_multi_algorithm_fig(
+    title: str,
+    simple_results: pd.DataFrame,
+    fits: pd.DataFrame | None,
+    series_markers: dict,
+    algorithms: list,
+) -> plt.Figure:
+    """Build the multi-row figure: one row per algorithm, the left column names it.
+
+    Returns:
+        plt.Figure: the figure.
+
+    """
+    fig = plt.figure(figsize=(6.5 * 2 + 1.2, 5.5 * len(algorithms)), layout="constrained")
+    fig.suptitle(title)
+    gridspec = fig.add_gridspec(len(algorithms), 3, width_ratios=[0.16, 1, 1])
+    row_axes = []
+    for i, algorithm in enumerate(algorithms):
+        # Keep the full MultiIndex (drop nothing): `_plot_cluster`
+        # re-groups on the level names.
+        sub = simple_results[simple_results.index.get_level_values("algorithm") == algorithm]
+        fits_sub = None if fits is None else fits[fits["algorithm"] == algorithm]
+        malloc_ax = fig.add_subplot(gridspec[i, 1], sharey=None if i == 0 else row_axes[0][0])
+        free_ax = fig.add_subplot(gridspec[i, 2], sharey=malloc_ax)
+        # The left column names the row's algorithm.
+        label_ax = fig.add_subplot(gridspec[i, 0])
+        label_ax.axis("off")
+        label_ax.text(0.9, 0.5, algorithm, rotation=90, ha="right", va="center", fontsize=12)
+        _plot_cluster(malloc_ax, sub, fits_sub, series_markers, x_delay=MALLOC_DELAY)
+        _plot_cluster(free_ax, sub, fits_sub, series_markers, x_delay=FREE_DELAY)
+        free_ax.set_ylabel("")
+        row_axes.append((malloc_ax, free_ax))
+    # Legend on the left-most axis of the first row that has a curve.
+    _legend_first(ax for malloc_ax, free_ax in row_axes for ax in (malloc_ax, free_ax))
+    return fig
+
+
 def simple_plot(cluster_results: list[tuple[str, pd.DataFrame, pd.DataFrame | None]]) -> list[plt.Figure]:
     """One figure per cluster, one row per algorithm, the two sweeps side by side.
 
@@ -356,48 +434,9 @@ def simple_plot(cluster_results: list[tuple[str, pd.DataFrame, pd.DataFrame | No
         if len(algorithms) <= 1:
             # Backwards-compatible layout: the single-row figure, exactly as
             # before multi-algorithm sweeps existed.
-            fig, axes = plt.subplots(1, 2, figsize=(6.5 * 2, 5.5), sharey=True, layout="constrained")
-            fig.suptitle(title)
-            _plot_cluster(axes[0], simple_results, fits, series_markers, x_delay=MALLOC_DELAY)
-            _plot_cluster(axes[1], simple_results, fits, series_markers, x_delay=FREE_DELAY)
-            # The y-axis is shared: subplots already hides the right axis'
-            # tick labels, drop its label too.
-            axes[1].set_ylabel("")
-            # Legend on the left-most axis that actually has a curve (one
-            # cluster's delay sweep may not have arrived yet).
-            for ax in axes:
-                if ax.get_legend_handles_labels()[0]:
-                    ax.legend()
-                    break
+            fig = _plot_single_algorithm_fig(title, simple_results, fits, series_markers)
         else:
-            fig = plt.figure(figsize=(6.5 * 2 + 1.2, 5.5 * len(algorithms)), layout="constrained")
-            fig.suptitle(title)
-            gridspec = fig.add_gridspec(len(algorithms), 3, width_ratios=[0.16, 1, 1])
-            row_axes = []
-            for i, algorithm in enumerate(algorithms):
-                # Keep the full MultiIndex (drop nothing): `_plot_cluster`
-                # re-groups on the level names.
-                sub = simple_results[simple_results.index.get_level_values("algorithm") == algorithm]
-                fits_sub = None if fits is None else fits[fits["algorithm"] == algorithm]
-                malloc_ax = fig.add_subplot(gridspec[i, 1], sharey=None if i == 0 else row_axes[0][0])
-                free_ax = fig.add_subplot(gridspec[i, 2], sharey=malloc_ax)
-                # The left column names the row's algorithm.
-                label_ax = fig.add_subplot(gridspec[i, 0])
-                label_ax.axis("off")
-                label_ax.text(0.9, 0.5, algorithm, rotation=90, ha="right", va="center", fontsize=12)
-                _plot_cluster(malloc_ax, sub, fits_sub, series_markers, x_delay=MALLOC_DELAY)
-                _plot_cluster(free_ax, sub, fits_sub, series_markers, x_delay=FREE_DELAY)
-                free_ax.set_ylabel("")
-                row_axes.append((malloc_ax, free_ax))
-            # Legend on the left-most axis of the first row that has a curve.
-            for malloc_ax, free_ax in row_axes:
-                for ax in (malloc_ax, free_ax):
-                    if ax.get_legend_handles_labels()[0]:
-                        ax.legend()
-                        break
-                else:
-                    continue
-                break
+            fig = _plot_multi_algorithm_fig(title, simple_results, fits, series_markers, algorithms)
         figs.append(fig)
     return figs
 
@@ -483,6 +522,36 @@ class ConstrainedFit(NamedTuple):
     notes: list[str]
 
 
+class Curve(NamedTuple):
+    """The per-curve drawing context for a fitted model line.
+
+    `x_ns` is the x-grid in nanoseconds (the axis), `x_s` the same grid in
+    seconds (the model), `x0` the smallest delay of the curve, and `held_s`
+    the held (secondary) delay in seconds.
+    """
+
+    ax: plt.Axes
+    x_ns: np.ndarray
+    x_s: np.ndarray
+    x0: float
+    held_s: float
+    params: Fit1d | Fit2d
+    short: str
+    color: str
+
+
+class Cluster(NamedTuple):
+    """The per-cluster drawing context shared by all of its curves."""
+
+    ax: plt.Axes
+    x_delay: str
+    short: str
+    secondary_short: str
+    series_markers: dict
+    fits_by_key: dict
+    gaps: list[tuple[float, float, str, str]]
+
+
 _ModelFn = Callable[[np.ndarray], np.ndarray]
 
 
@@ -544,14 +613,7 @@ def _collect_fits(fits: pd.DataFrame | None) -> dict[tuple, Fit1d | Fit2d]:
 
 
 def _draw_fit_2d(
-    ax: plt.Axes,
-    x_ns: np.ndarray,
-    x_s: np.ndarray,
-    x0: float,
-    held_s: float,
-    params: Fit2d,
-    short: str,
-    color: str,
+    curve: Curve,
     gaps: list[tuple[float, float, str, str]],
     sleeve: Callable[[_ModelFn, tuple], None],
 ) -> None:
@@ -564,10 +626,12 @@ def _draw_fit_2d(
     part is the native cost of the plotted operation, the lower part
     the one of the held operation.
     """
+    x_s, held_s = curve.x_s, curve.held_s
+    params = curve.params
     held_arr = np.full_like(x_s, held_s)
     lower = (0.0, 0.0, 0.0, 0.0, 0.0, EPS_S, EPS_S)
-    if short == "malloc":
-        curve = _model_2d(
+    if curve.short == "malloc":
+        model = _model_2d(
             x_s,
             held_arr,
             (params.W, params.n_malloc, params.n_free, params.a_malloc, params.a_free, params.m0, params.f0),
@@ -585,7 +649,7 @@ def _draw_fit_2d(
         def fn_dot(p: np.ndarray) -> np.ndarray:
             return p[0] + p[1] * x_s + p[2] * held_s + p[4] * p[6] / (held_s + p[6])
     else:
-        curve = _model_2d(
+        model = _model_2d(
             held_arr,
             x_s,
             (params.W, params.n_malloc, params.n_free, params.a_malloc, params.a_free, params.m0, params.f0),
@@ -604,34 +668,32 @@ def _draw_fit_2d(
             return p[0] + p[2] * x_s + p[1] * held_s + p[3] * p[5] / (held_s + p[5])
 
     t0 = params.W + params.a_malloc + params.a_free
-    held_name = "free" if short == "malloc" else "malloc"
-    if float(curve[0]) - float(dotted[0]) > VISIBLE_GAP_S:
-        y_lo, y_hi = float(dotted[0]), float(curve[0])
-        ax.plot((x0, x0), (y_lo, y_hi), color=color, linewidth=1, alpha=0.8)
+    held_name = "free" if curve.short == "malloc" else "malloc"
+    if float(model[0]) - float(dotted[0]) > VISIBLE_GAP_S:
+        y_lo, y_hi = float(dotted[0]), float(model[0])
+        curve.ax.plot((curve.x0, curve.x0), (y_lo, y_hi), color=curve.color, linewidth=1, alpha=0.8)
         f_val = a_up / t0 if t0 > EPS_S else 0.0
-        gaps.append((np.sqrt(y_lo * y_hi), x0, color, f"A_{short} = {a_up:.2f} s, f = {100 * f_val:.1f}%"))
+        gaps.append(
+            (np.sqrt(y_lo * y_hi), curve.x0, curve.color, f"A_{curve.short} = {a_up:.2f} s, f = {100 * f_val:.1f}%")
+        )
     if float(dotted[0]) - float(linear[0]) > VISIBLE_GAP_S:
         y_lo, y_hi = float(linear[0]), float(dotted[0])
-        ax.plot((x0, x0), (y_lo, y_hi), color=color, linewidth=1, alpha=0.8)
+        curve.ax.plot((curve.x0, curve.x0), (y_lo, y_hi), color=curve.color, linewidth=1, alpha=0.8)
         f_val = a_dn / t0 if t0 > EPS_S else 0.0
-        gaps.append((np.sqrt(y_lo * y_hi), x0, color, f"A_{held_name} = {a_dn:.2f} s, f = {100 * f_val:.1f}%"))
+        gaps.append(
+            (np.sqrt(y_lo * y_hi), curve.x0, curve.color, f"A_{held_name} = {a_dn:.2f} s, f = {100 * f_val:.1f}%")
+        )
     # The model takes second-based delays; the axis is in ns.
     sleeve(fn_dot, lower)
-    ax.plot(x_ns, dotted, color=color, linestyle=":", alpha=0.8)
+    curve.ax.plot(curve.x_ns, dotted, color=curve.color, linestyle=":", alpha=0.8)
     sleeve(fn_curve, lower)
-    ax.plot(x_ns, curve, color=color, linestyle="-", alpha=0.8)
+    curve.ax.plot(curve.x_ns, model, color=curve.color, linestyle="-", alpha=0.8)
     sleeve(fn_dash, lower)
-    ax.plot(x_ns, linear, color=color, linestyle="--", alpha=0.8)
+    curve.ax.plot(curve.x_ns, linear, color=curve.color, linestyle="--", alpha=0.8)
 
 
 def _draw_fit_1d(
-    ax: plt.Axes,
-    x_ns: np.ndarray,
-    x_s: np.ndarray,
-    x0: float,
-    params: Fit1d,
-    short: str,
-    color: str,
+    curve: Curve,
     gaps: list[tuple[float, float, str, str]],
     sleeve: Callable[[_ModelFn, tuple], None],
 ) -> None:
@@ -641,8 +703,10 @@ def _draw_fit_1d(
     extrapolation to A = 0; the marker (appended to `gaps`) spans the
     gap between them at the smallest delay.
     """
+    x_s, x_ns = curve.x_s, curve.x_ns
+    x0, params, short, color = curve.x0, curve.params, curve.short, curve.color
     lower = (0.0, 0.0, 0.0, EPS_S)
-    curve = _model(x_s, params.W, params.N, params.A, params.s0)
+    model = _model(x_s, params.W, params.N, params.A, params.s0)
     linear = params.W + params.N * x_s
 
     def fn_curve(p: np.ndarray) -> np.ndarray:
@@ -651,29 +715,19 @@ def _draw_fit_1d(
     def fn_dash(p: np.ndarray) -> np.ndarray:
         return p[0] + p[1] * x_s
 
-    if float(curve[0]) > float(linear[0]):
-        y_lo, y_hi = float(linear[0]), float(curve[0])
-        ax.plot((x0, x0), (y_lo, y_hi), color=color, linewidth=1, alpha=0.8)
+    if float(model[0]) > float(linear[0]):
+        y_lo, y_hi = float(linear[0]), float(model[0])
+        curve.ax.plot((x0, x0), (y_lo, y_hi), color=color, linewidth=1, alpha=0.8)
         f_val = params.A / (params.W + params.A) if params.W + params.A > EPS_S else 0.0
         gaps.append((np.sqrt(y_lo * y_hi), x0, color, f"A_{short} = {params.A:.2f} s, f = {100 * f_val:.1f}%"))
     # The model takes second-based delays; the axis is in ns.
     sleeve(fn_curve, lower)
-    ax.plot(x_ns, curve, color=color, linestyle="-", alpha=0.8)
+    curve.ax.plot(x_ns, model, color=color, linestyle="-", alpha=0.8)
     sleeve(fn_dash, lower)
-    ax.plot(x_ns, linear, color=color, linestyle="--", alpha=0.8)
+    curve.ax.plot(x_ns, linear, color=color, linestyle="--", alpha=0.8)
 
 
-def _draw_fit_curves(
-    ax: plt.Axes,
-    x_ns: np.ndarray,
-    x_s: np.ndarray,
-    x0: float,
-    held_s: float,
-    params: Fit1d | Fit2d,
-    short: str,
-    color: str,
-    gaps: list[tuple[float, float, str, str]],
-) -> bool:
+def _draw_fit_curves(curve: Curve, gaps: list[tuple[float, float, str, str]]) -> bool:
     """Draw the fitted model lines of one curve and its A/f gap markers.
 
     Dispatches on the fit type and appends the gap markers to `gaps`.
@@ -689,17 +743,76 @@ def _draw_fit_curves(
         # non-linear in them) and fill the 25/75-percentile
         # envelope of the model values, the IQR convention of
         # the data's error bars. No covariance -> no sleeve.
-        if params.cov is None:
+        if curve.params.cov is None:
             return
-        band = _bootstrap_band(x_s, fn, params.cov[0], params.cov[1], lower=lower)
+        band = _bootstrap_band(curve.x_s, fn, curve.params.cov[0], curve.params.cov[1], lower=lower)
         if band is not None:
-            ax.fill_between(x_ns, band[0], band[1], color=color, alpha=0.3)
+            curve.ax.fill_between(curve.x_ns, band[0], band[1], color=curve.color, alpha=0.3)
 
-    if isinstance(params, Fit2d):
-        _draw_fit_2d(ax, x_ns, x_s, x0, held_s, params, short, color, gaps, sleeve)
+    if isinstance(curve.params, Fit2d):
+        _draw_fit_2d(curve, gaps, sleeve)
         return True
-    _draw_fit_1d(ax, x_ns, x_s, x0, params, short, color, gaps, sleeve)
+    _draw_fit_1d(curve, gaps, sleeve)
     return False
+
+
+def _draw_curve_fit(cluster: Cluster, x: np.ndarray, color: str, params: Fit1d | Fit2d, held_s: float) -> bool:
+    """Draw the fitted model lines of one curve over its x range.
+
+    Returns:
+        bool: True when a 2-D fit was drawn.
+
+    """
+    # Draw the fitted model over the x-delay range this curve covers.
+    x_data = x[x > 0]
+    if not (len(x_data) > 1 and float(x_data[-1]) > float(x_data[0])):
+        return False
+    x_ns = np.geomspace(float(x_data[0]), float(x_data[-1]), 100)
+    x_s = x_ns * 1e-9
+    x0 = float(x_ns[0])
+    curve = Curve(cluster.ax, x_ns, x_s, x0, held_s, params, cluster.short, color)
+    return _draw_fit_curves(curve, cluster.gaps)
+
+
+def _draw_series(cluster: Cluster, result: pd.DataFrame, name: tuple) -> tuple[set, bool]:
+    """Draw one curve: the errorbar points and, when a fit exists, the model lines.
+
+    Returns:
+        tuple[set, bool]: (the positive x-delays, True when a 2-D fit was drawn).
+
+    """
+    x, ye_min, y, ye_max = np.sort(result.reset_index(drop=False)[[cluster.x_delay, "25%", "50%", "75%"]].to_numpy().T)
+    # Only the pure sweep is shown: runs where the other (held) delay is
+    # 0. Runs with both delays > 0 belong to neither figure.
+    if name[5] != 0:
+        return set(), False
+    # A sweep needs at least two distinct x values above 0.
+    x_pos = x[x > 0]
+    if len(np.unique(x_pos)) < 2:
+        return set(), False
+    # The x-axis is logarithmic, so the zero-delay point is not representable
+    # there (it is invisible on the plot anyway); drop it so it cannot corrupt
+    # the autoscaled x limits.
+    pos = x > 0
+    x, ye_min, y, ye_max = x[pos], ye_min[pos], y[pos], ye_max[pos]
+    eb = cluster.ax.errorbar(
+        x,
+        y,
+        yerr=(y - ye_min, ye_max - y),
+        linestyle="none",
+        marker=cluster.series_markers[_group_key(name[:5])],
+        label=label(name, cluster.secondary_short),
+    )
+    color = eb.lines[0].get_color()
+    params = cluster.fits_by_key.get(_group_key(name[:5]))
+    # A 1-D fit only applies when it was made on the plotted delay; the
+    # 2-D fit applies to either direction.
+    if params is not None and isinstance(params, Fit1d) and params.direction != cluster.short:
+        params = None
+    has_2d = False
+    if params is not None:
+        has_2d = _draw_curve_fit(cluster, x, color, params, float(name[5]) * 1e-9)
+    return set(x_pos), has_2d
 
 
 def _plot_cluster(
@@ -714,51 +827,17 @@ def _plot_cluster(
     short = "malloc" if x_delay == MALLOC_DELAY else "free"
     secondary_short = "free" if secondary == FREE_DELAY else "malloc"
     fits_by_key = _collect_fits(fits)
+    gaps = []
+    cluster = Cluster(ax, x_delay, short, secondary_short, series_markers, fits_by_key, gaps)
     # One curve per (setup, algorithm, grid, held delay): the x-axis is
     # `x_delay`.
-    plot_keys = (*GROUP_KEYS, secondary)
-    results = simple_results.groupby(list(plot_keys), dropna=False)
-    gaps = []
+    results = simple_results.groupby([*GROUP_KEYS, secondary], dropna=False)
     delays = set()
     has_2d = False
     for name, result in results:
-        x, ye_min, y, ye_max = np.sort(result.reset_index(drop=False)[[x_delay, "25%", "50%", "75%"]].to_numpy().T)
-        # Only the pure sweep is shown: runs where the other (held) delay is
-        # 0. Runs with both delays > 0 belong to neither figure.
-        if name[5] != 0:
-            continue
-        # A sweep needs at least two distinct x values above 0.
-        if len(np.unique(x[x > 0])) < 2:
-            continue
-        delays.update(x[x > 0])
-        # The x-axis is logarithmic, so the zero-delay point is not
-        # representable there (it is invisible on the plot anyway); drop it
-        # so it cannot corrupt the autoscaled x limits.
-        pos = x > 0
-        x, ye_min, y, ye_max = x[pos], ye_min[pos], y[pos], ye_max[pos]
-        eb = ax.errorbar(
-            x,
-            y,
-            yerr=(y - ye_min, ye_max - y),
-            linestyle="none",
-            marker=series_markers[_group_key(name[:5])],
-            label=label(name, secondary_short),
-        )
-        color = eb.lines[0].get_color()
-        params = fits_by_key.get(_group_key(name[:5]))
-        # A 1-D fit only applies when it was made on the plotted delay; the
-        # 2-D fit applies to either direction.
-        if params is not None and isinstance(params, Fit1d) and params.direction != short:
-            params = None
-        if params is not None:
-            held_s = float(name[5]) * 1e-9
-            # Draw the fitted model over the x-delay range this curve covers.
-            x_data = x[x > 0]
-            if len(x_data) > 1 and float(x_data[-1]) > float(x_data[0]):
-                x_ns = np.geomspace(float(x_data[0]), float(x_data[-1]), 100)
-                x_s = x_ns * 1e-9
-                x0 = float(x_ns[0])
-                has_2d = _draw_fit_curves(ax, x_ns, x_s, x0, held_s, params, short, color, gaps) or has_2d
+        curve_delays, curve_2d = _draw_series(cluster, result, name)
+        delays |= curve_delays
+        has_2d = curve_2d or has_2d
     ax.set_title(f"{short} time scan")
     lines = ["solid: full fit"]
     if has_2d:
@@ -774,6 +853,73 @@ def _plot_cluster(
     return ax
 
 
+def _label_boxes(ax: plt.Axes, placed: list, inv: plt.transforms.Transform) -> list[tuple[float, float, float, float]]:
+    """Compute the axes-fraction bounding box of each placed gap label.
+
+    Returns:
+        list[tuple[float, float, float, float]]: the (x0, x1, y0, y1) boxes.
+
+    """
+    boxes = []
+    for _arrow, lab, _lfy in placed:
+        c = inv.transform(lab.get_window_extent(ax.figure.canvas.get_renderer()).corners())
+        boxes.append((c[:, 0].min(), c[:, 0].max(), c[:, 1].min(), c[:, 1].max()))
+    return boxes
+
+
+def _separate_labels(placed: list, boxes: list[tuple[float, float, float, float]], gc_frac: float) -> bool:
+    """Nudge any overlapping label pairs apart, vertically, in axes fraction.
+
+    The arrows follow their box centres.
+
+    Returns:
+        bool: True when at least one label moved.
+
+    """
+    moved = False
+    for i in range(len(placed)):
+        for j in range(i + 1, len(placed)):
+            xi0, xi1, yi0, yi1 = boxes[i]
+            xj0, xj1, yj0, yj1 = boxes[j]
+            if min(xi1, xj1) - max(xi0, xj0) <= 0:
+                continue
+            y_overlap = min(yi1, yj1) - max(yi0, yj0)
+            if y_overlap > -LABEL_OVERLAP_EPS:
+                shift = 0.5 * (y_overlap + LABEL_MIN_SPACE)
+                if 0.5 * (yi0 + yi1) >= 0.5 * (yj0 + yj1):
+                    placed[i], placed[j] = (
+                        (placed[i][0], placed[i][1], min(max(placed[i][2] + shift, 0.0), 1.0)),
+                        (placed[j][0], placed[j][1], min(max(placed[j][2] - shift, 0.0), 1.0)),
+                    )
+                else:
+                    placed[i], placed[j] = (
+                        (placed[i][0], placed[i][1], min(max(placed[i][2] - shift, 0.0), 1.0)),
+                        (placed[j][0], placed[j][1], min(max(placed[j][2] + shift, 0.0), 1.0)),
+                    )
+                placed[i][1].set_position((gc_frac, placed[i][2]))
+                placed[j][1].set_position((gc_frac, placed[j][2]))
+                moved = True
+    return moved
+
+
+def _resolve_label_overlaps(ax: plt.Axes, placed: list, gc_frac: float) -> None:
+    """Separate vertically any overlapping gap labels.
+
+    A 2-D group contributes two labels (one per operation); the labels are
+    relaxed in axes fraction until their bounding boxes no longer overlap
+    (up to 64 passes), and the arrows and labels are re-anchored at their
+    final box centres.
+    """
+    inv = ax.transAxes.inverted()
+    for _ in range(64):
+        ax.figure.canvas.draw()
+        if not _separate_labels(placed, _label_boxes(ax, placed, inv), gc_frac):
+            break
+    for arrow, lab, lfy in placed:
+        arrow.xyann = (gc_frac, lfy)
+        lab.set_position((gc_frac, lfy))
+
+
 def _place_gap_labels(ax: plt.Axes, gaps: list[tuple[float, float, str, str]], delays: set[float]) -> None:
     """Place the A/f gap labels and their leader lines on the axis.
 
@@ -786,13 +932,13 @@ def _place_gap_labels(ax: plt.Axes, gaps: list[tuple[float, float, str, str]], d
     if not (gaps and len(delay_xs) >= 2):
         return
     ax.autoscale_view()
-    lo, hi = ax.get_ylim()
-    x_lo, x_hi = ax.get_xlim()
+    ylim = ax.get_ylim()
+    xlim = ax.get_xlim()
     gc = float(10 ** (0.5 * (np.log10(delay_xs[0]) + np.log10(delay_xs[1]))))
-    gc_frac = (np.log10(gc) - np.log10(x_lo)) / (np.log10(x_hi) - np.log10(x_lo))
+    gc_frac = (np.log10(gc) - np.log10(xlim[0])) / (np.log10(xlim[1]) - np.log10(xlim[0]))
     placed = []
     for y_mid, x0, color, text in gaps:
-        mid_frac = (np.log10(y_mid) - np.log10(lo)) / (np.log10(hi) - np.log10(lo))
+        mid_frac = (np.log10(y_mid) - np.log10(ylim[0])) / (np.log10(ylim[1]) - np.log10(ylim[0]))
         lfy = min(mid_frac + LABEL_MIN_SPACE, 0.96)
         # The leader line is its own artist (a bbox-anchored arrow breaks
         # matplotlib's layout path clipping). Its tail is anchored at
@@ -828,44 +974,7 @@ def _place_gap_labels(ax: plt.Axes, gaps: list[tuple[float, float, str, str]], d
         )
         placed.append([arrow, lab, lfy])
     if len(placed) > 1:
-        # A 2-D group contributes two labels (one per operation); separate
-        # any that touch or overlap, vertically, in axes fraction. The
-        # arrows follow their box centres.
-        inv = ax.transAxes.inverted()
-        for _ in range(64):
-            ax.figure.canvas.draw()
-            boxes = []
-            for _, lab, _lfy in placed:
-                c = inv.transform(lab.get_window_extent(ax.figure.canvas.get_renderer()).corners())
-                boxes.append((c[:, 0].min(), c[:, 0].max(), c[:, 1].min(), c[:, 1].max()))
-            moved = False
-            for i in range(len(placed)):
-                for j in range(i + 1, len(placed)):
-                    xi0, xi1, yi0, yi1 = boxes[i]
-                    xj0, xj1, yj0, yj1 = boxes[j]
-                    if min(xi1, xj1) - max(xi0, xj0) <= 0:
-                        continue
-                    y_overlap = min(yi1, yj1) - max(yi0, yj0)
-                    if y_overlap > -LABEL_OVERLAP_EPS:
-                        shift = 0.5 * (y_overlap + LABEL_MIN_SPACE)
-                        if 0.5 * (yi0 + yi1) >= 0.5 * (yj0 + yj1):
-                            placed[i], placed[j] = (
-                                (placed[i][0], placed[i][1], min(max(placed[i][2] + shift, 0.0), 1.0)),
-                                (placed[j][0], placed[j][1], min(max(placed[j][2] - shift, 0.0), 1.0)),
-                            )
-                        else:
-                            placed[i], placed[j] = (
-                                (placed[i][0], placed[i][1], min(max(placed[i][2] - shift, 0.0), 1.0)),
-                                (placed[j][0], placed[j][1], min(max(placed[j][2] + shift, 0.0), 1.0)),
-                            )
-                        placed[i][1].set_position((gc_frac, placed[i][2]))
-                        placed[j][1].set_position((gc_frac, placed[j][2]))
-                        moved = True
-            if not moved:
-                break
-        for arrow, lab, lfy in placed:
-            arrow.xyann = (gc_frac, lfy)
-            lab.set_position((gc_frac, lfy))
+        _resolve_label_overlaps(ax, placed, gc_frac)
 
 
 def _model(s: np.ndarray, W: float, N: float, A: float, s0: float) -> np.ndarray:
