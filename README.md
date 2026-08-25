@@ -69,8 +69,10 @@ and free latency on simulation runtime.
   `mallocMC.param` per algorithm (`param/<Algorithm>/`, defining the
   creation policy), example-specific files (`param/FoilLCT/`), and optional
   per-(example, algorithm) overrides (`param/<Example>/<Algorithm>/`).
-- `analysis/parse_results.py` — parses pre-filtered run logs into a pandas
-  DataFrame for seaborn (see below).
+- `analysis/run_logs.py` — shared parsing of the benchmark run logs: one
+  record per `bin/picongpu` run (example, algorithm, grid, imposed delays,
+  runtime) from the raw `set -x` trace of any of the historical log layouts;
+  the basis of the analysis scripts below.
 - `analysis/analyse_sleeptimes.py` — reads the raw `run_all.sh` logs directly
   (no pre-filtering). For a sweep that varies only one delay it fits the
   (example, algorithm, grid) group to the Amdahl model
@@ -95,8 +97,8 @@ and free latency on simulation runtime.
   `"run-time"` or `"compile-time"` to compute the statistics, plot and fit
   only from runs of that configuration (`None` uses all; the printed parsed
   results stay complete).
-- `analysis/produce_figures.py` — produces the plots for the paper (see note
-  below).
+- `analysis/produce_figures.py` — produces the paper plots of the original
+  three-algorithm comparison (see note below).
 - `build/` — created by `setup.sh`; one CMake project per (example,
   algorithm).
 
@@ -172,30 +174,12 @@ bash run_folder.sh build/FoilLCT/FlatterScatter flags/FoilLCT.flags profiles/hal
 
 ## Analysis
 
-To tabulate the runtimes, pre-filter the run logs with a grep, e.g.
+All of the analysis reads the raw run logs directly (no pre-filtering); the
+shared parsing lives in `analysis/run_logs.py`.
 
-```
-grep -E "cd .*build/(FoilLCT|KelvinHelmholtz)|bin/picongpu |calculation" output/hal-sleeptimes/run_* > results.txt
-```
-
-(the current layout is `cd .../build/<Ex>/<Algo>`; older per-variant logs
-use relative `cd build/<Ex>/<Variant>` paths; both match this grep), then
-
-```
-python3 analysis/parse_results.py results.txt            # print the DataFrame
-python3 analysis/parse_results.py results.txt --csv r.csv  # also write CSV
-```
-
-or import `parse_results.parse_results` from Python/notebooks. One row per
-run with columns `file`, `example`, `grid`, `grid_x/y/z`, `steps`, `policy`,
-`sleep_time` (the malloc delay, ns), `free_sleep_time` (the free delay, ns;
-`0` for pre-rename and compile-time runs) and `time_seconds` — ready for
-seaborn. The old per-variant, the pre-rename and the current log layout all
-parse.
-
-`analysis/analyse_sleeptimes.py` skips the pre-filtering: it reads the raw
-`output/<cluster>-sleeptimes/run_*` logs directly (all of the above layouts)
-and plots the runtime against the delay (log-log, median with IQR error
+`analysis/analyse_sleeptimes.py` reads the raw
+`output/<cluster>-sleeptimes/run_*` logs (every historical layout) and plots
+the runtime against the delay (log-log, median with IQR error
 bars) per example, algorithm, grid and held delay, with the fitted Amdahl
 curve overlaid, in one figure per cluster (see `CLUSTERS` in the script)
 titled by the hardware the runs were made on, with one row per algorithm
@@ -208,11 +192,13 @@ allocations / frees:
 python3 analysis/analyse_sleeptimes.py
 ```
 
-`analysis/produce_figures.py` is the legacy plotting script of the original
-three-algorithm comparison; it predates the delay-combination sweep and is
-superseded by `analyse_sleeptimes.py`, which handles both the delay
-combinations and the multiple algorithms. The sweep labels appear in the
-logs as `Using allocator: <Algo>, malloc delay: <M> ns, free delay: <F> ns`.
+`analysis/produce_figures.py` produces the paper plots of the original
+three-algorithm comparison from the per-cluster `output/<cluster>/` run logs
+(one full `run_all.sh` repetition per file): the FoilLCT bar chart
+(`figures/foil.pdf`), the KelvinHelmholtz violin chart of the runtime
+relative to the ScatterAlloc baseline (`figures/khi.pdf`) and the per-grid
+timing statistics. It predates the delay-combination sweep, which
+`analyse_sleeptimes.py` analyzes.
 
 ## Code style
 
