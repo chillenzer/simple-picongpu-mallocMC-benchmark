@@ -17,11 +17,14 @@ curve overlays the fitted model (solid), the extrapolation to
 A_malloc = A_free = 0 (dashed) and, for two-operation fits, the
 intermediate extrapolation that keeps only the held operation's native
 cost (dotted); the gaps at the smallest delay are marked by a short
-line. Each fit line carries a transparent sleeve, the
-25/75-percentile envelope of the model
-evaluated at 512 parameter draws from the fitted parameters and their
-covariance (a bootstrap, since the parameters enter the model
-non-linearly):
+    line. Each fit line carries a transparent sleeve, the
+    25/75-percentile envelope of the model
+    evaluated at 512 parameter draws from the fitted parameters and their
+    covariance (a bootstrap, since the parameters enter the model
+    non-linearly). It also produces one cross-cluster figure,
+    `figures/runtime-stack.pdf`: for each scenario (setup, algorithm, grid),
+    a group of neighbouring bars, one per cluster's hardware, each stacking
+    the fitted W, A_malloc and A_free up to the total runtime.
 
 Model
 -----
@@ -109,6 +112,9 @@ CONFIGURATION = None
 
 # one distinct marker per (setup, grid) series, shared by all axes
 MARKERS = ("o", "s", "^", "D", "v", "P", "h", "X", "8")
+# the stacked segments of the runtime-budget figure, in stacking order
+# (bottom to top), as (legend label, colour) pairs.
+RUNTIME_SEGMENTS = (("W", "#8c8c8c"), ("A_malloc", "#1f77b4"), ("A_free", "#ff7f0e"))
 _INF = float("inf")
 # Near-zero floor for second-based runtimes: the Amdahl fraction is
 # reported as 0 when the total runtime drops below it, and the fade
@@ -271,6 +277,200 @@ def simple_plot(cluster_results: list[tuple[str, pd.DataFrame, pd.DataFrame | No
             fig = _plot_multi_algorithm_fig(title, simple_results, fits, series_markers, algorithms)
         figs.append(fig)
     return figs
+
+
+def _scenario_key(setup: str, algorithm: str, x: float, y: float, z: float) -> tuple:
+    """Canonical key for a (setup, algorithm, grid) scenario.
+
+    Grid dimensions are normalized so the same scenario matches across
+    clusters even when a dimension is an int in one and a whole-valued
+    float in the other; a missing (2-D) ``z`` maps to ``None``.
+
+    Returns:
+        tuple: (setup, algorithm, x, y, z) with normalized grid dimensions.
+
+    """
+
+    def norm(v: float | None) -> float | None:
+        if v is None:
+            return None
+        v = float(v)
+        if not np.isfinite(v):
+            return None
+        return int(v) if v.is_integer() else v
+
+    return (setup, algorithm, norm(x), norm(y), norm(z))
+
+
+def _scenario_label(setup: str, x: float, y: float, z: float) -> str:
+    """Human-readable scenario name, e.g. ``FoilLCT 256x1280``.
+
+    A missing (2-D) ``z`` is dropped from the grid.
+
+    Returns:
+        str: the scenario label.
+
+    """
+
+    def dim(v: float | None) -> str | None:
+        if v is None:
+            return None
+        v = float(v)
+        if not np.isfinite(v):
+            return None
+        return str(int(v)) if v.is_integer() else str(v)
+
+    grid = "x".join(d for d in (dim(x), dim(y), dim(z)) if d is not None)
+    return f"{setup} {grid}"
+
+
+def _runtime_budget(
+    per_cluster: list[tuple[str, pd.DataFrame, pd.DataFrame | None]],
+) -> list[tuple[str, dict[tuple, tuple[float, float, float]]]]:
+    """Per-cluster runtime budget: the scenario key to (W, A_malloc, A_free).
+
+    Built from the valid fits of each cluster; a missing allocation cost
+    (a 1-D fit on the other operation) is treated as 0.
+
+    Returns:
+        list[tuple[str, dict]]: per cluster, (hardware short name,
+        {scenario key: (W, A_malloc, A_free)}).
+
+    """
+    budget = []
+    for title, _simple, fits in per_cluster:
+        by_key: dict[tuple, tuple[float, float, float]] = {}
+        if fits is not None:
+            for _, row in fits.iterrows():
+                if row["model"] is None or pd.isna(row["W"]):
+                    continue
+                key = _scenario_key(row["setup"], row["algorithm"], row["x"], row["y"], row["z"])
+                a_malloc = float(row["A_malloc"]) if pd.notna(row["A_malloc"]) else 0.0
+                a_free = float(row["A_free"]) if pd.notna(row["A_free"]) else 0.0
+                by_key[key] = (float(row["W"]), a_malloc, a_free)
+        budget.append((title.split()[-1], by_key))
+    return budget
+
+
+def _ordered_scenarios(budget: list[tuple[str, dict]]) -> list[tuple]:
+    """Order the unique scenario keys by setup, algorithm, then grid.
+
+    Returns:
+        list[tuple]: the ordered scenario keys.
+
+    """
+    keys = set()
+    for _hw, by_key in budget:
+        keys.update(by_key)
+    return sorted(keys, key=lambda k: (k[0], k[1], k[2], k[3], k[4] if k[4] is not None else -1))
+
+
+def _scenario_labels(keys: list[tuple]) -> dict[tuple, str]:
+    """Build the display label per scenario key.
+
+    A label is disambiguated with the algorithm when a setup+grid is shared
+    by several algorithms.
+
+    Returns:
+        dict[tuple, str]: the display label per scenario key.
+
+    """
+    base = {key: _scenario_label(key[0], key[2], key[3], key[4]) for key in keys}
+    counts = {}
+    for lab in base.values():
+        counts[lab] = counts.get(lab, 0) + 1
+    return {key: (lab if counts[lab] == 1 else f"{lab} ({key[1]})") for key, lab in base.items()}
+
+
+def _draw_runtime_bars(ax: plt.Axes, keys: list[tuple], budget: list[tuple[str, dict]], bar_w: float) -> float:
+    """Draw the stacked runtime bars.
+
+    Returns:
+        float: the tallest bar's total runtime.
+
+    """
+    n_hw = len(budget)
+    labels_set = False
+    max_total = 0.0
+    for i, key in enumerate(keys):
+        for h, (_hw, by_key) in enumerate(budget):
+            if key not in by_key:
+                continue
+            x = i + (h - (n_hw - 1) / 2) * bar_w
+            bottom = 0.0
+            for (label, color), value in zip(RUNTIME_SEGMENTS, by_key[key], strict=True):
+                ax.bar(x, value, width=bar_w, bottom=bottom, color=color, label=None if labels_set else label)
+                bottom += value
+            labels_set = True
+            max_total = max(max_total, bottom)
+            ax.text(x, bottom, f"{bottom:.3g}", ha="center", va="bottom", fontsize=8)
+    return max_total
+
+
+def _set_runtime_xaxis(
+    ax: plt.Axes, keys: list[tuple], labels: dict[tuple, str], budget: list[tuple[str, dict]], bar_w: float
+) -> None:
+    """Set the scenario x-axis ticks and the hardware sub-label under each bar.
+
+    The scenario is the major tick, centred on its group (two lines: setup,
+    then grid). The hardware is a lighter sub-label a row below, under each
+    bar. The caller reserves the bottom margin for the extra row.
+    """
+    n_hw = len(budget)
+    major = []
+    for key in keys:
+        lab = labels[key]
+        first, sep, rest = lab.partition(" ")
+        major.append(f"{first}\n{rest}" if sep else lab)
+    ax.set_xticks(range(len(keys)))
+    ax.set_xticklabels(major, fontsize=9)
+    for i, _key in enumerate(keys):
+        for h, (hw, _by_key) in enumerate(budget):
+            x = i + (h - (n_hw - 1) / 2) * bar_w
+            ax.text(
+                x,
+                -0.16,
+                hw,
+                transform=ax.get_xaxis_transform(),
+                ha="center",
+                va="top",
+                fontsize=8,
+                color="0.45",
+            )
+
+
+def stacked_runtime_fig(per_cluster: list[tuple[str, pd.DataFrame, pd.DataFrame | None]]) -> plt.Figure:
+    """One cross-cluster figure: the runtime budget stacked per scenario.
+
+    Each scenario (setup, algorithm, grid) is a group of neighbouring bars,
+    one per cluster; a bar stacks the runtime components W, A_malloc and
+    A_free up to the total runtime. The segment colour names the component,
+    the position within the group the hardware.
+
+    Args:
+        per_cluster: (title, simple_results, fits) per cluster, as in `main`.
+
+    Returns:
+        plt.Figure: the figure.
+
+    """
+    budget = _runtime_budget(per_cluster)
+    keys = _ordered_scenarios(budget)
+    # Manual layout: the bottom margin carries the two-line scenario labels
+    # plus the hardware sub-label row that `_set_runtime_xaxis` adds.
+    fig, ax = plt.subplots(figsize=(8.0, 5.5))
+    fig.subplots_adjust(left=0.10, right=0.98, top=0.90, bottom=0.20)
+    if not keys:
+        return fig
+    bar_w = 0.8 / len(budget)
+    max_total = _draw_runtime_bars(ax, keys, budget, bar_w)
+    _set_runtime_xaxis(ax, keys, _scenario_labels(keys), budget, bar_w)
+    ax.set_xlim(-0.6, len(keys) - 0.4)
+    ax.set_ylim(0, max_total * 1.12)
+    ax.set_ylabel("runtime (s)")
+    ax.legend(loc="upper left")
+    fig.suptitle("Runtime budget per scenario: W + A_malloc + A_free")
+    return fig
 
 
 class Fit1d(NamedTuple):
@@ -1521,6 +1721,8 @@ def main(clusters: dict | None = None, *, show: bool = False) -> None:
         FIGURES.mkdir(exist_ok=True)
         for fig, name in zip(figs, cluster_names, strict=True):
             fig.savefig(FIGURES / f"{name}.pdf")
+        # One cross-cluster figure: the runtime budget stacked per scenario.
+        stacked_runtime_fig(per_cluster).savefig(FIGURES / "runtime-stack.pdf")
         if show:
             plt.show()
 
