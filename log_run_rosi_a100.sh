@@ -6,7 +6,7 @@
 set -x
 set -e
 
-# The machine-specific values (output folder, profile) come from config.yaml.
+# The machine-specific values (output folder, profile) come from config.json.
 MACHINE=rosi-a100
 FOLDER=$(python3 config.py get "machines.$MACHINE.output")
 PROFILE=$(python3 config.py get "machines.$MACHINE.profile")

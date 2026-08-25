@@ -6,7 +6,7 @@
 set -e
 
 # What to build (examples, algorithms, dependency pins, build flags) comes
-# from config.yaml; `check` validates it and the lookups below read the
+# from config.json; `check` validates it and the lookups below read the
 # individual values into the variables this script already uses.
 python3 config.py check
 mapfile -t EXAMPLES < <(python3 config.py list examples)

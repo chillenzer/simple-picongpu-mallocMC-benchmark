@@ -3,12 +3,12 @@
 # SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
 # SPDX-License-Identifier: MIT
 
-# What to run (examples, algorithms, delay sweep) comes from config.yaml;
+# What to run (examples, algorithms, delay sweep) comes from config.json;
 # `check` validates it and the lookups below read the individual values into
 # the variables this script already uses. (run_all.sh has no `set -e`, so
 # the check's failure must abort explicitly.)
 if ! python3 config.py check; then
-  echo "run_all.sh: config.yaml is invalid (see above)" >&2
+  echo "run_all.sh: config.json is invalid (see above)" >&2
   exit 1
 fi
 mapfile -t EXAMPLES < <(python3 config.py list examples)
@@ -17,8 +17,8 @@ mapfile -t ALGORITHMS < <(python3 config.py list algorithms)
 # at run time by mallocMC through the MALLOCMC_MALLOC_DELAY /
 # MALLOCMC_FREE_DELAY environment variables (run_folder.sh sets them), so one
 # build per example serves the whole sweep. The sweep values themselves (the
-# single-delay arms and the joint grid) live in config.yaml, where the design
-# of the sweep is documented.
+# single-delay arms and the joint grid) live in config.json, and the design
+# of the sweep is documented in the README.
 mapfile -t DELAY_SWEEP < <(python3 config.py list delays.arms.values)
 mapfile -t JOINT < <(python3 config.py list delays.joint.values)
 mapfile -t BASELINE < <(python3 config.py list delays.baseline)
