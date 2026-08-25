@@ -699,10 +699,14 @@ def _label_boxes(ax: plt.Axes, placed: list, inv: plt.transforms.Transform) -> l
     return boxes
 
 
-def _separate_labels(placed: list, boxes: list[tuple[float, float, float, float]], gc_frac: float) -> bool:
+def _separate_labels(
+    placed: list, boxes: list[tuple[float, float, float, float]], gc_frac: float, y_min: float
+) -> bool:
     """Nudge any overlapping label pairs apart, vertically, in axes fraction.
 
-    The arrows follow their box centres.
+    Labels are never nudged below `y_min` (the data's level) so the
+    annotations stay at or above the data. The arrows follow their box
+    centres.
 
     Returns:
         bool: True when at least one label moved.
@@ -720,13 +724,13 @@ def _separate_labels(placed: list, boxes: list[tuple[float, float, float, float]
                 shift = 0.5 * (y_overlap + LABEL_MIN_SPACE)
                 if 0.5 * (yi0 + yi1) >= 0.5 * (yj0 + yj1):
                     placed[i], placed[j] = (
-                        (placed[i][0], placed[i][1], min(max(placed[i][2] + shift, 0.0), 1.0)),
-                        (placed[j][0], placed[j][1], min(max(placed[j][2] - shift, 0.0), 1.0)),
+                        (placed[i][0], placed[i][1], min(max(placed[i][2] + shift, y_min), 1.0)),
+                        (placed[j][0], placed[j][1], min(max(placed[j][2] - shift, y_min), 1.0)),
                     )
                 else:
                     placed[i], placed[j] = (
-                        (placed[i][0], placed[i][1], min(max(placed[i][2] - shift, 0.0), 1.0)),
-                        (placed[j][0], placed[j][1], min(max(placed[j][2] + shift, 0.0), 1.0)),
+                        (placed[i][0], placed[i][1], min(max(placed[i][2] - shift, y_min), 1.0)),
+                        (placed[j][0], placed[j][1], min(max(placed[j][2] + shift, y_min), 1.0)),
                     )
                 placed[i][1].set_position((gc_frac, placed[i][2]))
                 placed[j][1].set_position((gc_frac, placed[j][2]))
@@ -734,31 +738,56 @@ def _separate_labels(placed: list, boxes: list[tuple[float, float, float, float]
     return moved
 
 
-def _resolve_label_overlaps(ax: plt.Axes, placed: list, gc_frac: float) -> None:
+def _resolve_label_overlaps(ax: plt.Axes, placed: list, gc_frac: float, y_min: float) -> None:
     """Separate vertically any overlapping gap labels.
 
     A 2-D group contributes two labels (one per operation); the labels are
     relaxed in axes fraction until their bounding boxes no longer overlap
-    (up to 64 passes), and the arrows and labels are re-anchored at their
-    final box centres.
+    (up to 64 passes), never dropping below `y_min`, and the arrows and
+    labels are re-anchored at their final box centres.
     """
     inv = ax.transAxes.inverted()
     for _ in range(64):
         ax.figure.canvas.draw()
-        if not _separate_labels(placed, _label_boxes(ax, placed, inv), gc_frac):
+        if not _separate_labels(placed, _label_boxes(ax, placed, inv), gc_frac, y_min):
             break
     for arrow, lab, lfy in placed:
         arrow.xyann = (gc_frac, lfy)
         lab.set_position((gc_frac, lfy))
 
 
+def _data_top_frac_at(ax: plt.Axes, gc: float, ylim: tuple[float, float]) -> float:
+    """Return the axes-fraction height of the highest data point at x = gc.
+
+    Interpolates each drawn line that spans gc and returns the axes
+    fraction of their maximum; `ylim[1]` when no line spans gc.
+
+    Returns:
+        float: the axes-fraction y of the highest data point at gc.
+
+    """
+    tops = []
+    for line in ax.get_lines():
+        x = np.asarray(line.get_xdata(), dtype=float)
+        y = np.asarray(line.get_ydata(), dtype=float)
+        mask = np.isfinite(x) & np.isfinite(y)
+        x, y = x[mask], y[mask]
+        if x.size < 2 or not (x.min() < gc < x.max()):
+            continue
+        order = np.argsort(x)
+        tops.append(float(np.interp(gc, x[order], y[order])))
+    data_top = max(tops, default=ylim[1])
+    return (np.log10(data_top) - np.log10(ylim[0])) / (np.log10(ylim[1]) - np.log10(ylim[0]))
+
+
 def _place_gap_labels(ax: plt.Axes, gaps: list[tuple[float, float, str, str]], delays: set[float]) -> None:
     """Place the A/f gap labels and their leader lines on the axis.
 
     Each label sits in the clear band between the first and second
-    delays, at their geometric mean; a thin leader line joins it to
-    its gap marker. Labels that touch or overlap are separated
-    vertically until they no longer do.
+    delays, at their geometric mean, and is kept at or above the data's
+    level at that column so the annotations never dangle below the
+    curves; a thin leader line joins it to its gap marker. Labels that
+    touch or overlap are separated vertically until they no longer do.
     """
     delay_xs = sorted(delays)
     if not (gaps and len(delay_xs) >= 2):
@@ -768,10 +797,12 @@ def _place_gap_labels(ax: plt.Axes, gaps: list[tuple[float, float, str, str]], d
     xlim = ax.get_xlim()
     gc = float(10 ** (0.5 * (np.log10(delay_xs[0]) + np.log10(delay_xs[1]))))
     gc_frac = (np.log10(gc) - np.log10(xlim[0])) / (np.log10(xlim[1]) - np.log10(xlim[0]))
+    # The data's level at the label column; the labels stay at or above it.
+    data_top_frac = _data_top_frac_at(ax, gc, ylim)
     placed = []
     for y_mid, x0, color, text in gaps:
         mid_frac = (np.log10(y_mid) - np.log10(ylim[0])) / (np.log10(ylim[1]) - np.log10(ylim[0]))
-        lfy = min(mid_frac + LABEL_MIN_SPACE, 0.96)
+        lfy = min(max(mid_frac + LABEL_MIN_SPACE, data_top_frac + LABEL_MIN_SPACE), 0.96)
         # The leader line is its own artist (a bbox-anchored arrow breaks
         # matplotlib's layout path clipping). Its tail is anchored at
         # the label centre in axes fraction -- the same coordinates as the
@@ -806,7 +837,7 @@ def _place_gap_labels(ax: plt.Axes, gaps: list[tuple[float, float, str, str]], d
         )
         placed.append([arrow, lab, lfy])
     if len(placed) > 1:
-        _resolve_label_overlaps(ax, placed, gc_frac)
+        _resolve_label_overlaps(ax, placed, gc_frac, data_top_frac + LABEL_MIN_SPACE)
 
 
 def _model(s: np.ndarray, W: float, N: float, A: float, s0: float) -> np.ndarray:
