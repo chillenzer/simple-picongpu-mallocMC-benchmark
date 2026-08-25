@@ -97,6 +97,109 @@ COLUMNS = [
 ]
 
 
+def _split_line(line: str) -> tuple[str | None, str]:
+    """Split a pre-filtered line into its `<log-file>` prefix and content.
+
+    Returns:
+        tuple[str | None, str]: the file and the content, or (None, line)
+        when the line carries no file prefix.
+
+    """
+    m = LINE_RE.match(line)
+    return (m["file"], m["rest"]) if m else (None, line)
+
+
+def _handle_calculation(line: str, rest: str, file: str | None, pending: dict | None, rows: list[dict]) -> None:
+    """Close the pending run with the wall time of a `calculation` line.
+
+    Prints a diagnostic instead when the line cannot be closed.
+    """
+    cm = CALC_RE.match(rest)
+    if cm is None:
+        print(f"parse_results: unrecognised calculation line: {line}", file=sys.stderr)
+    elif pending is None:
+        print(f"parse_results: calculation without a preceding run (dropped): {line}", file=sys.stderr)
+    else:
+        rows.append({"file": file, **pending, "time_seconds": float(cm["time"])})
+
+
+def _handle_cd(cm: re.Match, ctx: dict) -> None:
+    """Update the run context from a `cd` line into a build directory."""
+    bm = BUILD_PATH_RE.search(cm["path"])
+    if bm:
+        ctx["example"] = bm["example"]
+        vm = VARIANT_RE.match(bm["variant"]) if bm["variant"] else None
+        ctx["policy"] = vm["policy"] if vm else None
+        ctx["sleep_time"] = float(vm["sleep"]) if vm else None
+        ctx["free_sleep_time"] = 0.0
+        # A new build context invalidates a remembered run-time env.
+        ctx["sleep_env"] = None
+        ctx["free_env"] = None
+
+
+def _handle_allocation(cm: re.Match, ctx: dict) -> None:
+    """Record the run's creation policy and delays from the run label."""
+    ctx["policy"] = cm["policy"]
+    if cm["sleep"] is not None:
+        ctx["sleep_time"] = float(cm["sleep"])
+        ctx["free_sleep_time"] = 0.0
+    else:
+        ctx["sleep_time"] = float(cm["malloc_delay"])
+        ctx["free_sleep_time"] = float(cm["free_delay"])
+
+
+def _resolve_sleep_times(cm: re.Match, ctx: dict) -> tuple[float, float]:
+    """Resolve a run's (malloc, free) sleep times from all known sources.
+
+    Returns:
+        tuple[float, float]: the malloc and free sleep times in nanoseconds.
+
+    """
+    prefix = cm["prefix"]
+    malloc_env = MALLOC_DELAY_ENV_RE.search(prefix)
+    free_env = FREE_DELAY_ENV_RE.search(prefix)
+    sleep_env = SLEEP_ENV_RE.search(prefix)
+    if malloc_env:
+        # Current layout: both prefixes on the picongpu line.
+        return float(malloc_env.group(1)), float(free_env.group(1)) if free_env else 0.0
+    if sleep_env:
+        # Pre-rename layout: inline prefix on the picongpu line.
+        return float(sleep_env.group(1)), 0.0
+    if ctx["sleep_env"] is not None:
+        # Standalone assignment line of the current run.
+        return ctx["sleep_env"], ctx["free_env"] if ctx["free_env"] is not None else 0.0
+    # Per-variant layout: compiled into the binary.
+    return ctx["sleep_time"], ctx["free_sleep_time"]
+
+
+def _handle_picongpu(line: str, cm: re.Match, ctx: dict) -> dict | None:
+    """Record the pending run of a `bin/picongpu` line.
+
+    Returns:
+        dict or None: the pending run for the next `calculation` line, or
+        None when the context is incomplete (a diagnostic is printed).
+
+    """
+    grid = GRID_RE.search(cm["flags"])
+    steps = STEPS_RE.search(cm["flags"])
+    if grid is None or steps is None or ctx["example"] is None:
+        print(f"parse_results: incomplete run (needs cd, -g and -s context): {line}", file=sys.stderr)
+        return None
+    gdims = [int(x) for x in grid["grid"].split()]
+    sleep_time, free_sleep_time = _resolve_sleep_times(cm, ctx)
+    return {
+        "example": ctx["example"],
+        "grid": "x".join(map(str, gdims)),
+        "grid_x": gdims[0],
+        "grid_y": gdims[1] if len(gdims) > 1 else 1,
+        "grid_z": gdims[2] if len(gdims) > 2 else 1,
+        "steps": int(steps["steps"]),
+        "policy": ctx["policy"],
+        "sleep_time": sleep_time,
+        "free_sleep_time": free_sleep_time,
+    }
+
+
 def parse_results(source: str | Path | Iterable[str]) -> pd.DataFrame:
     """Parse the pre-filtered run log `source` (path or line iterable).
 
@@ -123,103 +226,22 @@ def parse_results(source: str | Path | Iterable[str]) -> pd.DataFrame:
     if not (hasattr(source, "readline") or isinstance(source, (list, tuple))):
         with Path(source).open(encoding="utf-8") as file:
             source = file.readlines()
-    lines = source
-    for raw in lines:
+    for raw in source:
         line = raw.strip()
-        m = LINE_RE.match(line)
-        file, rest = (m["file"], m["rest"]) if m else (None, line)
-
+        file, rest = _split_line(line)
         if rest.startswith("calculation"):
-            cm = CALC_RE.match(rest)
-            if cm is None:
-                print(
-                    f"parse_results: unrecognised calculation line: {line}",
-                    file=sys.stderr,
-                )
-            elif pending is None:
-                print(
-                    f"parse_results: calculation without a preceding run (dropped): {line}",
-                    file=sys.stderr,
-                )
-            else:
-                rows.append({"file": file, **pending, "time_seconds": float(cm["time"])})
+            _handle_calculation(line, rest, file, pending, rows)
             pending = None
-            continue
-
-        cm = CD_RE.match(rest)
-        if cm:
-            bm = BUILD_PATH_RE.search(cm["path"])
-            if bm:
-                ctx["example"] = bm["example"]
-                vm = VARIANT_RE.match(bm["variant"]) if bm["variant"] else None
-                ctx["policy"] = vm["policy"] if vm else None
-                ctx["sleep_time"] = float(vm["sleep"]) if vm else None
-                ctx["free_sleep_time"] = 0.0
-                # A new build context invalidates a remembered run-time env.
-                ctx["sleep_env"] = None
-                ctx["free_env"] = None
-            continue
-
-        cm = SLEEP_ENV_ASSIGN_RE.match(rest)
-        if cm:
+        elif cm := CD_RE.match(rest):
+            _handle_cd(cm, ctx)
+        elif cm := SLEEP_ENV_ASSIGN_RE.match(rest):
             # `set -x` traces the MALLOCMC_SLEEP_TIME prefix on its own line
             # before the picongpu line.
             ctx["sleep_env"] = float(cm["sleep"])
-            continue
-
-        cm = ALLOCATION_RE.match(rest)
-        if cm:
-            ctx["policy"] = cm["policy"]
-            if cm["sleep"] is not None:
-                ctx["sleep_time"] = float(cm["sleep"])
-                ctx["free_sleep_time"] = 0.0
-            else:
-                ctx["sleep_time"] = float(cm["malloc_delay"])
-                ctx["free_sleep_time"] = float(cm["free_delay"])
-            continue
-
-        cm = PICONGPU_RE.match(rest)
-        if cm:
-            malloc_env = MALLOC_DELAY_ENV_RE.search(cm["prefix"])
-            free_env = FREE_DELAY_ENV_RE.search(cm["prefix"])
-            sleep_env = SLEEP_ENV_RE.search(cm["prefix"])
-            grid = GRID_RE.search(cm["flags"])
-            steps = STEPS_RE.search(cm["flags"])
-            if grid is None or steps is None or ctx["example"] is None:
-                print(
-                    f"parse_results: incomplete run (needs cd, -g and -s context): {line}",
-                    file=sys.stderr,
-                )
-                continue
-            gdims = [int(x) for x in grid["grid"].split()]
-            if malloc_env:
-                # Current layout: both prefixes on the picongpu line.
-                sleep_time = float(malloc_env.group(1))
-                free_sleep_time = float(free_env.group(1)) if free_env else 0.0
-            elif sleep_env:
-                # Pre-rename layout: inline prefix on the picongpu line.
-                sleep_time = float(sleep_env.group(1))
-                free_sleep_time = 0.0
-            elif ctx["sleep_env"] is not None:
-                # Standalone assignment line of the current run.
-                sleep_time = ctx["sleep_env"]
-                free_sleep_time = ctx["free_env"] if ctx["free_env"] is not None else 0.0
-            else:
-                # Per-variant layout: compiled into the binary.
-                sleep_time = ctx["sleep_time"]
-                free_sleep_time = ctx["free_sleep_time"]
-            pending = {
-                "example": ctx["example"],
-                "grid": "x".join(map(str, gdims)),
-                "grid_x": gdims[0],
-                "grid_y": gdims[1] if len(gdims) > 1 else 1,
-                "grid_z": gdims[2] if len(gdims) > 2 else 1,
-                "steps": int(steps["steps"]),
-                "policy": ctx["policy"],
-                "sleep_time": sleep_time,
-                "free_sleep_time": free_sleep_time,
-            }
-            continue
+        elif cm := ALLOCATION_RE.match(rest):
+            _handle_allocation(cm, ctx)
+        elif cm := PICONGPU_RE.match(rest):
+            pending = _handle_picongpu(line, cm, ctx)
 
     if pending is not None:
         print("parse_results: run without a calculation line (dropped)", file=sys.stderr)
