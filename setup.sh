@@ -14,12 +14,12 @@ mapfile -t ALGORITHMS < <(python3 config.py list algorithms)
 PICONGPU_URL=$(python3 config.py get dependencies.picongpu.url)
 PICONGPU_SRC=$(python3 config.py get dependencies.picongpu.path)
 PICONGPU_HASH=$(python3 config.py get dependencies.picongpu.hash)
-# add-delay branch: FlatterScatter delay support, run-time malloc/free delays
-# via the MALLOCMC_MALLOC_DELAY / MALLOCMC_FREE_DELAY environment variables
-# (read into the device-side allocator by mallocMC::Allocator::alloc), and
-# the delays as busy-waits on the device global timer (replacing the
-# __nanosleep intrinsic, whose wake-up guarantee was too weak for a
-# controlled delay).
+# add-delay branch: run-time malloc/free delays for every creation policy
+# (FlatterScatter, Scatter, Gallatin) via the MALLOCMC_MALLOC_DELAY /
+# MALLOCMC_FREE_DELAY environment variables (read into the device-side
+# allocator by mallocMC::Allocator::alloc), and the delays as busy-waits on
+# the device global timer (replacing the __nanosleep intrinsic, whose wake-up
+# guarantee was too weak for a controlled delay).
 MALLOCMC_URL=$(python3 config.py get dependencies.mallocmc.url)
 MALLOCMC_SRC=$(python3 config.py get dependencies.mallocmc.path)
 MALLOCMC_HASH=$(python3 config.py get dependencies.mallocmc.hash)

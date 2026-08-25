@@ -56,10 +56,12 @@ dependencies:
   mallocmc:
     # add-delay branch: run-time malloc/free delays via the
     # MALLOCMC_MALLOC_DELAY / MALLOCMC_FREE_DELAY environment variables,
-    # injected as busy-waits on the device global timer.
+    # injected as busy-waits on the device global timer. The delays are held
+    # on the DeviceAllocator itself (commit baf6328) so every creation policy
+    # (FlatterScatter, Scatter, Gallatin) reacts to them.
     url: https://github.com/chillenzer/mallocMC
     path: src/picongpu/thirdParty/mallocMC
-    hash: 2eb8a18e3298afc18060edcd6e24b09316e2ee18
+    hash: baf632819a52842087a8c96d23674051dac1bc08
 
 # Build flags for pic-build (setup.sh). cxx_flags is passed to both
 # CMAKE_CXX_FLAGS and CMAKE_CUDA_FLAGS (the Boost std::source_location
