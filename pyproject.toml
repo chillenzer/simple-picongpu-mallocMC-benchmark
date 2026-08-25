@@ -54,24 +54,6 @@ ignore = [
     "SLOT",
 ]
 
-# The fit/parsing routines (complexity 11-19, up to 74 statements) are
-# cohesive data transforms; these limits keep the rules active as a guard
-# against new bloat while admitting the existing functions.
-[tool.ruff.lint.mccabe]
-max-complexity = 20
-
-[tool.ruff.lint.pylint]
-max-args = 10
-max-positional-args = 10
-max-branches = 20
-max-statements = 80
-# The parse/fit/plot routines carry 20-30 locals, up to 6 nested blocks
-# (the label-overlap loop) and up to 20 statements in a try clause; these
-# limits admit the existing functions while capping new bloat.
-max-locals = 30
-max-nested-blocks = 6
-max-statements-in-try = 20
-
 # The copyright notice is the SPDX-FileCopyrightText tag in each file's
 # header; the REUSE hook validates it repo-wide, this rule only guards
 # that Python files carry the tag (and the right holder) at all.
