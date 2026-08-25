@@ -24,7 +24,8 @@ cost (dotted); the gaps at the smallest delay are marked by a short
     non-linearly). It also produces one cross-cluster figure,
     `figures/runtime-stack.pdf`: for each scenario (setup, algorithm, grid),
     a group of neighbouring bars, one per cluster's hardware, each stacking
-    the fitted W, A_malloc and A_free up to the total runtime.
+    the fitted W, A_malloc and A_free up to the total runtime, overlaid with
+    the measured zero-delay runtime and its IQR error bar.
 
 Model
 -----
@@ -352,6 +353,32 @@ def _runtime_budget(
     return budget
 
 
+def _baseline_points(
+    per_cluster: list[tuple[str, pd.DataFrame, pd.DataFrame | None]],
+) -> list[tuple[str, dict[tuple, tuple[float, float, float]]]]:
+    """Per-cluster measured runtime at zero delay, per scenario.
+
+    The (malloc, free) = (0, 0) group of `simple_results` is the baseline
+    run without any injected delay; its IQR is the error bar.
+
+    Returns:
+        list[tuple[str, dict]]: per cluster, (hardware short name,
+        {scenario key: (25%, 50%, 75%)}).
+
+    """
+    points = []
+    for title, simple, _fits in per_cluster:
+        by_key: dict[tuple, tuple[float, float, float]] = {}
+        if simple is not None:
+            base = simple.reset_index()
+            base = base[(base[MALLOC_DELAY] == 0) & (base[FREE_DELAY] == 0)]
+            for _, row in base.iterrows():
+                key = _scenario_key(row["setup"], row["algorithm"], row["x"], row["y"], row["z"])
+                by_key[key] = (float(row["25%"]), float(row["50%"]), float(row["75%"]))
+        points.append((title.split()[-1], by_key))
+    return points
+
+
 def _ordered_scenarios(budget: list[tuple[str, dict]]) -> list[tuple]:
     """Order the unique scenario keys by setup, algorithm, then grid.
 
@@ -407,6 +434,49 @@ def _draw_runtime_bars(ax: plt.Axes, keys: list[tuple], budget: list[tuple[str, 
     return max_total
 
 
+def _draw_baseline_points(ax: plt.Axes, keys: list[tuple], baseline: list[tuple[str, dict]], bar_w: float) -> float:
+    """Overlay the measured zero-delay point (median, IQR error bar) on each bar.
+
+    Returns:
+        float: the highest error-bar top (0 when there are no points).
+
+    """
+    n_hw = len(baseline)
+    labels_set = False
+    max_hi = 0.0
+    for i, key in enumerate(keys):
+        for h, (_hw, by_key) in enumerate(baseline):
+            if key not in by_key:
+                continue
+            lo, med, hi = by_key[key]
+            x = i + (h - (n_hw - 1) / 2) * bar_w
+            ax.errorbar(
+                [x],
+                [med],
+                yerr=[[med - lo], [hi - med]],
+                fmt="none",
+                ecolor="k",
+                elinewidth=1,
+                capsize=3,
+                capthick=1,
+                zorder=5,
+            )
+            ax.plot(
+                [x],
+                [med],
+                marker="o",
+                markersize=5,
+                mfc="k",
+                mec="w",
+                mew=0.5,
+                zorder=6,
+                label=None if labels_set else "measured (0 delay)",
+            )
+            labels_set = True
+            max_hi = max(max_hi, hi)
+    return max_hi
+
+
 def _set_runtime_xaxis(
     ax: plt.Axes, keys: list[tuple], labels: dict[tuple, str], budget: list[tuple[str, dict]], bar_w: float
 ) -> None:
@@ -455,6 +525,7 @@ def stacked_runtime_fig(per_cluster: list[tuple[str, pd.DataFrame, pd.DataFrame 
 
     """
     budget = _runtime_budget(per_cluster)
+    baseline = _baseline_points(per_cluster)
     keys = _ordered_scenarios(budget)
     # Manual layout: the bottom margin carries the two-line scenario labels
     # plus the hardware sub-label row that `_set_runtime_xaxis` adds.
@@ -464,6 +535,7 @@ def stacked_runtime_fig(per_cluster: list[tuple[str, pd.DataFrame, pd.DataFrame 
         return fig
     bar_w = 0.8 / len(budget)
     max_total = _draw_runtime_bars(ax, keys, budget, bar_w)
+    max_total = max(max_total, _draw_baseline_points(ax, keys, baseline, bar_w))
     _set_runtime_xaxis(ax, keys, _scenario_labels(keys), budget, bar_w)
     ax.set_xlim(-0.6, len(keys) - 0.4)
     ax.set_ylim(0, max_total * 1.12)
