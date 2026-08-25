@@ -145,10 +145,11 @@ _INF = float("inf")
 EPS_S = 1e-12
 # A gap marker is only drawn when the model difference exceeds this (s).
 VISIBLE_GAP_S = 1e-9
-# Multiplicative padding left between the drawn content and the frame by
-# `_snug_ylims` (2% below the smallest, 2% above the largest value), so the
-# data points, fit lines and error sleeves all fit inside without clipping.
-_YLIM_PAD = 0.02
+# Padding, in decades, left between the drawn content and the frame by
+# `_snug_ylims`; the y-axis is logarithmic, so the margin is applied in log
+# space, where a small linear percentage is only a vanishing fraction of a
+# decade.
+_YLIM_PAD_DEC = 0.05
 
 
 def simple_statistics(full_results: pd.DataFrame) -> pd.DataFrame:
@@ -204,7 +205,8 @@ def _snug_ylims(fig: plt.Figure) -> None:
     shared y-axis to the union, over all of the figure's axes, of the drawn
     data points (medians and their IQR bars), the fitted and extrapolation
     lines (and their A/f gap markers), and the bootstrap error sleeves, with
-    ``_YLIM_PAD`` left between the content and the frame so nothing is clipped.
+    ``_YLIM_PAD_DEC`` of a decade left between the content and the frame so
+    nothing is clipped.
 
     Args:
         fig: the figure whose shared y-axis is re-limited.
@@ -231,10 +233,13 @@ def _snug_ylims(fig: plt.Figure) -> None:
             highs.append(float(values.max()))
     if not lows:
         return
-    lo, hi = min(lows), max(highs)
+    # Pad in log space, so the margin is a visible, symmetric fraction of a
+    # decade on the log-scale y-axis.
+    lo = 10 ** (math.log10(min(lows)) - _YLIM_PAD_DEC)
+    hi = 10 ** (math.log10(max(highs)) + _YLIM_PAD_DEC)
     for ax in fig.axes:
         if ax.containers:
-            ax.set_ylim(lo / (1 + _YLIM_PAD), hi * (1 + _YLIM_PAD))
+            ax.set_ylim(lo, hi)
 
 
 def _plot_single_algorithm_fig(
