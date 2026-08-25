@@ -145,6 +145,10 @@ _INF = float("inf")
 EPS_S = 1e-12
 # A gap marker is only drawn when the model difference exceeds this (s).
 VISIBLE_GAP_S = 1e-9
+# Multiplicative padding left between the drawn content and the frame by
+# `_snug_ylims` (2% below the smallest, 2% above the largest value), so the
+# data points, fit lines and error sleeves all fit inside without clipping.
+_YLIM_PAD = 0.02
 
 
 def simple_statistics(full_results: pd.DataFrame) -> pd.DataFrame:
@@ -185,15 +189,52 @@ def _group_key(name: tuple) -> tuple:
 
 
 def _legend_first(axes: Iterable[plt.Axes]) -> None:
-    """Show the legend, pinned to the top, on the left-most axis with a curve.
-
-    The location is fixed (rather than matplotlib's auto "best") so the
-    legend stays at the top even as the data or the A/f labels move.
-    """
+    """Show the legend, at matplotlib's auto "best" location, on the left-most axis that has a curve."""
     for ax in axes:
         if ax.get_legend_handles_labels()[0]:
-            ax.legend(loc="upper right")
+            ax.legend(loc="best")
             break
+
+
+def _snug_ylims(fig: plt.Figure) -> None:
+    """Fit the shared y-axis snugly to everything drawn on it.
+
+    The default autoscale spans every artist and pads that range with a 5%
+    log-space margin, leaving a generous band around the content. Re-limit the
+    shared y-axis to the union, over all of the figure's axes, of the drawn
+    data points (medians and their IQR bars), the fitted and extrapolation
+    lines (and their A/f gap markers), and the bootstrap error sleeves, with
+    ``_YLIM_PAD`` left between the content and the frame so nothing is clipped.
+
+    Args:
+        fig: the figure whose shared y-axis is re-limited.
+
+    """
+    lows: list[float] = []
+    highs: list[float] = []
+    for ax in fig.axes:
+        for child in ax.get_children():
+            if hasattr(child, "get_ydata"):
+                values = np.asarray(child.get_ydata(), dtype=float)
+            elif hasattr(child, "get_segments"):
+                segments = child.get_segments()
+                values = np.concatenate([seg[:, 1] for seg in segments]) if len(segments) else np.array([])
+            elif hasattr(child, "get_paths"):
+                paths = [path for path in child.get_paths() if len(path.vertices)]
+                values = np.concatenate([path.vertices[:, 1] for path in paths]) if paths else np.array([])
+            else:
+                continue
+            values = values[np.isfinite(values)]
+            if not values.size:
+                continue
+            lows.append(float(values.min()))
+            highs.append(float(values.max()))
+    if not lows:
+        return
+    lo, hi = min(lows), max(highs)
+    for ax in fig.axes:
+        if ax.containers:
+            ax.set_ylim(lo / (1 + _YLIM_PAD), hi * (1 + _YLIM_PAD))
 
 
 def _plot_single_algorithm_fig(
@@ -269,7 +310,10 @@ def simple_plot(cluster_results: list[tuple[str, pd.DataFrame, pd.DataFrame | No
     with a single algorithm has exactly the one-row layout; with several,
     the left column names the row's algorithm. Each (setup, grid) series
     gets a distinct marker, consistently on all axes and figures; the
-    legend is shown on each figure's left-most axis that has a curve.
+    legend is shown on each figure's left-most axis that has a curve. The
+    shared y-axis is re-limited to snugly fit the drawn content (data points,
+    fit lines and sleeves; see `_snug_ylims`) instead of the padded
+    autoscaled range.
 
     Returns:
         list[plt.Figure]: one figure per cluster.
@@ -298,6 +342,7 @@ def simple_plot(cluster_results: list[tuple[str, pd.DataFrame, pd.DataFrame | No
             fig = _plot_single_algorithm_fig(title, simple_results, fits, series_markers)
         else:
             fig = _plot_multi_algorithm_fig(title, simple_results, fits, series_markers, algorithms)
+        _snug_ylims(fig)
         figs.append(fig)
     return figs
 
