@@ -133,8 +133,9 @@ CONFIGURATION = None
 # one distinct marker per (setup, grid) series, shared by all axes
 MARKERS = ("o", "s", "^", "D", "v", "P", "h", "X", "8")
 # the stacked segments of the runtime-budget figure, in stacking order
-# (bottom to top), as (legend label, colour) pairs.
-RUNTIME_SEGMENTS = (("W", "#8c8c8c"), ("A_malloc", "#1f77b4"), ("A_free", "#ff7f0e"))
+# (bottom to top), as (legend label, hatch) pairs; the fill colour is
+# taken from the default property cycle.
+RUNTIME_SEGMENTS = (("W", "//"), ("A_malloc", "\\\\"), ("A_free", "xx"))
 _INF = float("inf")
 # Near-zero floor for second-based runtimes: the Amdahl fraction is
 # reported as 0 when the total runtime drops below it, and the fade
@@ -500,9 +501,20 @@ def _draw_runtime_bar(ctx: BarCtx) -> float:
 
     """
     ax, pos, bar_w = ctx.ax, ctx.pos, ctx.bar_w
+    cycle = plt.rcParams["axes.prop_cycle"].by_key()["color"]
     bottom = 0.0
-    for (seg_label, color), value in zip(RUNTIME_SEGMENTS, ctx.segments, strict=True):
-        ax.bar(pos, value, width=bar_w, bottom=bottom, color=color, label=seg_label if ctx.show_seg_labels else None)
+    for i, ((seg_label, hatch), value) in enumerate(zip(RUNTIME_SEGMENTS, ctx.segments, strict=True)):
+        ax.bar(
+            pos,
+            value,
+            width=bar_w,
+            bottom=bottom,
+            color=cycle[i],
+            hatch=hatch,
+            edgecolor="k",
+            linewidth=0.5,
+            label=seg_label if ctx.show_seg_labels else None,
+        )
         bottom += value
     ax.text(pos, bottom, f"{bottom:.3g}", ha="center", va="bottom", fontsize=8)
     ax.text(
