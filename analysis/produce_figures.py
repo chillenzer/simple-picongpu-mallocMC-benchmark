@@ -9,57 +9,19 @@ writes `figures/foil.pdf` (FoilLCT) and `figures/khi.pdf`
 the metadata of both figures.
 """
 
-from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 import matplotlib as mpl
 
 mpl.use("pdf")
-from itertools import cycle
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import parse
 import seaborn as sns
+from run_logs import parse_logs
 from scipy.stats import kruskal
 
-
-def fresh_markers() -> Iterator[str]:
-    """Return a cycling iterator over the marker styles.
-
-    Returns:
-        Iterator[str]: a cycling iterator over the marker styles.
-
-    """
-    return cycle(("o", "s", "v", "p", "^", "8", ">", "<"))
-
-
-def fresh_colours() -> Iterator[str]:
-    """Return a cycling iterator over the palette colours.
-
-    Returns:
-        Iterator[str]: a cycling iterator over the palette colours.
-
-    """
-    return cycle(
-        [
-            "#1f77b4",
-            "#ff7f0e",
-            "#2ca02c",
-            "#d62728",
-            "#9467bd",
-            "#8c564b",
-            "#e377c2",
-            "#7f7f7f",
-            "#bcbd22",
-            "#17becf",
-        ]
-    )
-
-
-MARKER = fresh_markers()
-COLOR = fresh_colours()
 HARDWARE = {
     "hal": "A30",
     "hemera": "A100",
@@ -73,18 +35,6 @@ ALGORITHM_ORDER = ["ScatterAlloc", "FlatterScatter", "Gallatin"]
 MEM_LABEL = "estimated particle memory consumption in GB"
 YMIN, YMAX = 0.9, 1.1
 
-
-def generate_new_style() -> dict[str, str]:
-    """Take the next marker and colour pair for an algorithm.
-
-    Returns:
-        dict[str, str]: the next (marker, color) pair for an algorithm.
-
-    """
-    return {"marker": next(MARKER), "color": next(COLOR)}
-
-
-STYLE = {algorithm: generate_new_style() for algorithm in ["FlatterScatter", "Gallatin", "ScatterAlloc"]}
 OUTPUT = Path("output")
 SIZE_OF_PARTICLE = 30
 TYPICAL_PARTICLES_PER_CELL = 25
@@ -95,131 +45,51 @@ MEMORY_PER_CELL = SIZE_OF_PARTICLE * TYPICAL_PARTICLES_PER_CELL * NUMBER_OF_SPEC
 REFERENCE_ALGORITHM = "ScatterAlloc"
 
 
-def parse_header(header: str) -> tuple[str, str] | None:
-    """Parse an example/algorithm header; None if it does not match.
+def read_data(cluster: Path) -> pd.DataFrame:
+    """Parse every run log of a cluster directory into per-run records.
 
     Returns:
-        tuple[str, str] | None: (example, algorithm), or None if it does not match.
+        pd.DataFrame: one record per parsed run, tagged with the cluster's hardware.
 
     """
-    parsed = parse.parse(
-        "Running example: {example}\nUsing algorithm: {algorithm}",
-        header.strip("=").strip(),
-    )
-    if parsed is None:
-        return None
-    return parsed["example"], parsed["algorithm"]
-
-
-def parse_tuple(text: str) -> tuple[str, tuple[int, ...]]:
-    """Split a flag like `g 16 32` into its leading letter and integer values.
-
-    Returns:
-        tuple[str, tuple[int, ...]]: the leading letter and the integer values.
-
-    """
-    return text.strip()[0], tuple(map(int, text.strip()[1:].strip().split(" ")))
-
-
-def parse_log(log: str) -> pd.Series | None:
-    """Parse one log section into a Series of runtimes keyed by grid.
-
-    Returns:
-        pd.Series | None: the runtimes keyed by grid, or None if the section has no runs.
-
-    """
-    results = {}
-    for text in log.split("+ bin/picongpu ")[1:]:
-        flags = parse.parse(
-            "-{first:tuple} -{second:tuple} --periodic {periodic} -s {steps:d}{:s}{}",
-            text,
-            {"tuple": parse_tuple},
-        )
-        runtime = parse.findall("calculation  simulation time:{}= {seconds:f} sec", text)
-        key = flags["first"][1] if flags["first"][0] == "g" else flags["second"][1]
-        if len(key) == 2:
-            key = (*key, np.nan)
-        try:
-            results[key] = next(runtime)["seconds"]
-        except StopIteration:
-            results[key] = np.nan
-    results = pd.Series(results)
-    if len(results) == 0:
-        return None
-    results.index.names = ("grid_x", "grid_y", "grid_z")
-    return results
-
-
-def pairs(iterable: Iterable[str]) -> Iterator[tuple[str, str]]:
-    """Yield successive (header, log) pairs from an iterable.
-
-    Yields:
-        tuple[str, str]: successive (header, log) pairs.
-
-    """
-    # Zip the same iterator against itself to group consecutive segments;
-    # a trailing incomplete segment (odd count) is dropped, not raised.
-    it = iter(iterable)
-    yield from zip(it, it, strict=False)
-
-
-def parse_full(file: Path) -> pd.DataFrame:
-    """Parse a whole run_all log file into a per-run DataFrame.
-
-    Returns:
-        pd.DataFrame: one column per (example, algorithm) header, indexed by grid.
-
-    """
-    with file.open("r", encoding="utf-8") as f:
-        text = f.read()
-    return pd.DataFrame(
-        {
-            key: results
-            for header, log in pairs(text.split("\n==============================\n"))
-            if (key := parse_header(header)) is not None and (results := parse_log(log)) is not None
+    files = [f for f in sorted(cluster.glob("*")) if f.is_file()]
+    if not files:
+        return pd.DataFrame()
+    df = parse_logs(files)
+    if df.empty:
+        return df
+    df = df.rename(
+        columns={
+            "setup": "benchmark",
+            "x": "grid_x",
+            "y": "grid_y",
+            "z": "grid_z",
+            "runtime in s": "runtime in seconds",
         }
     )
-
-
-def read_data(cluster: Path) -> pd.DataFrame:
-    """Concatenate every log file of a cluster directory.
-
-    Returns:
-        pd.DataFrame: every log file of the cluster concatenated along the columns.
-
-    """
-    files = list(cluster.glob("*"))
-    return pd.concat([parse_full(file) for file in files], axis=1)
+    drop = [c for c in ("name", "malloc_sleeptime", "free_sleeptime", "configuration") if c in df.columns]
+    return df.drop(columns=drop).assign(hardware=HARDWARE[cluster.name])
 
 
 def read_timings() -> pd.DataFrame:
-    """Read all clusters into a long (hardware, grid, algorithm) timings frame.
+    """Read all clusters into a long (hardware, benchmark, grid, algorithm) frame.
 
     Returns:
-        pd.DataFrame: the long (hardware, grid, algorithm) timings frame.
+        pd.DataFrame: one row per parsed run; `run_id` numbers the runs of a
+        (hardware, benchmark, grid, algorithm) group in file order.
 
     """
-    clusters = list(OUTPUT.glob("*"))
-    timings = pd.concat(
-        [read_data(cluster) for cluster in clusters],
-        axis=1,
-        keys=[HARDWARE[cluster.name] for cluster in clusters],
-    )
-    names = ["hardware", "benchmark", "algorithm"]
-    timings.columns.names = names
-    timings = timings.T.reset_index(drop=False).set_index(names, append=True).T
-    timings = (
-        timings.stack(names)
-        .reorder_levels(["hardware", "benchmark", "grid_x", "grid_y", "grid_z", "algorithm"])
-        .sort_index()
-    )
-    timings.columns.names = ["run_id"]
-    return (
-        timings.stack()
-        .reset_index(drop=False)
-        .rename({0: "runtime in seconds"}, axis=1)
-        .set_index("benchmark", drop=True)
-    )
+    clusters = [c for c in sorted(OUTPUT.glob("*")) if c.is_dir() and c.name in HARDWARE]
+    frames = [read_data(cluster) for cluster in clusters]
+    frames = [f for f in frames if not f.empty]
+    columns = ["hardware", "benchmark", "grid_x", "grid_y", "grid_z", "algorithm", "run_id", "runtime in seconds"]
+    if not frames:
+        return pd.DataFrame(columns=columns)
+    timings = pd.concat(frames, ignore_index=True)
+    timings["run_id"] = timings.groupby(
+        ["hardware", "benchmark", "algorithm", "grid_x", "grid_y", "grid_z"], dropna=False, sort=False
+    ).cumcount()
+    return timings[columns]
 
 
 def memory(grid_sizes: pd.DataFrame) -> np.ndarray:
@@ -240,8 +110,7 @@ def statistical_timings(timings: pd.DataFrame) -> pd.DataFrame:
 
     """
     return (
-        timings.reset_index(drop=False)
-        .set_index(
+        timings.set_index(
             [
                 "hardware",
                 "benchmark",
@@ -264,9 +133,9 @@ def compute_baselines(timings: pd.DataFrame) -> pd.Series:
         pd.Series: the median ScatterAlloc runtime per (hardware, memory) group.
 
     """
-    return timings.groupby(["hardware", MEM_LABEL], axis=0).apply(
+    return timings.groupby(["hardware", MEM_LABEL]).apply(
         lambda x: np.percentile(
-            x.set_index("algorithm", append=False, drop=True)["runtime in seconds"]["ScatterAlloc"],
+            x.set_index("algorithm", append=False, drop=True)["runtime in seconds"][REFERENCE_ALGORITHM],
             50,
         )
     )
@@ -325,6 +194,21 @@ def outlier_mask(timings: pd.Series, safety_factor: float = 1.5) -> pd.Series:
     return (timings < interval[0]) + (timings > interval[1])
 
 
+def compute_significance(timings: pd.DataFrame, name: str) -> pd.Series:
+    """Compute the Kruskal p-value of `name` across algorithms per group.
+
+    Returns:
+        pd.Series: the Kruskal p-value of `name` across algorithms per group.
+
+    """
+
+    def pvalue(frame: pd.DataFrame) -> float:
+        samples = frame.groupby("algorithm")[name].agg(list).to_numpy()
+        return kruskal(*samples, nan_policy="omit").pvalue
+
+    return timings.groupby(["hardware", MEM_LABEL]).apply(pvalue, include_groups=False)
+
+
 def plot_khi(timings: pd.DataFrame) -> pd.DataFrame:
     """Plot the KelvinHelmholtz violin chart and return its metadata.
 
@@ -333,27 +217,17 @@ def plot_khi(timings: pd.DataFrame) -> pd.DataFrame:
         kruskal p-value, relative runtime).
 
     """
-    plt.figure()
     timings = (
         timings.assign(**{MEM_LABEL: memory(timings[["grid_x", "grid_y", "grid_z"]])})
         .reset_index(drop=True)
         .drop(["grid_x", "grid_y", "grid_z"], axis=1)
     )
-    mask = timings.groupby(["hardware", "algorithm", MEM_LABEL]).apply(
-        lambda x: outlier_mask(x.set_index("run_id")["runtime in seconds"]),
-        include_groups=False,
-    )
-    timings = (
-        timings.set_index(["hardware", "algorithm", MEM_LABEL, "run_id"]).assign(outlier=mask).reset_index(drop=False)
+    timings["outlier"] = timings.groupby(["hardware", "algorithm", MEM_LABEL])["runtime in seconds"].transform(
+        outlier_mask
     )
     baselines = compute_baselines(timings)
-    timings["relative runtime"] = (
-        timings.reset_index(drop=False)
-        .set_index([*baselines.index.names, "algorithm", "run_id"], append=False, drop=True)
-        .unstack(["algorithm", "run_id"])
-        .div(baselines, axis=0)["runtime in seconds"]
-        .stack(["algorithm", "run_id"])
-        .reset_index(drop=True)
+    timings["relative runtime"] = timings["runtime in seconds"] / timings.set_index(["hardware", MEM_LABEL]).index.map(
+        baselines
     )
     ax = sns.catplot(
         timings,
@@ -380,9 +254,8 @@ def plot_khi(timings: pd.DataFrame) -> pd.DataFrame:
             flatter_vs_scatter.groupby(["hardware", MEM_LABEL]).sum()["outlier"],
             compute_significance(flatter_vs_scatter, "relative runtime"),
             flatter_vs_scatter[flatter_vs_scatter["algorithm"] == "FlatterScatter"]
-            .set_index(["hardware", MEM_LABEL, "run_id"])["relative runtime"]
-            .unstack("run_id")
-            .median(axis=1),
+            .groupby(["hardware", MEM_LABEL])["relative runtime"]
+            .median(),
         ],
         keys=[
             "reference runtime in seconds",
@@ -394,34 +267,13 @@ def plot_khi(timings: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def compute_significance(timings: pd.DataFrame, name: str) -> pd.Series:
-    """Compute the Kruskal p-value of `name` across algorithms per group.
-
-    Returns:
-        pd.Series: the Kruskal p-value of `name` across algorithms per group.
-
-    """
-    return (
-        timings.set_index(["algorithm", "run_id"])
-        .groupby(["hardware", MEM_LABEL])
-        .apply(
-            lambda x: (
-                kruskal(
-                    *x[[name]].unstack("run_id").to_numpy(),
-                    nan_policy="omit",
-                ).pvalue
-            )
-        )
-    )
-
-
 def main() -> None:
     """Read the timings, draw both figures and print the statistics."""
     timings = read_timings()
 
     stats = statistical_timings(timings)
-    foil_metadata = plot_foil(timings.loc(axis=0)["FoilLCT"])
-    khi_metadata = plot_khi(timings.loc(axis=0)["KelvinHelmholtz"])
+    foil_metadata = plot_foil(timings[timings["benchmark"] == "FoilLCT"].drop(columns="benchmark"))
+    khi_metadata = plot_khi(timings[timings["benchmark"] == "KelvinHelmholtz"].drop(columns="benchmark"))
 
     print_results(stats, "Timings")
     print_results(foil_metadata, "Foil Metadata")
