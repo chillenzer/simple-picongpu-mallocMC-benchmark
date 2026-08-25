@@ -4,8 +4,9 @@ SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zent
 SPDX-License-Identifier: MIT
 
 Reads `output/results.h5` (the output of `compute_results.py`) and draws,
-for every machine with delay runs, one figure titled by the hardware the
-runs were made on: one row per algorithm present in the data (in the
+for every sweep machine with delay runs, one figure titled by the
+machine's hardware title (from the file's `machine_titles`): one row per
+algorithm present in the data (in the
 `algorithm_order` of the file), the malloc delay sweep (free delay 0) on
 the left and the free delay sweep (malloc delay 0) on the right, each axis
 titled after the swept delay, the axes sharing the y-axis. Each swept
@@ -41,8 +42,10 @@ from results_io import (
     algorithm_order,
     grid_label,
     load_results,
+    machine_titles,
     read_fit_covs,
     read_table,
+    sweep_machine_labels,
 )
 from run_logs import FREE_DELAY, GROUP_KEYS, MALLOC_DELAY
 
@@ -680,7 +683,9 @@ def main(*, machine: str | None = None, show: bool = False, results: Path = RESU
         fits = read_table(file, "fits")
         covs = read_fit_covs(file)
         algorithms = algorithm_order(file)
-    machines = _machines_with_delay_runs(runs)
+        sweep = sweep_machine_labels(file)
+        titles = machine_titles(file)
+    machines = [m for m in sweep if m in _machines_with_delay_runs(runs)]
     if machine is not None:
         if machine not in machines:
             print(
@@ -696,8 +701,7 @@ def main(*, machine: str | None = None, show: bool = False, results: Path = RESU
             fits=fits[fits["machine"] == m].drop(columns=["machine"]),
             covs={key[1:]: value for key, value in covs.items() if key[0] == m},
         )
-        hardware = runs.loc[runs["machine"] == m, "hardware"].iloc[0]
-        fig = machine_figure(str(hardware), data, algorithms)
+        fig = machine_figure(titles.get(m, m), data, algorithms)
         fig.savefig(FIGURES / f"sweeps-{m}.pdf")
         print(f"wrote {FIGURES / f'sweeps-{m}.pdf'}")
     if show:

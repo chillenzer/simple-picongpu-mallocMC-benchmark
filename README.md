@@ -104,22 +104,24 @@ and free latency on simulation runtime.
   1-D/2-operation fits, and the bootstrap sleeve (the full model is
   documented in the module docstring).
 - `analysis/compute_results.py` — the single "numbers" entry point: parses
-  every machine's run logs (the `machines` table of `config.json` plus the
-  legacy per-cluster `output/<cluster>/` directories) and computes the
-  group runtime statistics, the Amdahl fits of every (machine, example,
-  algorithm, grid) sweep (with the parameter covariances), the zero-delay
-  baselines, and the FoilLCT/KelvinHelmholtz metadata; writes everything to
-  `output/results.h5` and prints nothing.
+  the sweep machines' run logs (the `machines` table of `config.json`) and
+  the legacy per-cluster `output/<cluster>/` directories (grouped by their
+  short hardware name), and computes the group runtime statistics, the
+  Amdahl fits of every (machine, example, algorithm, grid) sweep (with the
+  parameter covariances), the zero-delay baselines (sweep machines), and
+  the FoilLCT/KelvinHelmholtz metadata (all no-delay runs, per short
+  hardware name); writes everything to `output/results.h5` and prints
+  nothing.
 - `analysis/summarize_results.py` — prints the summary tables from
   `output/results.h5` (group statistics, fits, Amdahl fractions, no-delay
   runtimes, figure metadata; `--raw` adds the parsed runs).
-- `analysis/plot_sweeps.py` — one delay-sweep figure per machine
+- `analysis/plot_sweeps.py` — one delay-sweep figure per sweep machine
   (`figures/sweeps-<machine>.pdf`: one row per algorithm, the malloc and
   free delay sweeps side by side, fitted curve + bootstrap sleeve).
 - `analysis/plot_runtime_stack.py` — one runtime-budget figure per
-  (example, grid) scenario (`figures/runtime-stack-<setup>-<grid>.pdf`:
-  stacked W/A_malloc/A_free bar per allocator per hardware, measured
-  zero-delay point overlaid).
+  (example, grid) scenario that has at least one usable fit
+  (`figures/runtime-stack-<setup>-<grid>.pdf`: stacked W/A_malloc/A_free
+  bar per allocator per hardware, measured zero-delay point overlaid).
 - `analysis/plot_foil_lct.py` — the FoilLCT bar chart of the no-delay runs
   (`figures/foil_lct.pdf`).
 - `analysis/plot_kelvin_helmholtz.py` — the KelvinHelmholtz violin chart of
@@ -238,13 +240,14 @@ would be done).
 The analysis is split into *computing the numbers* and *drawing the
 figures*, joined by the single HDF5 file `output/results.h5`:
 
-- `compute_results.py` parses the raw run logs of every machine (the
-  `machines` table of `config.json`, plus the legacy per-cluster
-  `output/<cluster>/` directories; all historical log layouts) and computes
-  all of the numbers: the group runtime statistics, the Amdahl fit of every
-  (machine, example, algorithm, grid) sweep, the zero-delay baselines, and
-  the FoilLCT/KelvinHelmholtz metadata (distributions, Kruskal p-values,
-  relative runtimes). It prints nothing.
+- `compute_results.py` parses the raw run logs (all historical log layouts)
+  of the two worlds they live in: the sweep machines of the `machines`
+  table of `config.json` (the group statistics, the Amdahl fits and the
+  zero-delay baselines are computed for these) and the legacy per-cluster
+  `output/<cluster>/` directories, which the comparison charts read grouped
+  by their short hardware name (`A30`, `V100`, ...; the FoilLCT /
+  KelvinHelmholtz metadata covers the no-delay runs of both worlds). It
+  prints nothing.
 - `summarize_results.py` prints the summary tables from
   `output/results.h5` (per machine: group statistics; the fits and the
   Amdahl fractions of runtime spent in allocations / frees; the no-delay
@@ -293,9 +296,11 @@ Notes:
 - The Python analysis needs `numpy`, `pandas`, `scipy`, `matplotlib`,
   `seaborn`, and `h5py` (`pip install numpy pandas scipy matplotlib seaborn h5py`).
 - The comparison figures (`foil_lct.pdf`, `kelvin_helmholtz.pdf`) use the
-  no-delay runs of *every* machine: the legacy per-cluster `output/<cluster>/`
-  directories plus the (0, 0) baseline runs of each machine's delay
-  combination sweeps.
+  no-delay runs of *every* hardware: the legacy per-cluster
+  `output/<cluster>/` directories plus the (0, 0) baseline runs of each
+  sweep machine's delay combination sweeps. Both are grouped by the short
+  hardware name (e.g. the `output/hal` directory and the `hal` sweep
+  machine's baselines are both plotted as `A30`).
 - The figure row order is the `algorithms` list of `config.json` (recorded
   in the results file); the hardware display order of the comparison figures
   is fixed in `analysis/results_io.py`.

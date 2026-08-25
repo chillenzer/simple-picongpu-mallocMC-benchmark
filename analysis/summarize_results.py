@@ -97,12 +97,14 @@ def main(*, results: Path = RESULTS, raw: bool = False) -> int:
         print("no runs found in the results file")
         return 0
     for machine in runs["machine"].drop_duplicates():
+        # The legacy paper-world runs carry no sweep machine (empty label);
+        # they have no group statistics of their own.
+        label = machine if machine else "legacy"
         if raw:
-            print_table(f"Parsed runs: {machine}", runs[runs["machine"] == machine].to_string(index=False))
-        print_table(
-            f"Group statistics: {machine}",
-            group_stats[group_stats["machine"] == machine].to_string(index=False),
-        )
+            print_table(f"Parsed runs: {label}", runs[runs["machine"] == machine].to_string(index=False))
+        stats = group_stats[group_stats["machine"] == machine]
+        if len(stats):
+            print_table(f"Group statistics: {label}", stats.to_string(index=False))
     print_table("Fits", fits.to_string(index=False, float_format=lambda v: f"{v:10.3g}"))
     print_fraction_summary(fits)
     print_table("No-delay runtimes", runs[no_delay_mask(runs)].to_string(index=False))

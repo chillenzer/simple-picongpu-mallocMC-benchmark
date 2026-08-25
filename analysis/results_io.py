@@ -13,9 +13,10 @@ covariances are stored next to their fit row, one subgroup each under
 ``fits/cov/<machine>/<setup>/<algorithm>/<grid>``.
 
 The file's top-level attributes record the provenance: the creation time,
-the git commit, the source log directories, and `algorithm_order`, the
+the git commit, the source log directories, `algorithm_order` (the
 `algorithms` list of `config.json`, which all figures use as their row
-order.
+order), `sweep_machines` (the sweep machine labels, in config order) and
+`machine_titles` (label -> hardware title of the sweep machines).
 """
 
 from __future__ import annotations
@@ -290,6 +291,37 @@ def algorithm_order(file: h5py.File) -> list[str]:
 
     """
     return [algorithm for algorithm in str(file.attrs.get("algorithm_order", "")).split(",") if algorithm]
+
+
+def sweep_machine_labels(file: h5py.File) -> list[str]:
+    """Return the sweep machine labels, in config order.
+
+    Args:
+        file: an opened results file.
+
+    Returns:
+        list[str]: the sweep machine labels.
+
+    """
+    return [label for label in str(file.attrs.get("sweep_machines", "")).split(",") if label]
+
+
+def machine_titles(file: h5py.File) -> dict[str, str]:
+    """Return the sweep machines' hardware titles.
+
+    Args:
+        file: an opened results file.
+
+    Returns:
+        dict[str, str]: sweep machine label -> hardware title.
+
+    """
+    titles = {}
+    for pair in str(file.attrs.get("machine_titles", "")).split(";"):
+        if ":" in pair:
+            label, title = pair.split(":", 1)
+            titles[label.strip()] = title.strip()
+    return titles
 
 
 def write_fit_cov(file: h5py.File, key: tuple, fit_params: np.ndarray, pcov: np.ndarray) -> None:

@@ -4,13 +4,14 @@ SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zent
 SPDX-License-Identifier: MIT
 
 Reads `output/results.h5` (the output of `compute_results.py`) and draws,
-for every (setup, grid) scenario with fits, one figure
-(`figures/runtime-stack-<setup>-<grid>.pdf`): the x-axis is the hardware,
-and under each hardware a bar per allocator (in the file's
-`algorithm_order`) stacks the fitted W, A_malloc and A_free up to the
-total runtime, overlaid with the measured zero-delay runtime (median,
-IQR error bar). By default every scenario gets its figure, `--name`
-restricts the run to one, e.g. `--name FoilLCT-256x1280`.
+for every (setup, grid) scenario with at least one usable fit, one figure
+(`figures/runtime-stack-<setup>-<grid>.pdf`): the x-axis is the hardware
+(short name) of every sweep machine with data, and under each hardware a
+bar per allocator (in the file's `algorithm_order`) stacks the fitted W,
+A_malloc and A_free up to the total runtime, overlaid with the measured
+zero-delay runtime (median, IQR error bar). By default every scenario
+gets its figure, `--name` restricts the run to one, e.g.
+`--name FoilLCT-256x1280`.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from results_io import (
     scenario_filename,
     scenario_key,
     scenario_name,
+    sweep_machine_labels,
 )
 
 mpl.use("pdf")
@@ -58,7 +60,11 @@ def _floor0(value: float) -> float:
 
 
 def list_scenarios(fits: pd.DataFrame) -> list[tuple]:
-    """Collect the unique (setup, x, y, z) scenarios across all machines.
+    """Collect the unique (setup, x, y, z) scenarios with at least one usable fit.
+
+    Rows of the fits table without a complete fit (no model or a missing
+    W) are ignored, so a scenario whose machines only have no-delay runs
+    gets no figure.
 
     Args:
         fits: the fits table of the results file.
@@ -70,6 +76,8 @@ def list_scenarios(fits: pd.DataFrame) -> list[tuple]:
     seen: set[tuple] = set()
     scenarios = []
     for _, row in fits.iterrows():
+        if not row["model"] or pd.isna(row["W"]):
+            continue
         key = scenario_key(row["setup"], row["x"], row["y"], row["z"])
         if key not in seen:
             seen.add(key)
@@ -247,27 +255,13 @@ def runtime_stack_figure(
     return fig
 
 
-def _machine_names(fits: pd.DataFrame, baselines: pd.DataFrame) -> list:
-    """Return the machine order of a scenario's figure: first appearance in fits, then baselines.
-
-    Args:
-        fits: the fits table of the results file.
-        baselines: the baselines table of the results file.
-
-    Returns:
-        list: the machine labels, in display order.
-
-    """
-    return list(pd.concat([fits["machine"], baselines["machine"]]).drop_duplicates())
-
-
 def main(*, name: str | None = None, show: bool = False, results: Path = RESULTS) -> int:
     """Draw the per-scenario runtime-budget figures from one results file.
 
     Args:
         name: the scenario to draw, as in the figure filename without the
         `runtime-stack-` prefix and `.pdf` suffix, e.g. `FoilLCT-256x1280`;
-        None for every scenario with fits.
+        None for every scenario with at least one usable fit.
         show: display the figures in a window (blocking).
         results: the results file, e.g. `output/results.h5`.
 
@@ -285,10 +279,14 @@ def main(*, name: str | None = None, show: bool = False, results: Path = RESULTS
         baselines = read_table(file, "baselines")
         runs = read_table(file, "runs")
         algorithms = algorithm_order(file)
+        sweep = sweep_machine_labels(file)
     if fits.empty:
         print("no fits in the results file", file=sys.stderr)
         return 1
     machine_hardware = runs.drop_duplicates("machine").set_index("machine")["hardware"].to_dict()
+    # The x-axis lists every sweep machine with data, in the file's order;
+    # a machine without a fit in the scenario keeps its (empty) slot.
+    machines = [m for m in sweep if m in machine_hardware]
     scenarios = list_scenarios(fits)
     if name is not None:
         scenarios = [scenario for scenario in scenarios if scenario_filename(*scenario) == f"runtime-stack-{name}.pdf"]
@@ -300,11 +298,7 @@ def main(*, name: str | None = None, show: bool = False, results: Path = RESULTS
     for scenario in scenarios:
         budget = scenario_budgets(fits, scenario)
         baseline = scenario_baselines(baselines, scenario)
-        entries = [
-            (str(machine_hardware[m]).split()[-1], budget.get(m, {}), baseline.get(m, {}))
-            for m in _machine_names(fits, baselines)
-            if m in budget or m in baseline
-        ]
+        entries = [(str(machine_hardware[m]), budget.get(m, {}), baseline.get(m, {})) for m in machines]
         path = FIGURES / scenario_filename(*scenario)
         runtime_stack_figure(scenario, entries, algorithms).savefig(path)
         print(f"wrote {path}")

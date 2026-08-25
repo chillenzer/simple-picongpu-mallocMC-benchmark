@@ -3,21 +3,22 @@
 SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
 SPDX-License-Identifier: MIT
 
-The single "numbers" entry point: it parses the run logs of every machine
-(the `machines` table of `config.json` plus the legacy per-cluster output
-directories below, whose labels and hardware titles are `LEGACY_HARDWARE`)
-into one runs table, and computes from it
+The single "numbers" entry point. The run logs live in two worlds, as in
+the pre-refactor scripts: the sweep world is the `machines` table of
+`config.json` (one sweep machine per table entry), and the paper-figure
+world is the union of those output directories and the legacy per-cluster
+output directories of `LEGACY_HARDWARE`, grouped by the short hardware
+name (e.g. `A30`, `V100`) the comparison charts have always used. It
+parses both into one runs table and computes from it
 
-- `group_stats`: the runtime description of every (machine, setup,
-  algorithm, grid, delay) group,
-- `fits`: the Amdahl fit of every (machine, setup, algorithm, grid) sweep
-  (the per-fit parameter vector and covariance are stored under
-  `fits/cov/`),
-- `baselines`: the zero-delay runtime IQR of every
-  (machine, setup, grid, algorithm) group,
+- `group_stats`, `fits`, `baselines`: the group runtime descriptions,
+  the Amdahl fit (the per-fit parameter vector and covariance are stored
+  under `fits/cov/`) and the zero-delay runtime IQR of every group of the
+  sweep machines,
 - `foil` / `foil_pvalue` / `khi`: the statistics behind the FoilLCT bar
   chart and the KelvinHelmholtz violin chart (distributions, Kruskal
-  p-values, relative runtimes).
+  p-values, relative runtimes), over the no-delay runs of the paper-figure
+  world, grouped by the short hardware name.
 
 Everything is written to `output/results.h5`; this script prints nothing.
 Print the tables with `summarize_results.py`, draw the figures with the
@@ -50,9 +51,13 @@ from scipy.stats import kruskal
 REFERENCE_ALGORITHM = "ScatterAlloc"
 # The two algorithms the paper figures compare for their significance tests.
 PAPER_ALGORITHMS = ("FlatterScatter", "ScatterAlloc")
-# The legacy per-cluster output directories the old produce_figures.py read
-# from (directory name under `output/` -> hardware title); the machines
-# table of config.json takes precedence for the directories it names.
+# The paper-figure world: the output directories (by name under `output/`)
+# the comparison charts read, and the short hardware name each of them
+# plots under. A sweep machine's own output directory may appear in the
+# map (as `hal-sleeptimes` and `rosi-sleeptimes` do); its runs are then
+# grouped under that short name in the paper figures. Directories that are
+# neither mapped here nor a sweep machine's output directory (e.g. the
+# `hal-sleeptimes-nanosleep` runs) are left out, as before.
 LEGACY_HARDWARE = {
     "hal": "A30",
     "hemera": "A100",
@@ -127,72 +132,116 @@ def load_config() -> dict:
         return json.load(handle)
 
 
-def load_machines(config: dict) -> dict[str, tuple[list[Path], str]]:
-    """Resolve the machines to analyze: label -> (run-log dirs, hardware title).
+def _short_hardware(output_dir: str, title: str) -> str:
+    """Return the short paper-figure hardware name of a sweep machine's output directory.
 
-    The machines are the union of the config.json `machines` table (label:
-    the table key, hardware: its title) and the legacy per-cluster output
-    directories (label: the directory name). A directory listed by both is
-    analyzed once, under the config machine's label and title, and a legacy
-    directory that shares its label with a config machine merges its logs
-    with that machine's.
+    Args:
+        output_dir: the machine's `output` entry of the config.
+        title: the machine's hardware title from the config.
+
+    Returns:
+        str: `LEGACY_HARDWARE[<directory name>]` when the directory is
+        mapped there, else the last word of the title.
+
+    """
+    return LEGACY_HARDWARE.get(Path(output_dir).name, title.rsplit(maxsplit=1)[-1])
+
+
+def load_machines(config: dict) -> tuple[dict[str, dict], dict[Path, str]]:
+    """Resolve the two worlds of run logs.
+
+    The sweep machines come from the `machines` table of `config.json`
+    (label: the table key, title: its hardware, short name: `LEGACY_HARDWARE`
+    of the output directory when mapped, else the last word of the title);
+    the legacy per-cluster output directories are the entries of
+    `LEGACY_HARDWARE` that are not a sweep machine's output directory. A
+    legacy directory that shares its name with a sweep machine's label (as
+    `output/hal` does with the `hal` machine) is nonetheless a separate
+    paper-world directory: it is not merged into the sweep machine.
 
     Args:
         config: the parsed `config.json`.
 
     Returns:
-        dict[str, tuple[list[Path], str]]: label -> (run-log directories,
-        hardware title), sorted by label.
+        tuple: (`sweep_machines`, `legacy_dirs`): label ->
+        {"dirs": [Path], "hardware": short name, "title": config title}, in
+        config order; and Path -> short hardware name for the legacy
+        directories. Missing directories are dropped.
 
     """
     root = repo_root()
-    entries: dict[Path, tuple[str, str, bool]] = {}
-    for dir_name, hardware in LEGACY_HARDWARE.items():
-        entries.setdefault(root / "output" / dir_name, (dir_name, hardware, False))
+    sweep: dict[str, dict] = {}
+    sweep_output_dirs: set[Path] = set()
     for key, machine in config["machines"].items():
-        entries[root / machine["output"]] = (key, machine["hardware"], True)
-    machines: dict[str, dict] = {}
-    for log_dir, (label, hardware, is_config) in entries.items():
-        if not log_dir.is_dir():
-            continue
-        entry = machines.setdefault(label, {"dirs": [], "hardware": hardware})
-        entry["dirs"].append(log_dir)
-        if is_config:
-            entry["hardware"] = hardware
-    return {label: (entry["dirs"], entry["hardware"]) for label, entry in sorted(machines.items())}
+        out = root / machine["output"]
+        sweep_output_dirs.add(out)
+        title = machine["hardware"]
+        sweep[key] = {"dirs": [out], "hardware": _short_hardware(machine["output"], title), "title": title}
+    legacy: dict[Path, str] = {}
+    for dir_name, hardware in LEGACY_HARDWARE.items():
+        log_dir = root / "output" / dir_name
+        if log_dir not in sweep_output_dirs:
+            legacy[log_dir] = hardware
+    sweep = {label: m for label, m in sweep.items() if any(d.is_dir() for d in m["dirs"])}
+    legacy = {d: h for d, h in legacy.items() if d.is_dir()}
+    return sweep, legacy
 
 
-def read_all_runs(machines: dict[str, tuple[list[Path], str]]) -> pd.DataFrame:
-    """Parse every machine's run logs into one runs table.
+def read_all_runs(sweep: dict[str, dict], legacy: dict[Path, str]) -> tuple[pd.DataFrame, list[str]]:
+    """Parse every run log of both worlds into one runs table.
 
     Args:
-        machines: label -> (run-log directories, hardware title), as from
-        `load_machines`.
+        sweep: as from `load_machines`.
+        legacy: as from `load_machines`.
 
     Returns:
-        pd.DataFrame: one row per parsed picongpu run, tagged with the
-        machine's label and hardware title; `rep` numbers the repetitions
-        of each (machine, setup, algorithm, grid, delay) group in file
-        order.
+        tuple: (the runs table, the sweep machine labels, in config order).
+        The runs carry `machine` (the sweep machine's label, empty for the
+        legacy paper-world runs) and `hardware` (the short paper-figure
+        name). `rep` numbers the repetitions of each
+        (machine, setup, algorithm, grid, delay) group in file order.
 
     """
     frames = []
-    for label, (dirs, hardware) in machines.items():
-        log_paths = [path for d in dirs for path in sorted(d.glob("*")) if path.is_file()]
-        if not log_paths:
-            continue
-        frame = parse_logs(log_paths)
+    for label, machine in sweep.items():
+        for log_dir in machine["dirs"]:
+            frame = _parse_dir(log_dir)
+            if frame.empty:
+                continue
+            frame["machine"] = label
+            frame["hardware"] = machine["hardware"]
+            frames.append(frame)
+    for log_dir, hardware in legacy.items():
+        frame = _parse_dir(log_dir)
         if frame.empty:
             continue
-        frame = frame.drop(columns=["name"]).rename(columns={"runtime in s": RUN_TIME})
-        frame["machine"] = label
+        frame["machine"] = ""
         frame["hardware"] = hardware
         frames.append(frame)
     if not frames:
-        return pd.DataFrame(columns=RUNS_COLUMNS)
+        return pd.DataFrame(columns=RUNS_COLUMNS), list(sweep)
     runs = pd.concat(frames, ignore_index=True)
     runs["rep"] = runs.groupby(["machine", *GROUP_KEYS, MALLOC_DELAY, FREE_DELAY], dropna=False, sort=False).cumcount()
-    return runs[RUNS_COLUMNS]
+    return runs[RUNS_COLUMNS], list(sweep)
+
+
+def _parse_dir(log_dir: Path) -> pd.DataFrame:
+    """Parse one output directory's run logs.
+
+    Args:
+        log_dir: the directory of `*.txt` run logs to parse.
+
+    Returns:
+        pd.DataFrame: the parsed runs, or an empty frame.
+
+    """
+    log_paths = sorted(path for path in log_dir.glob("*") if path.is_file())
+    if not log_paths:
+        return pd.DataFrame()
+    frame = parse_logs(log_paths)
+    if frame.empty:
+        return frame
+    return frame.drop(columns=["name"]).rename(columns={"runtime in s": RUN_TIME})
 
 
 def _describe_grouped(frame: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
@@ -594,8 +643,9 @@ def main(output: Path, configuration: str | None = None) -> None:
 
     """
     config = load_config()
-    machines = load_machines(config)
-    runs = read_all_runs(machines)
+    sweep, legacy = load_machines(config)
+    runs, sweep_labels = read_all_runs(sweep, legacy)
+    sweep_runs = runs[runs["machine"].isin(sweep_labels)]
     fit_covs: list[tuple[tuple, tuple, tuple]] = []
     if runs.empty:
         tables = {
@@ -608,23 +658,28 @@ def main(output: Path, configuration: str | None = None) -> None:
             "khi": _empty_table(KHI_COLUMNS),
         }
     else:
-        analyzed = runs if configuration is None else runs[runs["configuration"] == configuration]
+        analyzed = sweep_runs if configuration is None else sweep_runs[sweep_runs["configuration"] == configuration]
         tables = {
             "runs": runs,
+            # The group statistics, fits and zero-delay baselines cover the
+            # sweep machines only; the paper-figure statistics (foil, khi)
+            # cover the no-delay runs of the whole paper world.
             "group_stats": group_runtime_stats(analyzed),
-            "baselines": baseline_stats(runs),
+            "baselines": baseline_stats(sweep_runs),
             "foil": foil_stats(runs),
             "foil_pvalue": foil_pvalues(runs),
             "khi": khi_stats(runs),
         }
         tables["fits"], fit_covs = fit_sweep(analyzed)
+    source_parts = [f"{label}: {d}" for label in sweep for d in sweep[label]["dirs"]] + [
+        f"{hardware} ({log_dir.name}): {log_dir}" for log_dir, hardware in legacy.items()
+    ]
     attrs = {
         "created_utc": datetime.now(UTC).isoformat(timespec="seconds"),
         "git_commit": _git_commit(),
-        "sources": ", ".join(
-            f"{label}: {'; '.join(str(d) for d in dirs)}" for label, (dirs, _hardware) in machines.items()
-        )
-        or "none",
+        "sources": "; ".join(source_parts) or "none",
+        "sweep_machines": ",".join(sweep_labels),
+        "machine_titles": "; ".join(f"{label}: {sweep[label]['title']}" for label in sweep_labels),
         "algorithm_order": ",".join(str(algorithm) for algorithm in config.get("algorithms", [])),
     }
     write_results(output, tables, attrs, fit_covs)
