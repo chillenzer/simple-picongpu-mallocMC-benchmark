@@ -127,7 +127,9 @@ and free latency on simulation runtime.
   (`figures/kelvin_helmholtz.pdf`).
 - `Makefile` — builds `output/results.h5` and any or all of the figures
   (`make`, `make results`, `make summary`, or a single figure by its file
-  name, e.g. `make figures/foil_lct.pdf`).
+  name, e.g. `make figures/foil_lct.pdf`). The numbers are rebuilt from
+  the run logs on every invocation; make does not list the log files
+  themselves as prerequisites (their names are machine-specific).
 - `build/` — created by `setup.sh`; one CMake project per (example,
   algorithm).
 
