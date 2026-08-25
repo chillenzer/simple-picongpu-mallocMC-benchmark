@@ -94,6 +94,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import yaml
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 from run_logs import FREE_DELAY, GROUP_KEYS, MALLOC_DELAY, parse_logs
 from scipy.optimize import OptimizeWarning, curve_fit
 
@@ -134,8 +136,8 @@ CONFIGURATION = None
 MARKERS = ("o", "s", "^", "D", "v", "P", "h", "X", "8")
 # the stacked segments of the runtime-budget figure, in stacking order
 # (bottom to top), as (legend label, hatch) pairs; the fill colour is
-# taken from the default property cycle.
-RUNTIME_SEGMENTS = (("W", "//"), ("A_malloc", "\\\\"), ("A_free", "xx"))
+# assigned per algorithm from the default property cycle.
+RUNTIME_SEGMENTS = (("W", None), ("A_malloc", ".."), ("A_free", "xx"))
 _INF = float("inf")
 # Near-zero floor for second-based runtimes: the Amdahl fraction is
 # reported as 0 when the total runtime drops below it, and the fade
@@ -484,14 +486,12 @@ class BarCtx(NamedTuple):
     pos: float
     bar_w: float
     segments: tuple[float, float, float]
-    algorithm: str
+    color: str
     baseline: tuple[float, float, float] | None
-    show_seg_labels: bool
-    show_point_label: bool
 
 
 def _draw_runtime_bar(ctx: BarCtx) -> float:
-    """Draw one stacked runtime bar with its algorithm sub-label and optional baseline point.
+    """Draw one stacked runtime bar and its optional baseline point.
 
     Args:
         ctx: the bar drawing context.
@@ -501,32 +501,11 @@ def _draw_runtime_bar(ctx: BarCtx) -> float:
 
     """
     ax, pos, bar_w = ctx.ax, ctx.pos, ctx.bar_w
-    cycle = plt.rcParams["axes.prop_cycle"].by_key()["color"]
     bottom = 0.0
-    for i, ((seg_label, hatch), value) in enumerate(zip(RUNTIME_SEGMENTS, ctx.segments, strict=True)):
-        ax.bar(
-            pos,
-            value,
-            width=bar_w,
-            bottom=bottom,
-            color=cycle[i],
-            hatch=hatch,
-            edgecolor="k",
-            linewidth=0.5,
-            label=seg_label if ctx.show_seg_labels else None,
-        )
+    for (_seg, hatch), value in zip(RUNTIME_SEGMENTS, ctx.segments, strict=True):
+        ax.bar(pos, value, width=bar_w, bottom=bottom, color=ctx.color, hatch=hatch, edgecolor="k", linewidth=0.5)
         bottom += value
     ax.text(pos, bottom, f"{bottom:.3g}", ha="center", va="bottom", fontsize=8)
-    ax.text(
-        pos,
-        -0.14,
-        ctx.algorithm,
-        transform=ax.get_xaxis_transform(),
-        ha="center",
-        va="top",
-        fontsize=8,
-        color="0.45",
-    )
     if ctx.baseline is not None:
         lo, med, hi = ctx.baseline
         ax.errorbar(
@@ -539,18 +518,19 @@ def _draw_runtime_bar(ctx: BarCtx) -> float:
             capsize=0,
             zorder=5,
         )
-        ax.plot(
-            [pos],
-            [med],
-            marker="o",
-            markersize=5,
-            mfc="k",
-            mec="w",
-            mew=0.5,
-            zorder=6,
-            label="measured (0 delay)" if ctx.show_point_label else None,
-        )
+        ax.plot([pos], [med], marker="o", markersize=5, mfc="k", mec="w", mew=0.5, zorder=6)
     return bottom
+
+
+def _algorithm_colors() -> dict[str, str]:
+    """Assign each algorithm a colour from the default property cycle.
+
+    Returns:
+        dict[str, str]: algorithm name to colour.
+
+    """
+    cycle = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    return {alg: cycle[i % len(cycle)] for i, alg in enumerate(ALGORITHM_ORDER)}
 
 
 def _runtime_stack_scenario_fig(
@@ -564,8 +544,9 @@ def _runtime_stack_scenario_fig(
 
     The x-axis is the hardware; under each hardware a bar per allocator
     (in `ALGORITHM_ORDER`) stacks the fitted W, A_malloc and A_free up to
-    the total runtime. The measured zero-delay point (median, IQR) is
-    overlaid on each bar.
+    the total runtime. The bar colour names the algorithm; the fill hatch
+    names the segment (W plain, A_malloc dotted, A_free hatched). The
+    measured zero-delay point (median, IQR) is overlaid on each bar.
 
     Args:
         per_cluster: (title, simple_results, fits) per cluster, as in `main`.
@@ -585,29 +566,17 @@ def _runtime_stack_scenario_fig(
     if not hw_names:
         return fig
     bar_w = 0.8 / len(ALGORITHM_ORDER)
+    alg_color = _algorithm_colors()
     max_total = 0.0
-    first_bar = True
-    first_point = True
     for i, _hw in enumerate(hw_names):
         for j, algorithm in enumerate(ALGORITHM_ORDER):
             if algorithm not in budget[i][1]:
                 continue
             pos = i + (j - (len(ALGORITHM_ORDER) - 1) / 2) * bar_w
             total = _draw_runtime_bar(
-                BarCtx(
-                    ax,
-                    pos,
-                    bar_w,
-                    budget[i][1][algorithm],
-                    algorithm,
-                    baseline[i][1].get(algorithm),
-                    first_bar,
-                    first_point,
-                )
+                BarCtx(ax, pos, bar_w, budget[i][1][algorithm], alg_color[algorithm], baseline[i][1].get(algorithm))
             )
-            first_bar = False
             if algorithm in baseline[i][1]:
-                first_point = False
                 max_total = max(max_total, baseline[i][1][algorithm][2])
             max_total = max(max_total, total)
     if max_total <= 0:
@@ -618,9 +587,12 @@ def _runtime_stack_scenario_fig(
     ax.set_ylim(0, max_total * 1.12)
     ax.set_ylabel("runtime (s)")
     ax.set_xlabel("hardware")
-    ax.legend(loc="upper left")
+    handles = [
+        Patch(facecolor=alg_color[alg], label=alg) for alg in ALGORITHM_ORDER if any(alg in b for _h, b in budget)
+    ]
+    handles.append(Line2D([], [], marker="o", color="w", mfc="k", mec="k", label="measured (0 delay)"))
+    ax.legend(handles=handles, loc="upper left")
     fig.suptitle(f"Runtime budget: {_scenario_label(setup, x, y, z)}")
-    fig.subplots_adjust(bottom=0.18)
     return fig
 
 
