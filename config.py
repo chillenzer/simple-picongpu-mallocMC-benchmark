@@ -3,9 +3,9 @@
 SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
 SPDX-License-Identifier: MIT
 
-The bash harness (setup.sh, run_all.sh, the per-machine log_*.sh launchers)
-parses no config format itself; it calls this helper to look up individual
-values:
+The build harness (the Makefile, run_all.sh, and the per-machine log_*.sh
+launchers) parses no config format itself; it calls this helper to look up
+individual values:
 
     python3 config.py get dependencies.picongpu.hash
     python3 config.py list examples

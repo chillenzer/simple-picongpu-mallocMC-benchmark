@@ -42,7 +42,7 @@ and free latency on simulation runtime.
   lines are run once per combination:
   `MALLOCMC_MALLOC_DELAY=<M> MALLOCMC_FREE_DELAY=<F> bin/picongpu ...`
 
-`setup.sh` pins the dependency versions (the `dependencies` section of
+The Makefile pins the dependency versions (the `dependencies` section of
 `config.json`):
 
 | dependency | source | pinned to |
@@ -59,19 +59,20 @@ and free latency on simulation runtime.
   `dependencies` and the build flags, and the per-machine `machines` table
   (profile to source, output directory for the run logs, hardware name,
   modules to load).
-- `config.py` — the python3 bridge the bash scripts use to read
+- `config.py` — the python3 bridge the harness uses to read
   `config.json` (`get` / `list` lookups) and to validate it (`check` also
   verifies the referenced flag, parameter, and profile files). It parses the
   file with the stdlib `json` module, so no third-party package (no PyYAML,
   no yq) is needed in the cluster environment.
-- `setup.sh` — clones the pinned PIConGPU and mallocMC, prepares one input
+- `Makefile` — clones the pinned PIConGPU and mallocMC, prepares one input
   directory per (example, algorithm) (`pic-create` + parameter overlay) and
   builds it (`pic-build`). Reads its configuration from `config.json`
-  (validated up front); `bash setup.sh --check` prints the resolved build
+  (validated up front); `make check` prints the resolved build
   configuration and stops. The overlay copies `param/<Algorithm>/*.param`
   (the algorithm's `mallocMC.param`, i.e. the creation policy),
   `param/<Example>/*.param` and any per-(example, algorithm) overrides from
-  `param/<Example>/<Algorithm>/`.
+  `param/<Example>/<Algorithm>/`. It is invoked as
+  `make PROFILE=<profile> PARAM_DIR=param` (see *Usage* below).
 - `run_all.sh` — for every example, every algorithm and every `(malloc
   delay, free delay)` combination derived from the `delays` section of
   `config.json`, runs the example's flag lines from the matching build with
@@ -83,7 +84,7 @@ and free latency on simulation runtime.
   `MALLOCMC_MALLOC_DELAY` / `MALLOCMC_FREE_DELAY` environment variables.
 - `log_{setup,run}_<machine>.sh` — per-machine launchers (hal, rosi,
   rosi-a100): log the environment, load the machine's modules, and run
-  `setup.sh` / `run_all.sh` with the machine's profile from the `machines`
+  `make` / `run_all.sh` with the machine's profile from the `machines`
   table in `config.json`, writing the logs to the machine's output
   directory.
 - `profiles/` — HPC environment profiles (module/spack setup, `PIC_BACKEND`,
@@ -124,20 +125,21 @@ and free latency on simulation runtime.
   results stay complete).
 - `analysis/produce_figures.py` — produces the paper plots of the original
   three-algorithm comparison (see note below).
-- `build/` — created by `setup.sh`; one CMake project per (example,
+- `build/` — created by the Makefile; one CMake project per (example,
   algorithm).
 
 ## Usage
 
-Everything runs on the HPC machine with the matching profile; the scripts
-must be invoked from the repository root. The benchmark configuration
-(examples, algorithms, delay sweep, dependency pins, build flags, and the
-per-machine profiles and output directories) lives in `config.json`. Both
-entry points validate it first and can stop right after resolving it, which
-is the way to sanity-check a change before a long build or benchmark:
+Everything runs on the HPC machine with the matching profile; the entry
+points must be invoked from the repository root. The benchmark
+configuration (examples, algorithms, delay sweep, dependency pins, build
+flags, and the per-machine profiles and output directories) lives in
+`config.json`. Both entry points validate it first and can stop right after
+resolving it, which is the way to sanity-check a change before a long build
+or benchmark:
 
 ```
-bash setup.sh --check
+make check
 bash run_all.sh --check
 ```
 
@@ -145,27 +147,31 @@ bash run_all.sh --check
    PIConGPU build per example and algorithm):
 
    ```
-   bash setup.sh profiles/hal.sh param
+   make PROFILE=profiles/hal.sh PARAM_DIR=param
    ```
 
-   `setup.sh` also patches `PICSRC=` in the given profile in place.
+   That also patches `PICSRC=` in the given profile in place, pointing it
+   at the local `src/` checkout.
 
-   `setup.sh` is incremental and can be re-run at any time; it reuses
+   The build is incremental and can be re-run at any time; it reuses
    `src/` and `build/` and only repeats the parts that are out of date:
 
    - `src/` is re-cloned only if the directory is not a git checkout at the
      pinned commit; a changed pin triggers `git fetch && git checkout`.
    - An input directory (`build/<Ex>/<Algo>/`) is regenerated when the
-     PIConGPU pin or the `param/<Algo>*/`, `param/<Ex>*` files change
-     (`.input-stamp` records this).
-   - A build (`pic-build`) is skipped when the input, the build `FLAGS`,
-     the profile and the toolchain versions (gcc/cmake/nvcc) are unchanged
-     (`.build-stamp` records this); otherwise `pic-build` runs
-     incrementally.
+     PIConGPU pin, the profile, or the `param/<Algo>*/`, `param/<Ex>*`
+     files change (including a newly added parameter file; the
+     `build/<Ex>/<Algo>/.input-stamp` records the prepared state).
+   - A build (`pic-build`) is skipped when the input, the build flags, the
+     mallocMC pin, the profile content and the toolchain versions
+     (gcc/cmake/nvcc) are unchanged (`build/.profile-env`,
+     `build/.toolchain` and `build/.build-flags` record these); otherwise
+     `pic-build` runs incrementally. `make -j` builds the independent
+     (example, algorithm) pairs in parallel; the default is serial.
 
-   To force a clean state, delete `src/` and `build/` (or just a single
-   `build/<Ex>/<Algo>/` folder, or only a `.build-stamp` to re-run
-   `pic-build` for one example and algorithm).
+   `make clean` removes `build/`, `make distclean` removes `src/` as well;
+   alternatively delete just a single `build/<Ex>/<Algo>/` folder, or only
+   its `.input-stamp`, to rebuild one example and algorithm.
 
 2. Run the benchmarks:
 
@@ -191,7 +197,7 @@ bash run_folder.sh build/FoilLCT/FlatterScatter flags/FoilLCT.flags profiles/hal
 ## Changing what is benchmarked
 
 Most of it is now in `config.json` (run `python3 config.py check` after
-editing; `bash setup.sh --check` / `bash run_all.sh --check` show what
+editing; `make check` / `bash run_all.sh --check` show what
 would be done).
 
 - **Delay combinations**: edit the `delays` section of `config.json`

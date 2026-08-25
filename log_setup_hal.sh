@@ -13,8 +13,9 @@ FOLDER=$(python3 config.py get "machines.$MACHINE.output")
 PROFILE=$(python3 config.py get "machines.$MACHINE.profile")
 FILENAME="$FOLDER/setup_$(date --rfc-3339=seconds | sed 's/ /_/g').txt"
 
-# setup.sh reuses an existing src/ and build/ and only re-runs the parts that
-# are not up to date any more; delete them manually for a fully clean run.
+# make reuses an existing src/ and build/ and only re-runs the parts that are
+# not up to date any more; `make clean` / `make distclean` remove them for a
+# fully clean run.
 mkdir -p "$FOLDER"
 
 {
@@ -45,4 +46,4 @@ done < <(python3 config.py list "machines.$MACHINE.modules")
   echo "========================"
 } >>"$FILENAME"
 
-bash setup.sh "$PROFILE" param/ 2>&1 | tee -a "$FILENAME"
+make PROFILE="$PROFILE" PARAM_DIR=param 2>&1 | tee -a "$FILENAME"
