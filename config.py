@@ -1,10 +1,11 @@
-"""Read and validate `config.yaml`, the single source of harness configuration.
+"""Read and validate `config.json`, the single source of harness configuration.
 
 SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
 SPDX-License-Identifier: MIT
 
 The bash harness (setup.sh, run_all.sh, the per-machine log_*.sh launchers)
-parses no YAML itself; it calls this helper to look up individual values:
+parses no config format itself; it calls this helper to look up individual
+values:
 
     python3 config.py get dependencies.picongpu.hash
     python3 config.py list examples
@@ -17,12 +18,11 @@ instead of a silently wrong benchmark run. Run it from the repository root.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
-import yaml
-
-CONFIG_PATH = Path("config.yaml")
+CONFIG_PATH = Path("config.json")
 
 
 def _fail(message: str) -> None:
@@ -32,12 +32,12 @@ def _fail(message: str) -> None:
         message: the error message.
 
     """
-    print(f"config.yaml: {message}", file=sys.stderr)
+    print(f"config.json: {message}", file=sys.stderr)
     sys.exit(1)
 
 
 def _load() -> dict:
-    """Load `config.yaml` from the current directory.
+    """Load `config.json` from the current directory.
 
     Returns:
         dict: the parsed configuration.
@@ -46,7 +46,7 @@ def _load() -> dict:
     if not CONFIG_PATH.is_file():
         _fail(f"{CONFIG_PATH} not found (run from the repository root)")
     with CONFIG_PATH.open(encoding="utf-8") as handle:
-        data = yaml.safe_load(handle)
+        data = json.load(handle)
     if not isinstance(data, dict):
         _fail("top level must be a mapping")
     return data
@@ -225,7 +225,7 @@ def _check_benchmark_files(data: dict, errors: list[str]) -> None:
 
 
 def _cmd_check() -> None:
-    """Validate the structure and file references of `config.yaml`.
+    """Validate the structure and file references of `config.json`.
 
     Prints every problem found and exits with status 1 when there is any;
     prints a short OK line otherwise.
@@ -238,9 +238,9 @@ def _cmd_check() -> None:
     _check_benchmark_files(data, errors)
     if errors:
         for error in errors:
-            print(f"config.yaml: {error}", file=sys.stderr)
+            print(f"config.json: {error}", file=sys.stderr)
         sys.exit(1)
-    print("config.yaml: OK")
+    print("config.json: OK")
 
 
 def _print_scalar(value: object, dotted: str) -> None:

@@ -1,0 +1,87 @@
+{
+  "examples": [
+    "KelvinHelmholtz",
+    "FoilLCT"
+  ],
+  "algorithms": [
+    "FlatterScatter",
+    "ScatterAlloc",
+    "Gallatin"
+  ],
+  "delays": {
+    "baseline": [
+      0,
+      0
+    ],
+    "arms": {
+      "values": [
+        100,
+        10000,
+        100000,
+        1000000,
+        1778279,
+        3162278,
+        5623413,
+        10000000,
+        17782794,
+        31622777,
+        56234133,
+        100000000
+      ]
+    },
+    "joint": {
+      "values": [
+        10000,
+        1000000,
+        10000000
+      ]
+    }
+  },
+  "dependencies": {
+    "picongpu": {
+      "url": "https://github.com/ComputationalRadiationPhysics/picongpu",
+      "path": "src/picongpu",
+      "hash": "6e7d58bb97300ac74cd7a09e13b3c03fdd3863ae"
+    },
+    "mallocmc": {
+      "url": "https://github.com/chillenzer/mallocMC",
+      "path": "src/picongpu/thirdParty/mallocMC",
+      "hash": "baf632819a52842087a8c96d23674051dac1bc08"
+    }
+  },
+  "build": {
+    "cxx_flags": "-DBOOST_DISABLE_CURRENT_LOCATION",
+    "extra_cmake_flags": [
+      "-Dalpaka_CXX_STANDARD=20",
+      "-DmallocMC_USE_Gallatin=ON_ALLOW_FETCH"
+    ]
+  },
+  "machines": {
+    "hal": {
+      "profile": "profiles/hal.sh",
+      "output": "output/hal-sleeptimes",
+      "hardware": "NVIDIA A30",
+      "modules": []
+    },
+    "rosi": {
+      "profile": "profiles/rosi-v100.profile",
+      "output": "output/rosi-sleeptimes",
+      "hardware": "NVIDIA V100",
+      "modules": [
+        "hopper",
+        "GCCcore/14.3.0",
+        "git/2.50.1"
+      ]
+    },
+    "rosi-a100": {
+      "profile": "profiles/rosi-a100.profile",
+      "output": "output/rosi-a100-sleeptimes",
+      "hardware": "NVIDIA A100",
+      "modules": [
+        "hopper",
+        "GCCcore/14.3.0",
+        "git/2.50.1"
+      ]
+    }
+  }
+}

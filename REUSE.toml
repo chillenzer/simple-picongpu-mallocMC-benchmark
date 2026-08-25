@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
+# SPDX-License-Identifier: MIT
+
+version = 1
+
+# config.json carries no comments (JSON has none), so its REUSE
+# attribution lives here instead of in a file header.
+[[annotations]]
+path = ["config.json"]
+SPDX-FileCopyrightText = "2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf"
+SPDX-License-Identifier = "MIT"
