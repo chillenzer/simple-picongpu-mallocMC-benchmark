@@ -11,6 +11,7 @@ nanosleep runs) — writes `figures/foil_lct.pdf` (FoilLCT) and
 timing statistics together with the metadata of both figures.
 """
 
+import argparse
 from pathlib import Path
 
 import matplotlib as mpl
@@ -292,8 +293,13 @@ def plot_khi(timings: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def main() -> None:
-    """Read the timings, draw both figures and print the statistics."""
+def main(*, show: bool = False) -> None:
+    """Read the timings, draw both figures and print the statistics.
+
+    With `show`, the figures are displayed in a window (blocking); by default
+    they are only written to `figures/`.
+
+    """
     timings = read_timings()
     FIGURES.mkdir(exist_ok=True)
 
@@ -304,7 +310,18 @@ def main() -> None:
     print_results(stats, "Timings")
     print_results(foil_metadata, "Foil Metadata")
     print_results(khi_metadata, "KHI Metadata")
+    if show:
+        plt.show()
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        description="Benchmark figures and runtime statistics from the run_all.sh cluster logs."
+    )
+    parser.add_argument(
+        "--show",
+        action="store_true",
+        help="display the figures in a window (blocking); by default they are only saved",
+    )
+    args = parser.parse_args()
+    main(show=args.show)

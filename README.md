@@ -192,6 +192,9 @@ allocations / frees:
 python3 analysis/analyse_sleeptimes.py
 ```
 
+Both scripts write their figures to `figures/` and exit without displaying
+them (non-blocking); pass `--show` to also display the figures in a window.
+
 `analysis/produce_figures.py` produces the paper plots of the original
 three-algorithm comparison from the no-delay runs: the per-cluster
 `output/<cluster>/` run logs (one full `run_all.sh` repetition per file) plus

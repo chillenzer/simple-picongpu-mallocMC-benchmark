@@ -78,6 +78,7 @@ only (W, N, s0) are fitted.
 
 from __future__ import annotations
 
+import argparse
 import math
 import warnings
 from collections.abc import Callable, Iterable, Sequence
@@ -1633,8 +1634,13 @@ def _print_fraction_summary(fits: pd.DataFrame) -> None:
                 print(f"      note: {r.note}")
 
 
-def main(clusters: dict | None = None) -> None:
-    """Parse, fit and plot every cluster's delay sweeps."""
+def main(clusters: dict | None = None, *, show: bool = False) -> None:
+    """Parse, fit and plot every cluster's delay sweeps.
+
+    With `show`, the figures are displayed in a window (blocking); by default
+    they are only written to `figures/`.
+
+    """
     per_cluster = []
     cluster_names = []
     for name, (log_dir, title) in (clusters or CLUSTERS).items():
@@ -1662,8 +1668,16 @@ def main(clusters: dict | None = None) -> None:
         FIGURES.mkdir(exist_ok=True)
         for fig, name in zip(figs, cluster_names, strict=True):
             fig.savefig(FIGURES / f"{name}.pdf")
-        plt.show()
+        if show:
+            plt.show()
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Analyze PIConGPU/mallocMC allocation-latency benchmark logs.")
+    parser.add_argument(
+        "--show",
+        action="store_true",
+        help="display the figures in a window (blocking); by default they are only saved",
+    )
+    args = parser.parse_args()
+    main(show=args.show)
