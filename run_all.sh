@@ -12,15 +12,27 @@ EXAMPLES=("FoilLCT" "KelvinHelmholtz")
 # environment variables (run_folder.sh sets them), so one build per example
 # serves the whole sweep.
 #
-# Follow-up sweep for the KelvinHelmholtz 128^3 group: in the two-operation
-# Amdahl fit the free fade scale f0 sat at its search cap (the native free
-# cost does not fade within the measured free sweep), leaving the (W,
-# A_free) pair weakly constrained and the fit's error sleeve wide. These
-# four points extend the free-delay arm (malloc delay 0) two decades beyond
-# the previous maximum of 1e7 ns, on the same 1/4-decade log grid, so the
-# free term A_free*f0/(f+f0) decays into its 1/f tail and the asymptote
-# W + A_malloc + N_free*f gets anchored at large f.
-COMBINATIONS=("0 17782794" "0 31622777" "0 56234133" "0 100000000")
+# Full sweep for the two-operation Amdahl fit: a (0, 0) baseline, the
+# malloc-delay arm (free delay 0) and the free-delay arm (malloc delay 0)
+# on the same 1/4-decade log grid from 100 ns to 1e7 ns, and a 3x3 joint
+# grid coupling both delays so the fit is constrained off the arms. Both
+# arms are extended symmetrically by four further 1/4-decade points (to
+# 1e8 ns) so that each Amdahl term A*s0/(d+s0) decays into its 1/d tail
+# and the asymptote W + A + N*d gets anchored at large delay; the
+# extension matters most for free, whose native cost fades slowly.
+DELAY_SWEEP=(100 10000 100000 177828 316228 562341 1000000 1778279 3162278 5623413 10000000)
+EXTENDED_SWEEP=(17782794 31622777 56234133 100000000)
+JOINT=(10000 1000000 10000000)
+
+COMBINATIONS=("0 0")
+for delay in "${DELAY_SWEEP[@]}" "${EXTENDED_SWEEP[@]}"; do
+  COMBINATIONS+=("$delay 0" "0 $delay")
+done
+for malloc_delay in "${JOINT[@]}"; do
+  for free_delay in "${JOINT[@]}"; do
+    COMBINATIONS+=("$malloc_delay $free_delay")
+  done
+done
 
 echo "All combinations:"
 echo "${COMBINATIONS[@]}"
