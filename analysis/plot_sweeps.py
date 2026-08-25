@@ -24,6 +24,7 @@ parameters enter the model non-linearly). The figure is saved to
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 import warnings
 from collections.abc import Callable, Iterable
@@ -53,6 +54,11 @@ FIGURES = Path("figures")
 MARKERS = ("o", "s", "^", "D", "v", "P", "h", "X", "8")
 # A gap marker is only drawn when the model difference exceeds this (s).
 VISIBLE_GAP_S = 1e-9
+# Padding, in decades, left between the drawn content and the frame by
+# `_snug_ylims`; the y-axis is logarithmic, so the margin is applied in log
+# space, where a small linear percentage is only a vanishing fraction of a
+# decade.
+_YLIM_PAD_DEC = 0.05
 
 
 class Fit1d(NamedTuple):
@@ -157,10 +163,7 @@ def series_label(info: tuple, secondary: str = "free") -> str:
 
 
 def legend_first(axes: Iterable[plt.Axes]) -> None:
-    """Show the legend, pinned to the top, on the left-most axis with a curve.
-
-    The location is fixed (rather than matplotlib's auto "best") so the
-    legend stays at the top even as the data or the A/f labels move.
+    """Show the legend, at matplotlib's auto "best" location, on the left-most axis with a curve.
 
     Args:
         axes: the axes, left to right.
@@ -168,8 +171,53 @@ def legend_first(axes: Iterable[plt.Axes]) -> None:
     """
     for ax in axes:
         if ax.get_legend_handles_labels()[0]:
-            ax.legend(loc="upper right")
+            ax.legend(loc="best")
             break
+
+
+def snug_ylims(fig: plt.Figure) -> None:
+    """Fit the shared y-axis snugly to everything drawn on it.
+
+    The default autoscale spans every artist and pads that range with a 5%
+    log-space margin, leaving a generous band around the content. Re-limit the
+    shared y-axis to the union, over all of the figure's axes, of the drawn
+    data points (medians and their IQR bars), the fitted and extrapolation
+    lines (and their A/f gap markers), and the bootstrap error sleeves, with
+    ``_YLIM_PAD_DEC`` of a decade left between the content and the frame so
+    nothing is clipped.
+
+    Args:
+        fig: the figure whose shared y-axis is re-limited.
+
+    """
+    lows: list[float] = []
+    highs: list[float] = []
+    for ax in fig.axes:
+        for child in ax.get_children():
+            if hasattr(child, "get_ydata"):
+                values = np.asarray(child.get_ydata(), dtype=float)
+            elif hasattr(child, "get_segments"):
+                segments = child.get_segments()
+                values = np.concatenate([seg[:, 1] for seg in segments]) if len(segments) else np.array([])
+            elif hasattr(child, "get_paths"):
+                paths = [path for path in child.get_paths() if len(path.vertices)]
+                values = np.concatenate([path.vertices[:, 1] for path in paths]) if paths else np.array([])
+            else:
+                continue
+            values = values[np.isfinite(values)]
+            if not values.size:
+                continue
+            lows.append(float(values.min()))
+            highs.append(float(values.max()))
+    if not lows:
+        return
+    # Pad in log space, so the margin is a visible, symmetric fraction of a
+    # decade on the log-scale y-axis.
+    lo = 10 ** (math.log10(min(lows)) - _YLIM_PAD_DEC)
+    hi = 10 ** (math.log10(max(highs)) + _YLIM_PAD_DEC)
+    for ax in fig.axes:
+        if ax.containers:
+            ax.set_ylim(lo, hi)
 
 
 def collect_fits(fits: pd.DataFrame, covs: dict) -> dict[tuple, Fit1d | Fit2d]:
@@ -585,8 +633,14 @@ def machine_figure(title: str, data: MachineData, algorithms: list[str]) -> plt.
     present_algorithms = [algorithm for algorithm in algorithms if algorithm in present]
     if len(present_algorithms) <= 1:
         # Single-row layout: one algorithm only, no row header.
-        return single_algorithm_figure(title, data, series_markers)
-    return multi_algorithm_figure(title, data, series_markers, present_algorithms)
+        fig = single_algorithm_figure(title, data, series_markers)
+    else:
+        fig = multi_algorithm_figure(title, data, series_markers, present_algorithms)
+    # Re-limit the shared y-axis to snugly fit the drawn content (data
+    # points, fit lines and sleeves; see `snug_ylims`) instead of the padded
+    # autoscaled range.
+    snug_ylims(fig)
+    return fig
 
 
 def _machines_with_delay_runs(runs: pd.DataFrame) -> list[str]:
