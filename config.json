@@ -46,7 +46,7 @@
     "mallocmc": {
       "url": "https://github.com/chillenzer/mallocMC",
       "path": "src/picongpu/thirdParty/mallocMC",
-      "hash": "baf632819a52842087a8c96d23674051dac1bc08"
+      "hash": "9de11602e2865d4035d93359005cb0a816b7dfe7"
     }
   },
   "build": {
