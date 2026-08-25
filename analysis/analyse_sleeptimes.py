@@ -189,7 +189,7 @@ def parse_simulation_time(line: str) -> dict[str, float]:
 
 def parse_log(log_path: Path) -> Iterator[dict]:
     """Yield one record per picongpu run of a single run log."""
-    with log_path.open("r") as file:
+    with log_path.open("r", encoding="utf-8") as file:
         context = {}
         pending = None
         malloc_delay = None
@@ -633,7 +633,7 @@ def _plot_cluster(
         x, ye_min, y, ye_max = np.sort(result.reset_index(drop=False)[[x_delay, "25%", "50%", "75%"]].to_numpy().T)
         # Only the pure sweep is shown: runs where the other (held) delay is
         # 0. Runs with both delays > 0 belong to neither figure.
-        if float(name[5]) != 0:
+        if name[5] != 0:
             continue
         # A sweep needs at least two distinct x values above 0.
         if len(np.unique(x[x > 0])) < 2:
@@ -1013,7 +1013,7 @@ def fit_allocation_fraction(sleeptimes: pd.Series, runtimes: pd.Series, c_a: flo
             W, N, A, s0 = (float(v) for v in popt)
             # ruff's SIM300 "fix" would move the constant expression to the
             # left of the comparison, i.e. create a genuine Yoda condition.
-            if gA < -1e-6 * max(abs(gW), 1e-9) and A <= 1e-6 * max(abs(W), 1e-9):  # noqa: SIM300
+            if gA < -1e-6 * max(abs(gW), 1e-9) and A <= 1e-6 * max(abs(W), 1e-9):  # ruff: ignore[SIM300]
                 notes.append(
                     "unconstrained fit wanted A<0 (smallest-sleeptime runtime below the Amdahl "
                     "line); A constrained to 0 so f is floored at 0"

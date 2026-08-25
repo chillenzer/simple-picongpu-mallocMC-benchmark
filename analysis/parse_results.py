@@ -118,7 +118,7 @@ def parse_results(source: str | Path | Iterable[str]) -> pd.DataFrame:
     rows = []
 
     if not (hasattr(source, "readline") or isinstance(source, (list, tuple))):
-        with Path(source).open() as file:
+        with Path(source).open(encoding="utf-8") as file:
             source = file.readlines()
     lines = source
     for raw in lines:

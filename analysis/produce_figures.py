@@ -122,27 +122,15 @@ def parse_log(log: str) -> pd.Series | None:
 
 def pairs(iterable: Iterable[str]) -> Iterator[tuple[str, str]]:
     """Yield successive (header, log) pairs from an iterable."""
-    try:
-        first = next(iterable)
-    except TypeError:
-        iterable = iter(iterable)
-        try:
-            first = next(iterable)
-        except StopIteration:
-            return
-
-    while True:
-        try:
-            second = next(iterable)
-            yield first, second
-            first = next(iterable)
-        except StopIteration:
-            return StopIteration()
+    # Zip the same iterator against itself to group consecutive segments;
+    # a trailing incomplete segment (odd count) is dropped, not raised.
+    it = iter(iterable)
+    yield from zip(it, it, strict=False)
 
 
 def parse_full(file: Path) -> pd.DataFrame:
     """Parse a whole run_all log file into a per-run DataFrame."""
-    with file.open("r") as f:
+    with file.open("r", encoding="utf-8") as f:
         text = f.read()
     return pd.DataFrame(
         {
