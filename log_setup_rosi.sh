@@ -43,4 +43,4 @@ done < <(python3 config.py list "machines.$MACHINE.modules")
   echo "========================"
 } >>"$FILENAME"
 
-make PROFILE="$PROFILE" PARAM_DIR=param 2>&1 | tee -a "$FILENAME"
+make build PROFILE="$PROFILE" PARAM_DIR=param 2>&1 | tee -a "$FILENAME"

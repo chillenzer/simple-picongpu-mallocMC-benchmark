@@ -64,15 +64,22 @@ The Makefile pins the dependency versions (the `dependencies` section of
   verifies the referenced flag, parameter, and profile files). It parses the
   file with the stdlib `json` module, so no third-party package (no PyYAML,
   no yq) is needed in the cluster environment.
-- `Makefile` — clones the pinned PIConGPU and mallocMC, prepares one input
-  directory per (example, algorithm) (`pic-create` + parameter overlay) and
-  builds it (`pic-build`). Reads its configuration from `config.json`
-  (validated up front); `make check` prints the resolved build
-  configuration and stops. The overlay copies `param/<Algorithm>/*.param`
-  (the algorithm's `mallocMC.param`, i.e. the creation policy),
-  `param/<Example>/*.param` and any per-(example, algorithm) overrides from
-  `param/<Example>/<Algorithm>/`. It is invoked as
-  `make PROFILE=<profile> PARAM_DIR=param` (see *Usage* below).
+- `Makefile` — the build harness and the analysis driver. The harness
+  clones the pinned PIConGPU and mallocMC, prepares one input directory per
+  (example, algorithm) (`pic-create` + parameter overlay) and builds it
+  (`pic-build`); it reads its configuration from `config.json` (validated up
+  front). The overlay copies `param/<Algorithm>/*.param` (the algorithm's
+  `mallocMC.param`, i.e. the creation policy), `param/<Example>/*.param` and
+  any per-(example, algorithm) overrides from `param/<Example>/<Algorithm>/`.
+  It is invoked as `make build PROFILE=<profile> PARAM_DIR=param` (see
+  *Usage* below); `make check` prints the resolved build configuration and
+  stops. The driver builds the analysis numbers and figures: `make` (the
+  default goal) makes all figures plus the summary tables, `make results`
+  only rebuilds `output/results.h5` from the run logs, `make summary` only
+  prints the tables, and a single figure is built by its file name, e.g.
+  `make figures/foil_lct.pdf`. The numbers are rebuilt from the run logs on
+  every invocation; make does not list the log files themselves as
+  prerequisites (their names are machine-specific).
 - `run_all.sh` — for every example, every algorithm and every `(malloc
   delay, free delay)` combination derived from the `delays` section of
   `config.json`, runs the example's flag lines from the matching build with
@@ -84,7 +91,7 @@ The Makefile pins the dependency versions (the `dependencies` section of
   `MALLOCMC_MALLOC_DELAY` / `MALLOCMC_FREE_DELAY` environment variables.
 - `log_{setup,run}_<machine>.sh` — per-machine launchers (hal, rosi,
   rosi-a100): log the environment, load the machine's modules, and run
-  `make` / `run_all.sh` with the machine's profile from the `machines`
+  `make build` / `run_all.sh` with the machine's profile from the `machines`
   table in `config.json`, writing the logs to the machine's output
   directory.
 - `profiles/` — HPC environment profiles (module/spack setup, `PIC_BACKEND`,
@@ -98,33 +105,36 @@ The Makefile pins the dependency versions (the `dependencies` section of
   record per `bin/picongpu` run (example, algorithm, grid, imposed delays,
   runtime) from the raw `set -x` trace of any of the historical log layouts;
   the basis of the analysis scripts below.
-- `analysis/analyse_sleeptimes.py` — reads the raw `run_all.sh` logs directly
-  (no pre-filtering). For a sweep that varies only one delay it fits the
-  (example, algorithm, grid) group to the Amdahl model
-  `T(s) = W + N*s + A*s0/(s+s0)` (large-s Amdahl line `W + N*s` plus a
-  small-s native-cost correction `A`); for a (malloc, free) combination
-  sweep it fits the two-operation model
-  `T(m, f) = W + N_m*m + N_f*f + A_m*m0/(m+m0) + A_f*f0/(f+f0)` and reports
-  the runtime fractions spent in allocations and in frees separately
-  (`f_malloc = A_m/T0`, `f_free = A_f/T0`, `T0 = W + A_m + A_f`). Both fits
-  use a bounded `scipy.optimize.curve_fit` (bounds `W, N, A >= 0` keep each
-  `f` in `[0, 1)`), and print the fractions, the call counts `N`, and
-  `W`/`A`, each with a standard error (the full model is documented in the
-  script docstring). It plots runtime against the delay per example,
-  algorithm, grid and held delay with IQR error bars and the fitted curve
-  overlaid, in one figure per machine of the `machines` table in
-  `config.json` (machines without run logs are skipped), titled by the
-  hardware the runs were made on: one row per algorithm present in the data
-  (`ALGORITHM_ORDER`), two columns (malloc | free delay sweep).
-  Each run is labeled with a `configuration` column (`compile-time`
-  per-variant sweep vs `run-time` env-var sweep), so both log layouts can be
-  analyzed side by side (pre-rename logs that used `MALLOCMC_SLEEP_TIME`
-  parse into the malloc delay). Set the module variable `CONFIGURATION` to
-  `"run-time"` or `"compile-time"` to compute the statistics, plot and fit
-  only from runs of that configuration (`None` uses all; the printed parsed
-  results stay complete).
-- `analysis/produce_figures.py` — produces the paper plots of the original
-  three-algorithm comparison (see note below).
+- `analysis/results_io.py` — shared access to the results HDF5 file: the
+  table read/write, the per-fit covariance groups, and the schema helpers
+  (grid/scenario labels, the no-delay mask, the particle-memory model).
+- `analysis/amdahl.py` — the Amdahl allocation model, its constrained
+  1-D/2-operation fits, and the bootstrap sleeve (the full model is
+  documented in the module docstring).
+- `analysis/compute_results.py` — the single "numbers" entry point: parses
+  the sweep machines' run logs (the `machines` table of `config.json`) and
+  the legacy per-cluster `output/<cluster>/` directories (grouped by their
+  short hardware name), and computes the group runtime statistics, the
+  Amdahl fits of every (machine, example, algorithm, grid) sweep (with the
+  parameter covariances), the zero-delay baselines (sweep machines), and
+  the FoilLCT/KelvinHelmholtz metadata (all no-delay runs, per short
+  hardware name); writes everything to `output/results.h5` and prints
+  nothing.
+- `analysis/summarize_results.py` — prints the summary tables from
+  `output/results.h5` (group statistics, fits, Amdahl fractions, no-delay
+  runtimes, figure metadata; `--raw` adds the parsed runs).
+- `analysis/plot_sweeps.py` — one delay-sweep figure per sweep machine
+  (`figures/sweeps-<machine>.pdf`: one row per algorithm, the malloc and
+  free delay sweeps side by side, fitted curve + bootstrap sleeve).
+- `analysis/plot_runtime_stack.py` — one runtime-budget figure per
+  (example, grid) scenario that has at least one usable fit
+  (`figures/runtime-stack-<setup>-<grid>.pdf`: stacked W/A_malloc/A_free
+  bar per allocator per hardware, measured zero-delay point overlaid).
+- `analysis/plot_foil_lct.py` — the FoilLCT bar chart of the no-delay runs
+  (`figures/foil_lct.pdf`).
+- `analysis/plot_kelvin_helmholtz.py` — the KelvinHelmholtz violin chart of
+  the no-delay runs relative to the ScatterAlloc reference
+  (`figures/kelvin_helmholtz.pdf`).
 - `build/` — created by the Makefile; one CMake project per (example,
   algorithm).
 
@@ -147,7 +157,7 @@ bash run_all.sh --check
    PIConGPU build per example and algorithm):
 
    ```
-   make PROFILE=profiles/hal.sh PARAM_DIR=param
+   make build PROFILE=profiles/hal.sh PARAM_DIR=param
    ```
 
    That also patches `PICSRC=` in the given profile in place, pointing it
@@ -169,9 +179,10 @@ bash run_all.sh --check
      `pic-build` runs incrementally. `make -j` builds the independent
      (example, algorithm) pairs in parallel; the default is serial.
 
-   `make clean` removes `build/`, `make distclean` removes `src/` as well;
-   alternatively delete just a single `build/<Ex>/<Algo>/` folder, or only
-   its `.input-stamp`, to rebuild one example and algorithm.
+   `make clean` removes `build/`, `figures/` and `output/results.h5`,
+   `make distclean` removes `src/` as well; alternatively delete just a
+   single `build/<Ex>/<Algo>/` folder, or only its `.input-stamp`, to
+   rebuild one example and algorithm.
 
 2. Run the benchmarks:
 
@@ -235,39 +246,73 @@ would be done).
 
 ## Analysis
 
-All of the analysis reads the raw run logs directly (no pre-filtering); the
-shared parsing lives in `analysis/run_logs.py`.
+The analysis is split into *computing the numbers* and *drawing the
+figures*, joined by the single HDF5 file `output/results.h5`:
 
-`analysis/analyse_sleeptimes.py` reads the raw
-`output/<cluster>-sleeptimes/run_*` logs (every historical layout) and plots
-the runtime against the delay (log-log, median with IQR error
-bars) per example, algorithm, grid and held delay, with the fitted Amdahl
-curve overlaid, in one figure per machine of the `machines` table in
-`config.json` (machines without run logs are skipped), titled by the
-hardware the runs were made on, with one row per algorithm present in the
-data (a single-algorithm dataset yields the plain two-axis figure). It also
-fits every (example, algorithm, grid) sweep to
-the model and prints the extracted fraction of runtime spent in
-allocations / frees:
+- `compute_results.py` parses the raw run logs (all historical log layouts)
+  of the two worlds they live in: the sweep machines of the `machines`
+  table of `config.json` (the group statistics, the Amdahl fits and the
+  zero-delay baselines are computed for these) and the legacy per-cluster
+  `output/<cluster>/` directories, which the comparison charts read grouped
+  by their short hardware name (`A30`, `V100`, ...; the FoilLCT /
+  KelvinHelmholtz metadata covers the no-delay runs of both worlds). It
+  prints nothing.
+- `summarize_results.py` prints the summary tables from
+  `output/results.h5` (per machine: group statistics; the fits and the
+  Amdahl fractions of runtime spent in allocations / frees; the no-delay
+  runtimes; the figure metadata). `--raw` also prints the parsed runs.
+- one script per figure, each reading `output/results.h5` (all take
+  `--show` to display the figure in a window): `plot_sweeps.py`
+  (`figures/sweeps-<machine>.pdf`, `--machine` for one machine),
+  `plot_runtime_stack.py` (`figures/runtime-stack-<setup>-<grid>.pdf`,
+  `--name` for one scenario), `plot_foil_lct.py` (`figures/foil_lct.pdf`),
+  `plot_kelvin_helmholtz.py` (`figures/kelvin_helmholtz.pdf`).
+
+The simplest way to run the whole thing (or any single figure) is the
+`Makefile`:
 
 ```
-python3 analysis/analyse_sleeptimes.py
+make                      # all figures + the summary tables
+make results              # only output/results.h5, from the run logs
+make summary              # only the summary tables
+make figures/foil_lct.pdf # one figure by file name (also:
+make figures/sweeps-hal.pdf # figures/sweeps-<machine>.pdf,
+make figures/runtime-stack-FoilLCT-256x1280.pdf
 ```
 
-Both scripts write their figures to `figures/` and exit without displaying
-them (non-blocking); pass `--show` to also display the figures in a window.
+or the scripts directly (run from the repository root):
 
-`analysis/produce_figures.py` produces the paper plots of the original
-three-algorithm comparison from the no-delay runs: the per-cluster
-`output/<cluster>/` run logs (one full `run_all.sh` repetition per file) plus
-the (0, 0) baseline runs of the delay-combination sweeps (the
-`hal-sleeptimes` and `rosi-sleeptimes` dirs; the nanosleep runs are
-excluded). It writes the FoilLCT bar chart (`figures/foil_lct.pdf`), the
-KelvinHelmholtz violin chart of the runtime relative to the ScatterAlloc
-baseline (`figures/kelvin_helmholtz.pdf`), and prints the per-grid timing
-statistics. The delay-combination sweeps themselves are analyzed by
-`analyse_sleeptimes.py`, which saves one figure per cluster to
-`figures/<cluster>.pdf`.
+```
+python3 analysis/compute_results.py
+python3 analysis/summarize_results.py
+python3 analysis/plot_foil_lct.py
+```
+
+Notes:
+
+- The fits are bounded `scipy.optimize.curve_fit` of the 1-D model
+  `T(s) = W + N*s + A*s0/(s+s0)` (sweep on one delay) or the two-operation
+  model `T(m, f) = W + N_m*m + N_f*f + A_m*m0/(m+m0) + A_f*f0/(f+f0)`
+  (combination sweep); the full model, the bounds, and the diagonalization
+  caveats of the bootstrap are documented in `analysis/amdahl.py`.
+- Each run is labeled with a `configuration` column (`compile-time`
+  per-variant sweep vs `run-time` env-var sweep), so both log layouts can
+  be analyzed side by side (pre-rename logs that used `MALLOCMC_SLEEP_TIME`
+  parse into the malloc delay). Pass
+  `compute_results.py --configuration run-time` (or `compile-time`) to
+  compute the statistics and the fits only from runs of that configuration;
+  the stored runs always stay complete.
+- The Python analysis needs `numpy`, `pandas`, `scipy`, `matplotlib`,
+  `seaborn`, and `h5py` (`pip install numpy pandas scipy matplotlib seaborn h5py`).
+- The comparison figures (`foil_lct.pdf`, `kelvin_helmholtz.pdf`) use the
+  no-delay runs of *every* hardware: the legacy per-cluster
+  `output/<cluster>/` directories plus the (0, 0) baseline runs of each
+  sweep machine's delay combination sweeps. Both are grouped by the short
+  hardware name (e.g. the `output/hal` directory and the `hal` sweep
+  machine's baselines are both plotted as `A30`).
+- The figure row order is the `algorithms` list of `config.json` (recorded
+  in the results file); the hardware display order of the comparison figures
+  is fixed in `analysis/results_io.py`.
 
 ## Code style
 

@@ -39,4 +39,4 @@ echo "========================" | tee -a "$FILENAME"
 echo "Starting setup" | tee -a "$FILENAME"
 echo "========================" | tee -a "$FILENAME"
 
-make PROFILE="$PROFILE" PARAM_DIR=param 2>&1 | tee -a "$FILENAME"
+make build PROFILE="$PROFILE" PARAM_DIR=param 2>&1 | tee -a "$FILENAME"

@@ -3,25 +3,41 @@
 # SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
 # SPDX-License-Identifier: MIT
 #
-# Build harness (rewritten from setup.sh). Clones the pinned PIConGPU and
-# mallocMC into src/, prepares one input directory per (example, algorithm)
-# (pic-create template + parameter overlay) and builds each one (pic-build).
-# What to build (examples, algorithms, dependency pins, build flags) is read
-# from config.json through config.py and validated up front.
+# Two purposes, one Makefile:
+#
+# 1. The benchmark build harness (rewritten from setup.sh): clones the
+#    pinned PIConGPU and mallocMC into src/, prepares one input directory
+#    per (example, algorithm) (pic-create template + parameter overlay) and
+#    builds each one (pic-build). What to build (examples, algorithms,
+#    dependency pins, build flags) is read from config.json through
+#    config.py and validated up front:
+#
+#      make build PROFILE=profiles/hal.sh PARAM_DIR=param   # clone + inputs + builds
+#      make check                                           # resolved configuration
+#
+# 2. The analysis driver: builds the benchmark numbers (output/results.h5)
+#    and the figures (figures/) from the run logs. The numbers are rebuilt
+#    from the run logs on every invocation: make deliberately does not list
+#    files of the output/ tree as prerequisites, because their names are
+#    machine-specific (run-all job names, timestamps) and not safe to parse
+#    as make dependencies. Every figure is independent: build any one of
+#    them by its file name, e.g. `make figures/foil_lct.pdf` or
+#    `make figures/sweeps-hal.pdf`, or all of them with `make` (the default
+#    goal, which also prints the summary tables). Rebuild only the numbers
+#    with `make results`.
+#
+# `make clean` removes everything generated (build/, figures/ and
+# output/results.h5); `make distclean` removes src/ as well.
 #
 # From the repository root, with the machine's environment loaded (in
-# practice via the log_setup_<machine>.sh launchers):
+# practice via the log_setup_<machine>.sh launchers) for the harness.
 #
-#   make PROFILE=profiles/hal.sh PARAM_DIR=param    # clone + inputs + builds
-#   make check                                      # resolved configuration
-#   make clean                                      # remove build/
-#   make distclean                                  # remove build/ and src/
-#
-# Incremental: a target re-runs only when its prerequisites change (the
-# dependency pins, the parameter overlay files, the build flags, the profile
-# content, the toolchain versions). Like setup.sh, `make` without arguments
-# runs the targets serially; `make -j` builds the independent (example,
-# algorithm) pairs in parallel.
+# The harness targets are incremental: a target re-runs only when its
+# prerequisites change (the dependency pins, the parameter overlay files,
+# the build flags, the profile content, the toolchain versions). Like
+# setup.sh, `make build` without -j runs the targets serially;
+# `make build -j` builds the independent (example, algorithm) pairs in
+# parallel.
 
 .DEFAULT_GOAL := all
 
@@ -30,20 +46,24 @@ SHELL := /bin/bash
 .SHELLFLAGS := -e -c
 .DELETE_ON_ERROR:
 
+PY      := python3
+RESULTS := output/results.h5
+FIGDIR  := figures
+
 CONFIG := config.json
 
-# --- configuration: validated up front, then read through config.py -------
+# --- harness configuration: validated up front, read through config.py ----
 
-ifneq ($(strip $(shell python3 config.py check >/dev/null 2>&1; echo $$?)),0)
+ifneq ($(strip $(shell $(PY) config.py check >/dev/null 2>&1; echo $$?)),0)
 $(error config.json failed validation; run `python3 config.py check` for details)
 endif
 
-EXAMPLES   := $(shell python3 config.py list examples)
-ALGORITHMS := $(shell python3 config.py list algorithms)
+EXAMPLES   := $(shell $(PY) config.py list examples)
+ALGORITHMS := $(shell $(PY) config.py list algorithms)
 
-PICONGPU_PATH  := $(shell python3 config.py get dependencies.picongpu.path)
-PICONGPU_URL   := $(shell python3 config.py get dependencies.picongpu.url)
-PICONGPU_HASH  := $(shell python3 config.py get dependencies.picongpu.hash)
+PICONGPU_PATH  := $(shell $(PY) config.py get dependencies.picongpu.path)
+PICONGPU_URL   := $(shell $(PY) config.py get dependencies.picongpu.url)
+PICONGPU_HASH  := $(shell $(PY) config.py get dependencies.picongpu.hash)
 PICONGPU_ABS   := $(CURDIR)/$(PICONGPU_PATH)
 PICONGPU_SHORT := $(shell printf '%.8s' $(PICONGPU_HASH))
 # add-delay branch: run-time malloc/free delays for every creation policy
@@ -51,17 +71,17 @@ PICONGPU_SHORT := $(shell printf '%.8s' $(PICONGPU_HASH))
 # MALLOCMC_FREE_DELAY environment variables (read into the device allocator
 # by mallocMC::Allocator::alloc), the delays as busy-waits on the device
 # global timer. We pin our fork, not picongpu's own mallocMC copy.
-MALLOCMC_PATH  := $(shell python3 config.py get dependencies.mallocmc.path)
-MALLOCMC_URL   := $(shell python3 config.py get dependencies.mallocmc.url)
-MALLOCMC_HASH  := $(shell python3 config.py get dependencies.mallocmc.hash)
+MALLOCMC_PATH  := $(shell $(PY) config.py get dependencies.mallocmc.path)
+MALLOCMC_URL   := $(shell $(PY) config.py get dependencies.mallocmc.url)
+MALLOCMC_HASH  := $(shell $(PY) config.py get dependencies.mallocmc.hash)
 MALLOCMC_ABS   := $(CURDIR)/$(MALLOCMC_PATH)
 MALLOCMC_SHORT := $(shell printf '%.8s' $(MALLOCMC_HASH))
 
 # Nasty little bug here: GCC has a constexpr std::source_location but nvcc
 # does not. So Boost gets confused and tries to use std::source_location
 # constexpr.
-CXX_FLAGS         := $(shell python3 config.py get build.cxx_flags)
-EXTRA_CMAKE_FLAGS := $(shell python3 config.py list build.extra_cmake_flags)
+CXX_FLAGS         := $(shell $(PY) config.py get build.cxx_flags)
+EXTRA_CMAKE_FLAGS := $(shell $(PY) config.py list build.extra_cmake_flags)
 FLAGS := -DCMAKE_CXX_FLAGS="$(CXX_FLAGS)" -DCMAKE_CUDA_FLAGS="$(CXX_FLAGS)" $(EXTRA_CMAKE_FLAGS)
 
 # csh exports PROFILE (the path to the user's csh profile); an inherited
@@ -85,21 +105,19 @@ PROFILE_ENV_STAMP := build/.profile-env
 TOOLCHAIN_STAMP   := build/.toolchain
 FLAGS_STAMP       := build/.build-flags
 
-# Every goal except check/clean/distclean needs a profile (the default goal
-# `all` does too).
-NON_EXEMPT_GOALS := $(filter-out check clean distclean,$(MAKECMDGOALS))
-ifeq ($(MAKECMDGOALS),)
-NON_EXEMPT_GOALS := all
-endif
-ifneq ($(NON_EXEMPT_GOALS),)
+# Only the benchmark goal (`build`) and the explicit per-pair targets under
+# build/ run on the HPC machine and need its profile; the default goal and
+# all analysis goals, check and clean do not.
+ifneq ($(filter build%,$(MAKECMDGOALS)),)
 ifeq ($(PROFILE),)
-$(error specify PROFILE=<machine profile>, e.g. make PROFILE=profiles/hal.sh)
+$(error specify PROFILE=<machine profile>, e.g. make build PROFILE=profiles/hal.sh)
 endif
 endif
 
-.PHONY: all check clean distclean picongpu-src mallocmc-src env-check
+.PHONY: all build check clean distclean results summary figures \
+	figures-sweeps figures-runtime-stack picongpu-src mallocmc-src env-check
 
-# --- per (example, algorithm) targets -------------------------------------
+# --- per (example, algorithm) harness targets ------------------------------
 
 PAIRS      := $(foreach e,$(EXAMPLES),$(foreach a,$(ALGORITHMS),$(e)/$(a)))
 BUILD_DIRS := $(addprefix build/,$(PAIRS))
@@ -150,10 +168,12 @@ $(foreach p,$(PAIRS),$(eval $(call pair_rules,$(firstword $(subst /, ,$(p))),$(l
 
 # --- top-level targets -----------------------------------------------------
 
-all: $(BINARIES)
+all: figures summary
+
+build: $(BINARIES)
 
 check:
-	python3 config.py check
+	$(PY) config.py check
 	@printf 'examples:   %s\n' "$(EXAMPLES)"
 	@printf 'algorithms: %s\n' "$(ALGORITHMS)"
 	@printf 'picongpu:   %s @ %s\n' "$(PICONGPU_ABS)" "$(PICONGPU_SHORT)"
@@ -165,13 +185,46 @@ check:
 		"$$(python3 config.py get build.cxx_flags)" \
 		"$$(python3 config.py list build.extra_cmake_flags | tr '\n' ' ' | sed 's/ *$$//')"
 
+# --- analysis targets --------------------------------------------------------
+
+results:
+	$(PY) analysis/compute_results.py --output $(RESULTS)
+
+summary: results
+	$(PY) analysis/summarize_results.py --results $(RESULTS)
+
+figures: figures-sweeps figures-runtime-stack \
+	$(FIGDIR)/foil_lct.pdf $(FIGDIR)/kelvin_helmholtz.pdf
+
+# The family targets run the plotting scripts unfiltered (all machines,
+# all scenarios), so they work even when figures/ does not exist yet.
+figures-sweeps: results
+	$(PY) analysis/plot_sweeps.py --results $(RESULTS)
+
+figures-runtime-stack: results
+	$(PY) analysis/plot_runtime_stack.py --results $(RESULTS)
+
+$(FIGDIR)/foil_lct.pdf: results
+	$(PY) analysis/plot_foil_lct.py --results $(RESULTS)
+
+$(FIGDIR)/kelvin_helmholtz.pdf: results
+	$(PY) analysis/plot_kelvin_helmholtz.py --results $(RESULTS)
+
+# Build a single figure by name: `make figures/sweeps-hal.pdf` or
+# `make figures/runtime-stack-<setup>-<grid>.pdf`.
+$(FIGDIR)/sweeps-%.pdf: results
+	$(PY) analysis/plot_sweeps.py --results $(RESULTS) --machine $*
+
+$(FIGDIR)/runtime-stack-%.pdf: results
+	$(PY) analysis/plot_runtime_stack.py --results $(RESULTS) --name $*
+
 clean:
-	rm -rf build
+	rm -rf $(FIGDIR) $(RESULTS) build
 
 distclean: clean
 	rm -rf src
 
-# --- dependency sources, environment, toolchain -----------------------------
+# --- harness dependency sources, environment, toolchain ---------------------
 
 # Clone and keep the pinned sources in sync. The phony driver runs on every
 # make invocation (a changed pin must be noticed even though the stamp
