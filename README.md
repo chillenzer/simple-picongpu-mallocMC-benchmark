@@ -127,9 +127,10 @@ The Makefile pins the dependency versions (the `dependencies` section of
   (`figures/sweeps-<machine>.pdf`: one row per algorithm, the malloc and
   free delay sweeps side by side, fitted curve + bootstrap sleeve).
 - `analysis/plot_runtime_stack.py` — one runtime-budget figure per
-  (example, grid) scenario that has at least one usable fit
-  (`figures/runtime-stack-<setup>-<grid>.pdf`: stacked W/A_malloc/A_free
-  bar per allocator per hardware, measured zero-delay point overlaid).
+  (setup, grid) scenario that has at least one usable fit
+  (`figures/runtime-stack-<setup>-<grid>.pdf`: the fitted W/A_malloc/A_free
+  bars per allocator per hardware, segment-coloured and labelled, fitted
+  total annotated, measured zero-delay point overlaid).
 - `analysis/plot_foil_lct.py` — the FoilLCT bar chart of the no-delay runs
   (`figures/foil_lct.pdf`).
 - `analysis/plot_kelvin_helmholtz.py` — the KelvinHelmholtz violin chart of

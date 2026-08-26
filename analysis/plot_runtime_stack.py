@@ -6,12 +6,14 @@ SPDX-License-Identifier: MIT
 Reads `output/results.h5` (the output of `compute_results.py`) and draws,
 for every (setup, grid) scenario with at least one usable fit, one figure
 (`figures/runtime-stack-<setup>-<grid>.pdf`): the x-axis is the hardware
-(short name) of every sweep machine with data, and under each hardware a
-bar per allocator (in the file's `algorithm_order`) stacks the fitted W,
-A_malloc and A_free up to the total runtime, overlaid with the measured
-zero-delay runtime (median, IQR error bar). By default every scenario
-gets its figure, `--name` restricts the run to one, e.g.
-`--name FoilLCT-256x1280`.
+(short name) of every sweep machine with data, and under each hardware one
+triplet of three segment bars per allocator (in the file's
+`algorithm_order`): the fitted W (grey), A_malloc (blue) and A_free
+(orange) side by side, so the individual costs compare directly across the
+allocators, with the fitted total annotated above and the measured
+zero-delay runtime (median, IQR error bar) overlaid at each triplet. By
+default every scenario gets its figure, `--name` restricts the run to one,
+e.g. `--name FoilLCT-256x1280`.
 """
 
 from __future__ import annotations
@@ -40,10 +42,10 @@ from results_io import (
 mpl.use("pdf")
 
 FIGURES = Path("figures")
-# the stacked segments of the runtime-budget figure, in stacking order
-# (bottom to top), as (label, hatch) pairs; the fill colour is assigned per
-# algorithm from the default property cycle (`algorithm_colors`).
-RUNTIME_SEGMENTS = (("W", None), ("A_malloc", ".."), ("A_free", "xx"))
+# the segments of the runtime-budget figure, as (label, fill colour) pairs,
+# in bar order within each algorithm's triplet; the algorithm is carried by
+# the triplet's position and its label, not by colour.
+RUNTIME_SEGMENTS = (("W", "0.55"), ("A_malloc", "tab:blue"), ("A_free", "tab:orange"))
 
 
 def _floor0(value: float) -> float:
@@ -136,64 +138,62 @@ def scenario_baselines(baselines: pd.DataFrame, target: tuple) -> dict[str, dict
     return points
 
 
-class BarCtx(NamedTuple):
-    """Drawing context for one runtime-budget bar."""
+class TripletCtx(NamedTuple):
+    """Drawing context for one algorithm's runtime-budget triplet."""
 
     ax: plt.Axes
-    pos: float
+    x: float
     bar_w: float
     segments: tuple[float, float, float]
-    color: str
     baseline: tuple[float, float, float] | None
+    algorithm: str
 
 
-def draw_runtime_bar(ctx: BarCtx) -> float:
-    """Draw one stacked runtime bar and its optional baseline point.
+def draw_runtime_triplet(ctx: TripletCtx) -> float:
+    """Draw one algorithm's three segment bars and its baseline point.
 
-    The bar colour names the algorithm (its segments all share it); the
-    hatch names the segment (W plain, A_malloc dotted, A_free hatched).
+    The bars of the triplet are coloured per segment (W grey, A_malloc
+    blue, A_free orange); the algorithm itself is named by its slot and
+    the label under the x axis, and the fitted total is annotated above.
 
     Args:
-        ctx: the bar drawing context.
+        ctx: the triplet drawing context.
 
     Returns:
-        float: the bar's total height.
+        float: the triplet's total height.
 
     """
-    ax, pos, bar_w = ctx.ax, ctx.pos, ctx.bar_w
-    bottom = 0.0
-    for (_seg, hatch), value in zip(RUNTIME_SEGMENTS, ctx.segments, strict=True):
-        ax.bar(pos, value, width=bar_w, bottom=bottom, color=ctx.color, hatch=hatch, edgecolor="k", linewidth=0.5)
-        bottom += value
-    ax.text(pos, bottom, f"{bottom:.3g}", ha="center", va="bottom", fontsize=8)
+    ax, x, bar_w = ctx.ax, ctx.x, ctx.bar_w
+    for k, ((_seg, color), value) in enumerate(zip(RUNTIME_SEGMENTS, ctx.segments, strict=True)):
+        ax.bar(x + (k - 1) * bar_w, value, width=bar_w, color=color, edgecolor="k", linewidth=0.5)
+    total = sum(ctx.segments)
+    top = max(total, ctx.baseline[2] if ctx.baseline is not None else 0.0)
+    ax.text(x, top, f"{total:.3g}", ha="center", va="bottom", fontsize=8)
     if ctx.baseline is not None:
         lo, med, hi = ctx.baseline
         ax.errorbar(
-            [pos],
+            [x],
             [med],
             yerr=[[med - lo], [hi - med]],
             fmt="none",
             ecolor="k",
             elinewidth=1,
-            capsize=0,
+            capsize=2.5,
             zorder=5,
         )
-        ax.plot([pos], [med], marker="o", markersize=5, mfc="k", mec="w", mew=0.5, zorder=6)
-    return bottom
-
-
-def algorithm_colors(algorithms: list[str]) -> dict[str, str]:
-    """Assign each algorithm a colour from the default property cycle.
-
-    Args:
-        algorithms: the allocators, in display order.
-
-    Returns:
-        dict[str, str]: algorithm name to colour.
-
-    """
-    cycle = plt.rcParams["axes.prop_cycle"].by_key()["color"]
-    return {algorithm: cycle[i % len(cycle)] for i, algorithm in enumerate(algorithms)}
+        ax.plot([x], [med], marker="o", markersize=5, mfc="k", mec="w", mew=0.5, zorder=6)
+    ax.text(
+        x,
+        -0.06,
+        ctx.algorithm,
+        transform=ax.get_xaxis_transform(),
+        rotation=-90,
+        ha="left",
+        va="center",
+        fontsize=8,
+        color="0.25",
+    )
+    return total
 
 
 def runtime_stack_figure(
@@ -201,13 +201,14 @@ def runtime_stack_figure(
     entries: list[tuple[str, dict, dict]],
     algorithms: list[str],
 ) -> plt.Figure:
-    """Draw one figure: the runtime budget stacked per allocator, per hardware.
+    """Draw one figure: the runtime budget per allocator, per hardware.
 
-    The x-axis is the hardware; under each hardware a bar per allocator
-    stacks the fitted W, A_malloc and A_free up to the total runtime. The
-    bar colour names the algorithm; the fill hatch names the segment (W
-    plain, A_malloc dotted, A_free hatched). The measured zero-delay point
-    (median, IQR) is overlaid on each bar.
+    The x-axis is the hardware; under each hardware one triplet of three
+    segment-coloured bars per allocator (the triplet per allocator, in the
+    file's `algorithm_order`): the fitted W (grey), A_malloc (blue) and
+    A_free (orange) side by side. The allocator is named by the label
+    under its triplet; the fitted total is annotated above it, and the
+    measured zero-delay point (median, IQR) is overlaid.
 
     Args:
         scenario: the (setup, x, y, z) scenario key.
@@ -221,19 +222,21 @@ def runtime_stack_figure(
     """
     setup, x, y, z = scenario
     hw_names = [hw for hw, _budget, _baseline in entries]
-    fig, ax = plt.subplots(figsize=(5.5, 5.0))
+    fig, ax = plt.subplots(figsize=(6.5, 5.0))
     if not hw_names:
         return fig
-    bar_w = 0.8 / len(algorithms)
-    alg_color = algorithm_colors(algorithms)
+    present = [algorithm for algorithm in algorithms if any(algorithm in budget for _hw, budget, _base in entries)]
+    n_algorithms = len(present)
+    triplet_w = 0.8 / n_algorithms
+    bar_w = 0.8 * triplet_w / 3
     max_total = 0.0
     for i, _hw in enumerate(hw_names):
-        for j, algorithm in enumerate(algorithms):
+        for j, algorithm in enumerate(present):
             if algorithm not in entries[i][1]:
                 continue
-            pos = i + (j - (len(algorithms) - 1) / 2) * bar_w
-            total = draw_runtime_bar(
-                BarCtx(ax, pos, bar_w, entries[i][1][algorithm], alg_color[algorithm], entries[i][2].get(algorithm))
+            pos = i + (j - (n_algorithms - 1) / 2) * triplet_w
+            total = draw_runtime_triplet(
+                TripletCtx(ax, pos, bar_w, entries[i][1][algorithm], entries[i][2].get(algorithm), algorithm)
             )
             if algorithm in entries[i][2]:
                 max_total = max(max_total, entries[i][2][algorithm][2])
@@ -242,15 +245,15 @@ def runtime_stack_figure(
         return fig
     ax.set_xticks(range(len(hw_names)))
     ax.set_xticklabels(hw_names, fontsize=9)
-    ax.set_xlim(-0.6, len(hw_names) - 0.4)
-    ax.set_ylim(0, max_total * 1.12)
+    ax.set_xlim(-0.45, len(hw_names) - 1 + 0.45)
+    ax.set_ylim(0, max_total * 1.15)
     ax.set_ylabel("runtime (s)")
-    ax.set_xlabel("hardware")
+    ax.set_xlabel("hardware", labelpad=25)
     handles = [
-        Patch(facecolor=alg_color[alg], label=alg) for alg in algorithms if any(alg in b for _h, b, _p in entries)
+        Patch(facecolor=color, edgecolor="k", linewidth=0.5, label=segment) for segment, color in RUNTIME_SEGMENTS
     ]
-    handles.append(Line2D([], [], marker="o", color="w", mfc="k", mec="k", label="measured (0 delay)"))
-    ax.legend(handles=handles, loc="upper left")
+    handles.append(Line2D([], [], marker="o", color="k", mfc="k", mec="k", label="measured (0 delay)"))
+    ax.legend(handles=handles, loc="upper left", frameon=True)
     fig.suptitle(f"Runtime budget: {scenario_name(setup, x, y, z)}")
     return fig
 
