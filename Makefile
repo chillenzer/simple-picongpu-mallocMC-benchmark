@@ -163,7 +163,7 @@ endif
 endif
 
 .PHONY: all build check clean distclean results summary figures \
-	figures-sweeps figures-runtime-stack picongpu-src mallocmc-src env-check \
+	figures-sweeps figures-runtime-stack picongpu-src mallocmc-src env-check env \
 	runs full clean-runs
 
 # --- per (example, algorithm) harness targets ------------------------------
@@ -333,6 +333,13 @@ check:
 		"$$(python3 config.py list build.extra_cmake_flags | tr '\n' ' ' | sed 's/ *$$//')"
 
 # --- analysis targets --------------------------------------------------------
+
+# Create the locked analysis environment (conda-lock.yml, generated from the
+# environment.yml recipe) with micromamba. Requires the `micromamba` binary
+# on PATH (see the README, "Reproducing the analysis"). Re-running is safe:
+# it recreates the environment from the same lock.
+env:
+	micromamba create -n mallocmc-bench -f conda-lock.yml -y
 
 results:
 	$(PY) analysis/compute_results.py --output $(RESULTS)

@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
+# SPDX-License-Identifier: MIT
+#
+# Recipe of the analysis environment (see the README, "Reproducing the
+# analysis"). The rigorous, content-hashed lock of this recipe is
+# conda-lock.yml; refresh both together (edit recipe, run conda-lock,
+# review the diff).
+name: mallocmc-bench
+channels:
+  - conda-forge
+dependencies:
+  - python 3.14
+  - matplotlib >=3.11
+  - numpy >=2.5
+  - pandas >=3.0
+  - scipy >=1.18
+  - h5py >=3.16
+  - seaborn >=0.13

@@ -319,6 +319,37 @@ python3 analysis/summarize_results.py
 python3 analysis/plot_foil_lct.py
 ```
 
+### Reproducing the analysis
+
+The Python dependencies of the analysis are declared in
+`requirements.txt` (permissive manifest, lowest verified versions) and
+rigorously pinned, including the Python version, by the content-hashed
+`conda-lock.yml` lock of the `environment.yml` recipe.
+
+- Primary path (micromamba, a single static binary from
+  <https://micro.mamba.pm/api/micromamba/linux-64/latest>, no root
+  needed):
+
+  ```
+  make env                                   # create the locked environment
+  micromamba activate mallocmc-bench
+  make                                       # ...then run the analysis
+  ```
+
+  (or `make PY=$(micromamba prefix -n mallocmc-bench)/bin/python3`).
+  If you have packages in your pip *user* site (`pip install --user`),
+  export `PYTHONNOUSERSITE=1` so the locked environment's versions take
+  precedence.
+- Refreshing the lock (after editing `environment.yml`):
+  `pip install conda-lock`, then
+  `conda-lock lock -f environment.yml -p linux-64 --micromamba`; review
+  and commit both `environment.yml` and `conda-lock.yml` together.
+- pip path (no lock): `pip install -r requirements.txt`.
+- This covers the Python analysis only. The C++ build harness has its own
+  dependencies (CMake, compilers; the PIConGPU / mallocMC pins in
+  `config.json`), and the pre-commit hooks are independently pinned in
+  `.pre-commit-config.yaml`.
+
 Notes:
 
 - The fits are bounded `scipy.optimize.curve_fit` of the 1-D model
@@ -334,7 +365,8 @@ Notes:
   compute the statistics and the fits only from runs of that configuration;
   the stored runs always stay complete.
 - The Python analysis needs `numpy`, `pandas`, `scipy`, `matplotlib`,
-  `seaborn`, and `h5py` (`pip install numpy pandas scipy matplotlib seaborn h5py`).
+  `seaborn`, and `h5py`; see "Reproducing the analysis" for the declared
+  and locked versions.
 - The comparison figures (`foil_lct.pdf`, `kelvin_helmholtz.pdf`) use the
   no-delay runs of *every* hardware: the legacy per-cluster
   `output/<cluster>/` directories plus the (0, 0) baseline runs of each

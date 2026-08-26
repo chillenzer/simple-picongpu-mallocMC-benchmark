@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
+# SPDX-License-Identifier: MIT
+#
+# Python dependencies of the analysis (analysis/*.py, config.py), at the
+# lowest versions verified to work together. This is the permissive
+# manifest; the strict, content-hashed lock of a complete environment
+# (including the Python version) is conda-lock.yml, built from the
+# environment.yml recipe. See the README, "Reproducing the analysis".
+# Verified environment: Python 3.14.5, 2026-08-26.
+matplotlib>=3.11
+numpy>=2.5
+pandas>=3.0
+scipy>=1.18
+h5py>=3.16
+seaborn>=0.13
