@@ -12,16 +12,19 @@ the left and the free delay sweep (malloc delay 0) on the right, each axis
 titled after the swept delay, all axes sharing the x- and y-axes and
 drawing each scenario (setup, grid) with the same colour and marker, on
 every axis that carries it. Each swept curve shows the median with IQR
-error bars and overlays the fitted model
+error bars and overlays the
+fitted model
 (solid), the extrapolation to A_malloc = A_free = 0 (dashed) and, for
 two-operation fits, the intermediate extrapolation that keeps only the held
 operation's native cost (dotted); the gaps at the smallest delay are marked
 by a short line. Each fit line carries a transparent sleeve, the
 25/75-percentile envelope of the model evaluated at 512 parameter draws
 from the fitted parameters and their covariance (a bootstrap, since the
-parameters enter the model non-linearly). The figure is saved to
-`figures/sweeps-<machine>.pdf`; by default every machine gets its figure,
-`--machine` restricts the run to one.
+parameters enter the model non-linearly). Where a scenario has a combined
+(shared-parameter) fit across its algorithms, the combined fit's model for
+the plotted algorithm is drawn as a heavy line with a wider sleeve. The
+figure is saved to `figures/sweeps-<machine>.pdf`; by default every machine
+gets its figure, `--machine` restricts the run to one.
 """
 
 from __future__ import annotations
@@ -46,6 +49,7 @@ from results_io import (
     load_results,
     machine_titles,
     read_fit_covs,
+    read_shared_fit_covs,
     read_table,
     sweep_machine_labels,
 )
@@ -95,7 +99,10 @@ class Fit2d(NamedTuple):
     """2-D Amdahl fit (both delays vary); the delays are in seconds.
 
     `cov` is the `(fit_params, pcov)` pair used for the bootstrap sleeves,
-    or None when the covariance is unavailable.
+    or None when the covariance is unavailable. `block` is the fit's
+    position in the combined fit's parameter vector (-1 for individual
+    fits), so the shared fit's sleeve can read its (A, s0) pair out of
+    the 11-parameter covariance.
     """
 
     W: float
@@ -106,6 +113,7 @@ class Fit2d(NamedTuple):
     m0: float
     f0: float
     cov: tuple | None
+    block: int = -1
 
 
 class Curve(NamedTuple):
@@ -136,19 +144,24 @@ class Cluster(NamedTuple):
     series_markers: dict
     series_colors: dict
     fits_by_key: dict
+    shared_fits: dict
 
 
 class MachineData(NamedTuple):
     """One machine's drawing data, as read from the results file.
 
     `covs` is this machine's (setup, algorithm, grid label) to
-    (fit_params, pcov) map (the `fits/cov/` entries).
+    (fit_params, pcov) map (the `fits/cov/` entries); `shared` the
+    machine's `shared_fits` rows and `shared_covs` its `(setup, grid
+    label)` to (fit_params, pcov) map (the `shared_fit_cov/` entries).
     """
 
     machine: str
     stats: pd.DataFrame
     fits: pd.DataFrame
     covs: dict
+    shared: pd.DataFrame
+    shared_covs: dict
 
 
 _ModelFn = Callable[[np.ndarray], np.ndarray]
@@ -326,6 +339,103 @@ def collect_fits(fits: pd.DataFrame, covs: dict) -> dict[tuple, Fit1d | Fit2d]:
                 cov=cov,
             )
     return fits_by_key
+
+
+def collect_shared_fits(shared: pd.DataFrame, covs: dict) -> dict:
+    """Collect the usable 2-D combined fits, keyed by (setup, algorithm, grid).
+
+    The per-fit `(fit_params, pcov)` pair comes from the `shared_fit_cov/`
+    groups of the results file; the fit's position in the combined fit's
+    parameter vector (its `block`) is the row's position within its
+    scenario, in table order. Rows without a complete fit are omitted.
+
+    Args:
+        shared: the `shared_fits` table, restricted to one machine.
+        covs: this machine's `shared_fit_cov/` entries, keyed by (setup,
+        grid label).
+
+    Returns:
+        dict[tuple, Fit2d]: the usable combined fits, keyed by group key.
+
+    """
+    fits_by_key: dict = {}
+    seq: dict = {}
+    for _, row in shared.iterrows():
+        scen = _group_key((row["setup"], row["x"], row["y"], row["z"]))
+        block = seq.get(scen, 0)
+        seq[scen] = block + 1
+        if row["model"] != "2d":
+            continue
+        if not all(pd.notna(row[k]) for k in ("W", "N_malloc", "N_free", "A_malloc", "A_free", "m0_ns", "f0_ns")):
+            continue
+        cov = covs.get((row["setup"], grid_label(row["x"], row["y"], row["z"])))
+        key = (row["setup"], row["algorithm"], *scen[1:])
+        fits_by_key[key] = Fit2d(
+            W=float(row["W"]),
+            n_malloc=float(row["N_malloc"]),
+            n_free=float(row["N_free"]),
+            a_malloc=float(row["A_malloc"]),
+            a_free=float(row["A_free"]),
+            m0=float(row["m0_ns"]) * 1e-9,
+            f0=float(row["f0_ns"]) * 1e-9,
+            cov=cov,
+            block=block,
+        )
+    return fits_by_key
+
+
+def draw_shared_fit(
+    cluster: Cluster,
+    x: np.ndarray,
+    key: tuple,
+    params: Fit2d,
+) -> None:
+    """Draw one curve's combined (cross-algorithm) fit over its x range.
+
+    The heavy line is the combined fit's model for this algorithm: the
+    shared W and call counts plus this algorithm's (A, s0) pair from the
+    combined fit, with the usual bootstrap sleeve when the covariance is
+    stored.
+
+    Args:
+        cluster: the per-cluster drawing context.
+        x: the curve's x values (delays in nanoseconds).
+        key: the curve's (setup, grid) group key (for the colour).
+        params: the combined fit's parameters for this algorithm.
+
+    """
+    x_data = x[x > 0]
+    if not (len(x_data) > 1 and float(x_data[-1]) > float(x_data[0])):
+        return
+    x_ns = np.geomspace(float(x_data[0]), float(x_data[-1]), 100)
+    x_s = x_ns * 1e-9
+    held_arr = np.zeros_like(x_s)
+    k = params.block
+    p7 = (
+        params.W,
+        params.n_malloc,
+        params.n_free,
+        params.a_malloc,
+        params.a_free,
+        params.m0,
+        params.f0,
+    )
+    model = amdahl.model_2d(x_s, held_arr, p7) if cluster.short == "malloc" else amdahl.model_2d(held_arr, x_s, p7)
+    if params.cov is not None:
+        fp, pcov = params.cov
+
+        def fn(p: np.ndarray) -> np.ndarray:
+            block = (p[0], p[1], p[2], p[3 + 4 * k], p[4 + 4 * k], p[5 + 4 * k], p[6 + 4 * k])
+            if cluster.short == "malloc":
+                return amdahl.model_2d(x_s, held_arr, block)
+            return amdahl.model_2d(held_arr, x_s, block)
+
+        n_blocks = (len(fp) - 3) // 4
+        lower = [0.0, 0.0, 0.0] + [0.0, 0.0, amdahl.EPS_S, amdahl.EPS_S] * n_blocks
+        band = amdahl.bootstrap_band(x_s, fn, fp, pcov, lower=lower)
+        if band is not None:
+            cluster.ax.fill_between(x_ns, band[0], band[1], color=cluster.series_colors[key], alpha=0.15)
+    cluster.ax.plot(x_ns, model, color=cluster.series_colors[key], linewidth=2.4, alpha=0.9, label="shared fit")
 
 
 def draw_fit_2d(
@@ -541,9 +651,15 @@ def draw_series(cluster: Cluster, result: pd.DataFrame, name: tuple) -> bool:
     # 2-D fit applies to either direction.
     if params is not None and isinstance(params, Fit1d) and params.direction != cluster.short:
         params = None
-    if params is None:
-        return False
-    return draw_model_lines(cluster, x, cluster.series_colors[key], params, float(name[5]) * 1e-9)
+    has_2d = False
+    if params is not None:
+        has_2d = draw_model_lines(cluster, x, cluster.series_colors[key], params, float(name[5]) * 1e-9)
+    # The combined fit of the scenario (shared W and call counts, this
+    # algorithm's Amdahl terms) is drawn over the same x range.
+    shared = cluster.shared_fits.get(_group_key(name[:5]))
+    if shared is not None:
+        draw_shared_fit(cluster, x, key, shared)
+    return has_2d
 
 
 def plot_delay_axis(
@@ -571,8 +687,16 @@ def plot_delay_axis(
     secondary = FREE_DELAY if x_delay == MALLOC_DELAY else MALLOC_DELAY
     short = "malloc" if x_delay == MALLOC_DELAY else "free"
     secondary_short = "free" if secondary == FREE_DELAY else "malloc"
-    fits_by_key = collect_fits(data.fits, data.covs)
-    cluster = Cluster(ax, x_delay, short, secondary_short, series_markers, series_colors, fits_by_key)
+    cluster = Cluster(
+        ax,
+        x_delay,
+        short,
+        secondary_short,
+        series_markers,
+        series_colors,
+        collect_fits(data.fits, data.covs),
+        collect_shared_fits(data.shared, data.shared_covs),
+    )
     # One curve per (setup, algorithm, grid, held delay): the x-axis is
     # `x_delay`.
     has_2d = False
@@ -644,12 +768,15 @@ def multi_algorithm_figure(
     """
     stats = data.stats
     fits = data.fits
+    shared = data.shared
     sub_data = {
         algorithm: MachineData(
             machine=data.machine,
             stats=stats[stats["algorithm"] == algorithm],
             fits=fits[fits["algorithm"] == algorithm],
             covs=data.covs,
+            shared=shared[shared["algorithm"] == algorithm],
+            shared_covs=data.shared_covs,
         )
         for algorithm in algorithms
     }
@@ -775,9 +902,13 @@ def main(*, machine: str | None = None, show: bool = False, results: Path = RESU
         group_stats = read_table(file, "group_stats")
         fits = read_table(file, "fits")
         covs = read_fit_covs(file)
+        shared_fits = read_table(file, "shared_fits") if "shared_fits" in file else pd.DataFrame()
+        shared_covs = read_shared_fit_covs(file)
         algorithms = algorithm_order(file)
         sweep = sweep_machine_labels(file)
         titles = machine_titles(file)
+    if "machine" not in shared_fits:
+        shared_fits = pd.DataFrame(columns=["machine", "algorithm"])
     machines = [m for m in sweep if m in _machines_with_delay_runs(runs)]
     if machine is not None:
         if machine not in machines:
@@ -793,6 +924,8 @@ def main(*, machine: str | None = None, show: bool = False, results: Path = RESU
             stats=group_stats[group_stats["machine"] == m].drop(columns=["machine"]),
             fits=fits[fits["machine"] == m].drop(columns=["machine"]),
             covs={key[1:]: value for key, value in covs.items() if key[0] == m},
+            shared=shared_fits[shared_fits["machine"] == m] if not shared_fits.empty else pd.DataFrame(),
+            shared_covs={key[1:]: value for key, value in shared_covs.items() if key[0] == m},
         )
         fig = machine_figure(titles.get(m, m), data, algorithms)
         fig.savefig(FIGURES / f"sweeps-{m}.pdf")

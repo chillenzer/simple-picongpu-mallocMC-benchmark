@@ -43,6 +43,7 @@ from results_io import (
     grid_label,
     no_delay_mask,
     particle_memory_gb,
+    scenario_key,
     write_results,
 )
 from run_logs import FREE_DELAY, GROUP_KEYS, MALLOC_DELAY, parse_logs
@@ -91,16 +92,51 @@ FITS_COLUMNS = [
     "n_runs",
     "model",
     "W",
+    "W_err",
     "T0",
     "r2",
     "N_malloc",
+    "N_malloc_err",
     "A_malloc",
     "m0_ns",
     "f_malloc",
     "f_malloc_err",
     "N_free",
+    "N_free_err",
     "A_free",
     "f0_ns",
+    "f_free",
+    "f_free_err",
+    "note",
+]
+# One row per (scenario, algorithm) of a combined (shared-parameter) fit;
+# the shared-parameter columns are repeated on every row of the scenario.
+SHARED_FITS_COLUMNS = [
+    "machine",
+    "setup",
+    "x",
+    "y",
+    "z",
+    "algorithm",
+    "n_runs",
+    "model",
+    "W",
+    "W_err",
+    "N_malloc",
+    "N_malloc_err",
+    "N_free",
+    "N_free_err",
+    "r2",
+    "A_malloc",
+    "A_malloc_err",
+    "A_free",
+    "A_free_err",
+    "m0_ns",
+    "m0_err_ns",
+    "f0_ns",
+    "f0_err_ns",
+    "f_malloc",
+    "f_malloc_err",
     "f_free",
     "f_free_err",
     "note",
@@ -331,14 +367,17 @@ def fit_one_group(m: pd.Series, f: pd.Series, runtimes: pd.Series, c_a: float | 
         return {
             "model": "2d",
             "W": res["W"],
+            "W_err": res["W_err"],
             "T0": res["T0"],
             "r2": res["r2"],
             "N_malloc": res["N_m"],
+            "N_malloc_err": res["N_m_err"],
+            "N_free": res["N_f"],
+            "N_free_err": res["N_f_err"],
             "A_malloc": res["A_m"],
             "m0_ns": _to_ns(res["m0"]),
             "f_malloc": res["f_malloc"],
             "f_malloc_err": res["f_malloc_err"],
-            "N_free": res["N_f"],
             "A_free": res["A_f"],
             "f0_ns": _to_ns(res["f0"]),
             "f_free": res["f_free"],
@@ -353,6 +392,7 @@ def fit_one_group(m: pd.Series, f: pd.Series, runtimes: pd.Series, c_a: float | 
         row = {
             "model": f"1d-{varying}",
             "W": res["W"],
+            "W_err": res["W_err"],
             "T0": res["T0"],
             "r2": res["r2"],
         }
@@ -360,6 +400,7 @@ def fit_one_group(m: pd.Series, f: pd.Series, runtimes: pd.Series, c_a: float | 
             row.update(
                 {
                     "N_malloc": res["N"],
+                    "N_malloc_err": res["N_err"],
                     "A_malloc": res["A"],
                     "m0_ns": _to_ns(res["s0"]),
                     "f_malloc": res["f"],
@@ -370,6 +411,7 @@ def fit_one_group(m: pd.Series, f: pd.Series, runtimes: pd.Series, c_a: float | 
             row.update(
                 {
                     "N_free": res["N"],
+                    "N_free_err": res["N_err"],
                     "A_free": res["A"],
                     "f0_ns": _to_ns(res["s0"]),
                     "f_free": res["f"],
@@ -405,14 +447,17 @@ def fit_sweep(runs: pd.DataFrame, c_a: float | None = None) -> tuple[pd.DataFram
     no_fit = {
         "model": None,
         "W": np.nan,
+        "W_err": np.nan,
         "T0": np.nan,
         "r2": np.nan,
         "N_malloc": np.nan,
+        "N_malloc_err": np.nan,
         "A_malloc": np.nan,
         "m0_ns": np.nan,
         "f_malloc": np.nan,
         "f_malloc_err": np.nan,
         "N_free": np.nan,
+        "N_free_err": np.nan,
         "A_free": np.nan,
         "f0_ns": np.nan,
         "f_free": np.nan,
@@ -438,6 +483,127 @@ def fit_sweep(runs: pd.DataFrame, c_a: float | None = None) -> tuple[pd.DataFram
             covs.append(((key[0], key[1], key[2], grid_label(key[3], key[4], key[5])), cov[0], cov[1]))
         rows.append(row)
     return pd.DataFrame(rows)[FITS_COLUMNS], covs
+
+
+def _shared_p0(row: pd.Series) -> dict[str, float]:
+    """Return the individual fit's parameters in seconds, keyed for the combined fit.
+
+    Args:
+        row: one row of the `fits` table.
+
+    Returns:
+        dict[str, float]: the parameters in seconds a combined fit accepts
+        as initial values (W, N_m, N_f, A_m, A_f, m0, f0); empty when the
+        row has no usable values.
+
+    """
+    if not row["model"]:
+        return {}
+    params = {"W": row["W"]}
+    if row["model"] == "2d":
+        params.update({"N_m": row["N_malloc"], "N_f": row["N_free"], "A_m": row["A_malloc"], "A_f": row["A_free"]})
+    elif row["model"] == "1d-malloc":
+        params.update({"N_m": row["N_malloc"], "A_m": row["A_malloc"]})
+    else:
+        params.update({"N_f": row["N_free"], "A_f": row["A_free"]})
+    for source, target in (("m0_ns", "m0"), ("f0_ns", "f0")):
+        if not pd.isna(row[source]):
+            params[target] = float(row[source]) * 1e-9
+    return {key: float(value) for key, value in params.items() if not pd.isna(value)}
+
+
+def fit_sweep_combined(
+    runs: pd.DataFrame,
+    fits: pd.DataFrame,
+    order: list[str],
+) -> tuple[pd.DataFrame, list[tuple[tuple, tuple, tuple]]]:
+    """Fit every (machine, setup, grid) scenario across all of its algorithms.
+
+    The shared parameters -- W and the malloc/free call counts -- are fit
+    once on the pooled data of the scenario's algorithms, while each
+    algorithm keeps its own native costs and fade scales. Scenarios with
+    fewer than two algorithms (or fewer than 3 pooled runs, or no varying
+    delay) get no row. The individual fits' parameters seed the initial
+    guess.
+
+    Args:
+        runs: the parsed runs table (the sweep machines).
+        fits: the `fit_sweep` results table.
+        order: the algorithms' figure order (config.json).
+
+    Returns:
+        tuple: (the `shared_fits` table, one row per scenario and
+        algorithm, the (key, fit_params, pcov) entries to store under
+        `shared_fit_cov/`).
+
+    """
+    indexed: dict[tuple, pd.Series] = {
+        (row["machine"], row["algorithm"], scenario_key(row["setup"], row["x"], row["y"], row["z"])): row
+        for _, row in fits.iterrows()
+        if pd.notna(row["model"])
+    }
+    rows = []
+    covs = []
+    for key, frame in runs.groupby(["machine", "setup", "x", "y", "z"], dropna=False):
+        machine, setup, x, y, z = key
+        grp = frame.dropna(subset=[MALLOC_DELAY, FREE_DELAY, RUN_TIME])
+        if grp.shape[0] < 3 or len(dict.fromkeys(grp["algorithm"])) < 2:
+            continue
+        if grp[MALLOC_DELAY].nunique() < 2 and grp[FREE_DELAY].nunique() < 2:
+            continue
+        scenario = scenario_key(setup, x, y, z)
+        p0 = {}
+        for a in dict.fromkeys(grp["algorithm"]):
+            row = indexed.get((machine, a, scenario))
+            if row is not None:
+                p0[a] = _shared_p0(row)
+        res = amdahl.fit_combined(
+            amdahl.CombinedSweep(grp[MALLOC_DELAY], grp[FREE_DELAY], grp[RUN_TIME], grp["algorithm"]),
+            order=order,
+            p0=p0 or None,
+        )
+        base = {
+            "machine": machine,
+            "setup": setup,
+            "x": x,
+            "y": y,
+            "z": z,
+            "n_runs": len(grp),
+            "model": res["model"],
+            "W": res["W"],
+            "W_err": res["W_err"],
+            "N_malloc": res["N_malloc"],
+            "N_malloc_err": res["N_malloc_err"],
+            "N_free": res["N_free"],
+            "N_free_err": res["N_free_err"],
+            "r2": res["r2"],
+            "note": "; ".join(res["warnings"]) or None,
+        }
+        for a in res["order"]:
+            d = res["per_algorithm"][a]
+            rows.append(
+                {
+                    **base,
+                    "algorithm": a,
+                    "A_malloc": d["A_malloc"],
+                    "A_malloc_err": d["A_malloc_err"],
+                    "A_free": d["A_free"],
+                    "A_free_err": d["A_free_err"],
+                    "m0_ns": _to_ns(d["m0"]),
+                    "m0_err_ns": _to_ns(d["m0_err"]),
+                    "f0_ns": _to_ns(d["f0"]),
+                    "f0_err_ns": _to_ns(d["f0_err"]),
+                    "f_malloc": d["f_malloc"],
+                    "f_malloc_err": d["f_malloc_err"],
+                    "f_free": d["f_free"],
+                    "f_free_err": d["f_free_err"],
+                }
+            )
+        if res["fit_params"] is not None:
+            covs.append(((machine, setup, grid_label(x, y, z)), np.asarray(res["fit_params"]), np.asarray(res["pcov"])))
+    if not rows:
+        return _empty_table(SHARED_FITS_COLUMNS), []
+    return pd.DataFrame(rows)[SHARED_FITS_COLUMNS], covs
 
 
 def baseline_stats(runs: pd.DataFrame) -> pd.DataFrame:
@@ -647,11 +813,13 @@ def main(output: Path, configuration: str | None = None) -> None:
     runs, sweep_labels = read_all_runs(sweep, legacy)
     sweep_runs = runs[runs["machine"].isin(sweep_labels)]
     fit_covs: list[tuple[tuple, tuple, tuple]] = []
+    shared_covs: list[tuple[tuple, tuple, tuple]] = []
     if runs.empty:
         tables = {
             "runs": runs,
             "group_stats": _empty_table(GROUP_STATS_COLUMNS),
             "fits": _empty_table(FITS_COLUMNS),
+            "shared_fits": _empty_table(SHARED_FITS_COLUMNS),
             "baselines": _empty_table(BASELINES_COLUMNS),
             "foil": _empty_table(FOIL_COLUMNS),
             "foil_pvalue": _empty_table(FOIL_PVALUE_COLUMNS),
@@ -671,6 +839,9 @@ def main(output: Path, configuration: str | None = None) -> None:
             "khi": khi_stats(runs),
         }
         tables["fits"], fit_covs = fit_sweep(analyzed)
+        tables["shared_fits"], shared_covs = fit_sweep_combined(
+            analyzed, tables["fits"], [str(algorithm) for algorithm in config.get("algorithms", [])]
+        )
     source_parts = [f"{label}: {d}" for label in sweep for d in sweep[label]["dirs"]] + [
         f"{hardware} ({log_dir.name}): {log_dir}" for log_dir, hardware in legacy.items()
     ]
@@ -682,7 +853,7 @@ def main(output: Path, configuration: str | None = None) -> None:
         "machine_titles": "; ".join(f"{label}: {sweep[label]['title']}" for label in sweep_labels),
         "algorithm_order": ",".join(str(algorithm) for algorithm in config.get("algorithms", [])),
     }
-    write_results(output, tables, attrs, fit_covs)
+    write_results(output, tables, attrs, fit_covs, shared_covs)
 
 
 if __name__ == "__main__":

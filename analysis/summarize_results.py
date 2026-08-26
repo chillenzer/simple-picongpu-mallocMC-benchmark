@@ -5,8 +5,10 @@ SPDX-License-Identifier: MIT
 
 Reads `output/results.h5` (the output of `compute_results.py`) and prints
 the summary tables: per machine, the parsed runs (with `--raw`) and the
-group runtime statistics; the Amdahl fit tables and the fraction summary;
-the no-delay runtimes; and the FoilLCT / KelvinHelmholtz figure metadata.
+group runtime statistics; the Amdahl fit tables, a comparison of the
+shared-parameter (combined) fits against the individual fits, and the
+fraction summary; the no-delay runtimes; and the FoilLCT /
+KelvinHelmholtz figure metadata.
 """
 
 from __future__ import annotations
@@ -16,7 +18,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
-from results_io import RESULTS, load_results, no_delay_mask, read_table
+from results_io import RESULTS, load_results, no_delay_mask, read_table, scenario_key, scenario_name
 
 BANNER = "+" * 35
 
@@ -70,6 +72,90 @@ def print_fraction_summary(fits: pd.DataFrame) -> None:
                 print(f"      note: {r.note}")
 
 
+def _fmt_param(value: float, err: float) -> str:
+    """Format one fitted value with its standard error, or `?` if unavailable.
+
+    Args:
+        value: the fitted value.
+        err: the standard error.
+
+    Returns:
+        str: `value +/- err`, the bare value, or `?` when unavailable.
+
+    """
+    if pd.isna(value):
+        return "?"
+    if pd.isna(err):
+        return f"{value:.3g}"
+    return f"{value:.3g} +/- {err:.2g}"
+
+
+def _compare_params(srow: pd.Series, irow: pd.Series, name: str) -> str:
+    """One algorithm's fitted value against the shared value, with agreement.
+
+    Args:
+        srow: a row carrying the shared values (W, N_malloc, N_free).
+        irow: a row carrying the algorithm's individual values.
+        name: the parameter name ("W", "N_malloc", or "N_free").
+
+    Returns:
+        str: `value +/- err (d +/-x.x%, overlap|separate)`.
+
+    """
+    svalue, serr = srow[name], srow[f"{name}_err"]
+    ivalue, ierr = irow[name], irow[f"{name}_err"]
+    if pd.notna(ivalue) and svalue and abs(svalue) >= 0.01 * abs(ivalue):
+        diff = f"d {100 * (ivalue - svalue) / abs(svalue):+.1f}%"
+    else:
+        diff = "d ?"
+    ci = "? CI" if pd.isna(ierr) or pd.isna(serr) else "overlap" if abs(ivalue - svalue) <= ierr + serr else "separate"
+    return f"{_fmt_param(ivalue, ierr)} ({diff}, {ci})"
+
+
+def print_shared_fit_summary(shared_fits: pd.DataFrame, fits: pd.DataFrame) -> None:
+    """Print the shared-parameter fit of every multi-algorithm scenario.
+
+    For each (machine, setup, grid) scenario with more than one algorithm,
+    the shared values of W, N_malloc, and N_free are compared against each
+    algorithm's individual fit: the fit values with their standard errors,
+    the relative difference from the shared value, and whether the two
+    1-sigma intervals overlap.
+
+    Args:
+        shared_fits: the `shared_fits` table of the results file.
+        fits: the individual fits table of the results file.
+
+    """
+    if shared_fits.empty:
+        return
+
+    def key(r: pd.Series) -> tuple:
+        return (r["machine"], scenario_key(r["setup"], r["x"], r["y"], r["z"]), r["algorithm"])
+
+    shared: dict[tuple, list[pd.Series]] = {}
+    for _, r in shared_fits.iterrows():
+        shared.setdefault(key(r)[:2], []).append(r)
+    individuals = {key(r): r for _, r in fits.iterrows() if pd.notna(r["model"])}
+    print("\nShared-parameter fit (W, N_malloc, N_free fit across the algorithms):")
+    for (machine, scen), rows in shared.items():
+        ref = rows[0]
+        print(
+            f"  {machine:<14s} {scenario_name(ref['setup'], ref['x'], ref['y'], ref['z']):<24s} "
+            f"[{ref['model']}, {ref['n_runs']} runs, r2 = {ref['r2']:.3f}]"
+        )
+        for name in ("W", "N_malloc", "N_free"):
+            parts = [f"shared = {_fmt_param(ref[name], ref[f'{name}_err'])}"]
+            for a in rows:
+                ind = individuals.get((machine, scen, a["algorithm"]))
+                if ind is None or pd.isna(ind[name]):
+                    parts.append(f"{a['algorithm']} = --")
+                else:
+                    parts.append(f"{a['algorithm']} = {_compare_params(ref, ind, name)}")
+            print(f"    {name}: " + " | ".join(parts))
+        if ref["note"]:
+            print(f"    note: {ref['note']}")
+
+
 def main(*, results: Path = RESULTS, raw: bool = False) -> int:
     """Print the summary tables of one results file.
 
@@ -90,6 +176,7 @@ def main(*, results: Path = RESULTS, raw: bool = False) -> int:
         runs = read_table(file, "runs")
         group_stats = read_table(file, "group_stats")
         fits = read_table(file, "fits")
+        shared_fits = read_table(file, "shared_fits") if "shared_fits" in file else pd.DataFrame()
         foil = read_table(file, "foil")
         foil_pvalue = read_table(file, "foil_pvalue")
         khi = read_table(file, "khi")
@@ -106,6 +193,7 @@ def main(*, results: Path = RESULTS, raw: bool = False) -> int:
         if len(stats):
             print_table(f"Group statistics: {label}", stats.to_string(index=False))
     print_table("Fits", fits.to_string(index=False, float_format=lambda v: f"{v:10.3g}"))
+    print_shared_fit_summary(shared_fits, fits)
     print_fraction_summary(fits)
     print_table("No-delay runtimes", runs[no_delay_mask(runs)].to_string(index=False))
     print_table(

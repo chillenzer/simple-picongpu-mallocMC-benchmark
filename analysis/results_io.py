@@ -208,6 +208,7 @@ def write_results(
     tables: dict[str, pd.DataFrame],
     attrs: dict[str, Any] | None = None,
     fit_covs: list[tuple[tuple, np.ndarray, np.ndarray]] | None = None,
+    shared_fit_covs: list[tuple[tuple, np.ndarray, np.ndarray]] | None = None,
 ) -> None:
     """Write all result tables (and the fit covariances) to a fresh HDF5 file.
 
@@ -217,6 +218,8 @@ def write_results(
         attrs: the file's top-level attributes.
         fit_covs: per fitted group, (key, fit_params, pcov); the key is the
         (machine, setup, algorithm, grid label) group path.
+        shared_fit_covs: per combined-fit scenario, (key, fit_params,
+        pcov); the key is the (machine, setup, grid label) group path.
 
     """
     path = Path(path)
@@ -228,6 +231,8 @@ def write_results(
             _write_table(file, name, table)
         for key, fit_params, pcov in fit_covs or []:
             write_fit_cov(file, key, fit_params, pcov)
+        for key, fit_params, pcov in shared_fit_covs or []:
+            write_shared_fit_cov(file, key, fit_params, pcov)
 
 
 def load_results(path: str | Path) -> h5py.File:
@@ -350,8 +355,52 @@ def read_fit_covs(file: h5py.File) -> dict[tuple, tuple[np.ndarray, np.ndarray]]
         key, the (fit_params, pcov) pair.
 
     """
+    return _read_covs(file, "fits/cov")
+
+
+def write_shared_fit_cov(file: h5py.File, key: tuple, fit_params: np.ndarray, pcov: np.ndarray) -> None:
+    """Store one combined-fit scenario's parameters and covariance.
+
+    Args:
+        file: an opened results file (in write mode).
+        key: the (machine, setup, grid label) group path.
+        fit_params: the fitted parameter vector.
+        pcov: the parameter covariance matrix.
+
+    """
+    group = file.create_group("shared_fit_cov/" + "/".join(map(str, key)))
+    group.create_dataset("fit_params", data=np.asarray(fit_params, dtype=float))
+    group.create_dataset("pcov", data=np.asarray(pcov, dtype=float))
+
+
+def read_shared_fit_covs(file: h5py.File) -> dict[tuple, tuple[np.ndarray, np.ndarray]]:
+    """Read every stored combined fit's parameters and covariance.
+
+    Args:
+        file: an opened results file.
+
+    Returns:
+        dict[tuple, tuple]: per (machine, setup, grid label) key, the
+        (fit_params, pcov) pair.
+
+    """
+    return _read_covs(file, "shared_fit_cov")
+
+
+def _read_covs(file: h5py.File, root_name: str) -> dict[tuple, tuple[np.ndarray, np.ndarray]]:
+    """Read every stored fit (or combined fit) parameters and covariance.
+
+    Args:
+        file: an opened results file.
+        root_name: the covariance group's name, e.g. `fits/cov`.
+
+    Returns:
+        dict[tuple, tuple]: per group-path key, the (fit_params, pcov)
+        pair.
+
+    """
     covs: dict[tuple, tuple[np.ndarray, np.ndarray]] = {}
-    root = file.get("fits/cov")
+    root = file.get(root_name)
     if root is None:
         return covs
 

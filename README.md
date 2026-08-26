@@ -118,24 +118,33 @@ The Makefile pins the dependency versions (the `dependencies` section of
   table read/write, the per-fit covariance groups, and the schema helpers
   (grid/scenario labels, the no-delay mask, the particle-memory model).
 - `analysis/amdahl.py` — the Amdahl allocation model, its constrained
-  1-D/2-operation fits, and the bootstrap sleeve (the full model is
+  1-D/2-operation fits (plus the combined fit that shares W and the
+  malloc/free call counts across a scenario's algorithms while each keeps
+  its own Amdahl terms), and the bootstrap sleeve (the full model is
   documented in the module docstring).
 - `analysis/compute_results.py` — the single "numbers" entry point: parses
   the sweep machines' run logs (the `machines` table of `config.json`) and
   the legacy per-cluster `output/<cluster>/` directories (grouped by their
   short hardware name), and computes the group runtime statistics, the
   Amdahl fits of every (machine, example, algorithm, grid) sweep (with the
-  parameter covariances), the zero-delay baselines (sweep machines), and
-  the FoilLCT/KelvinHelmholtz metadata (all no-delay runs, per short
-  hardware name); writes everything to `output/results.h5` and prints
-  nothing.
+  parameter covariances), the combined (shared-parameter) fit of every
+  (machine, example, grid) scenario spanned by at least two algorithms, the
+  zero-delay baselines (sweep machines), and the FoilLCT/KelvinHelmholtz
+  metadata (all no-delay runs, per short hardware name); writes everything
+  to `output/results.h5` and prints nothing.
 - `analysis/summarize_results.py` — prints the summary tables from
-  `output/results.h5` (group statistics, fits, Amdahl fractions, no-delay
-  runtimes, figure metadata; `--raw` adds the parsed runs).
+  `output/results.h5` (group statistics, fits, the combined fit vs the
+  individual fits per scenario, Amdahl fractions, no-delay runtimes, figure
+  metadata; `--raw` adds the parsed runs).
 - `analysis/plot_sweeps.py` — one delay-sweep figure per sweep machine
   (`figures/sweeps-<machine>.pdf`: one row per algorithm, the malloc and
   free delay sweeps side by side, all axes sharing the x- and y-axes,
-  fitted curve + bootstrap sleeve).
+  fitted curve + bootstrap sleeve, and the scenario's combined fit as a
+  heavy line where one exists).
+- `analysis/plot_shared_fits.py` — one forest figure per sweep machine
+  (`figures/sweeps-shared-<machine>.pdf`: one row per (scenario, algorithm),
+  the shared W / N_malloc / N_free values against each algorithm's
+  individual fit, and the individual vs combined A_malloc / A_free).
 - `analysis/plot_runtime_stack.py` — one runtime-budget figure per
   (setup, grid) scenario that has at least one usable fit
   (`figures/runtime-stack-<setup>-<grid>.pdf`: the fitted W/A_malloc/A_free
@@ -290,13 +299,17 @@ figures*, joined by the single HDF5 file `output/results.h5`:
   prints nothing.
 - `summarize_results.py` prints the summary tables from
   `output/results.h5` (per machine: group statistics; the fits and the
-  Amdahl fractions of runtime spent in allocations / frees; the no-delay
+  Amdahl fractions of runtime spent in allocations / frees; the combined
+  (shared-parameter) fit of each multi-algorithm scenario compared
+  algorithm by algorithm against the individual fits; the no-delay
   runtimes; the figure metadata). `--raw` also prints the parsed runs.
 - one script per figure, each reading `output/results.h5` (all take
   `--show` to display the figure in a window): `plot_sweeps.py`
   (`figures/sweeps-<machine>.pdf`, `--machine` for one machine),
-  `plot_runtime_stack.py` (`figures/runtime-stack-<setup>-<grid>.pdf`,
-  `--name` for one scenario), `plot_foil_lct.py` (`figures/foil_lct.pdf`),
+  `plot_shared_fits.py` (`figures/sweeps-shared-<machine>.pdf`, `--machine`
+  for one machine), `plot_runtime_stack.py`
+  (`figures/runtime-stack-<setup>-<grid>.pdf`, `--name` for one scenario),
+  `plot_foil_lct.py` (`figures/foil_lct.pdf`),
   `plot_kelvin_helmholtz.py` (`figures/kelvin_helmholtz.pdf`).
 
 The simplest way to run the whole thing (or any single figure) is the
@@ -308,6 +321,7 @@ make results              # only output/results.h5, from the run logs
 make summary              # only the summary tables
 make figures/foil_lct.pdf # one figure by file name (also:
 make figures/sweeps-hal.pdf # figures/sweeps-<machine>.pdf,
+make figures/sweeps-shared-hal.pdf # figures/sweeps-shared-<machine>.pdf,
 make figures/runtime-stack-FoilLCT-256x1280.pdf
 ```
 
@@ -366,6 +380,14 @@ Notes:
   model `T(m, f) = W + N_m*m + N_f*f + A_m*m0/(m+m0) + A_f*f0/(f+f0)`
   (combination sweep); the full model, the bounds, and the diagonalization
   caveats of the bootstrap are documented in `analysis/amdahl.py`.
+- The combined fit reuses the two-operation model but fits it once over all
+  algorithms of a (machine, example, grid) scenario together: W, N_malloc
+  and N_free are shared across the algorithms while each keeps its own
+  `A_malloc/A_free` and `m0/f0`, so it tests whether one set of baseline and
+  call-count parameters explains every algorithm's sweep. It is fit for
+  every scenario with at least two algorithms and at least one varying
+  delay, and is written to the `shared_fits` table (one row per
+  scenario-algorithm) and the `shared_fit_cov/` groups.
 - Each run is labeled with a `configuration` column (`compile-time`
   per-variant sweep vs `run-time` env-var sweep), so both log layouts can
   be analyzed side by side (pre-rename logs that used `MALLOCMC_SLEEP_TIME`

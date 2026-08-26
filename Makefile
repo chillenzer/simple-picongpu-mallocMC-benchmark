@@ -163,7 +163,7 @@ endif
 endif
 
 .PHONY: all build check clean distclean results summary figures \
-	figures-sweeps figures-runtime-stack picongpu-src mallocmc-src env-check env \
+	figures-sweeps figures-shared figures-runtime-stack picongpu-src mallocmc-src env-check env \
 	runs full clean-runs
 
 # --- per (example, algorithm) harness targets ------------------------------
@@ -408,13 +408,16 @@ results:
 summary: results
 	$(PY) analysis/summarize_results.py --results $(RESULTS)
 
-figures: figures-sweeps figures-runtime-stack \
+figures: figures-sweeps figures-shared figures-runtime-stack \
 	$(FIGDIR)/foil_lct.pdf $(FIGDIR)/kelvin_helmholtz.pdf
 
 # The family targets run the plotting scripts unfiltered (all machines,
 # all scenarios), so they work even when figures/ does not exist yet.
 figures-sweeps: results
 	$(PY) analysis/plot_sweeps.py --results $(RESULTS)
+
+figures-shared: results
+	$(PY) analysis/plot_shared_fits.py --results $(RESULTS)
 
 figures-runtime-stack: results
 	$(PY) analysis/plot_runtime_stack.py --results $(RESULTS)
@@ -429,6 +432,9 @@ $(FIGDIR)/kelvin_helmholtz.pdf: results
 # `make figures/runtime-stack-<setup>-<grid>.pdf`.
 $(FIGDIR)/sweeps-%.pdf: results
 	$(PY) analysis/plot_sweeps.py --results $(RESULTS) --machine $*
+
+$(FIGDIR)/sweeps-shared-%.pdf: results
+	$(PY) analysis/plot_shared_fits.py --results $(RESULTS) --machine $*
 
 $(FIGDIR)/runtime-stack-%.pdf: results
 	$(PY) analysis/plot_runtime_stack.py --results $(RESULTS) --name $*

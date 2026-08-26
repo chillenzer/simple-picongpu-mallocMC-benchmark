@@ -43,6 +43,13 @@ reported separately: f_malloc = A_m/T0, f_free = A_f/T0, T0 = W + A_m + A_f.
 Groups whose runs vary only one of the two delays fall back to the 1-D model
 above, fitted on that delay.
 
+Several algorithms' sweeps of the same (setup, grid) scenario can be fit
+jointly with `fit_combined`: the baseline runtime W and the call counts
+N_malloc / N_free are algorithm-invariant and are fit once on the pooled
+data, while each algorithm keeps its own native costs (A_malloc, A_free)
+and fade scales (m0, f0), so every algorithm's curve is shared exactly
+where theory says it may differ between algorithms.
+
 `sleeptimes` are in nanoseconds, `runtimes` in seconds. If the native
 per-allocation cost c_a (ns) is known, pass it: A = N*c_a is then used and
 only (W, N, s0) are fitted.
@@ -891,3 +898,909 @@ def fit_2d(m_delays: pd.Series, f_delays: pd.Series, runtimes: pd.Series) -> dic
             None,
             note="constrained fit unavailable; linear grid solution reported (A_malloc/A_free floored at 0)",
         )
+
+
+def _combined_kind(m: np.ndarray, f: np.ndarray) -> str:
+    """Classify the pooled delay data of a combined fit, as the individual fits do.
+
+    Args:
+        m: the pooled malloc delays in seconds.
+        f: the pooled free delays in seconds.
+
+    Returns:
+        str: "2d" when both delays vary, "1d-malloc" / "1d-free" when only
+        one does, or "" when neither varies (no fit possible).
+
+    """
+    if len(np.unique(m)) >= 2 and len(np.unique(f)) >= 2:
+        return "2d"
+    if len(np.unique(m)) >= 2:
+        return "1d-malloc"
+    if len(np.unique(f)) >= 2:
+        return "1d-free"
+    return ""
+
+
+def _combined_bounds(kind: str, n: int, m: np.ndarray, f: np.ndarray) -> tuple[list[float], list[float]]:
+    """Compute the parameter bounds of a combined fit.
+
+    The shared W and the shared call count(s) and the per-algorithm A terms
+    are floored at 0; each algorithm's fade scale(s) share the pooled
+    per-operation search range of the individual fits.
+
+    Args:
+        kind: "2d", "1d-malloc", or "1d-free".
+        n: the number of pooled algorithms.
+        m: the pooled malloc delays in seconds.
+        f: the pooled free delays in seconds.
+
+    Returns:
+        tuple: the (lower, upper) bound vectors, one entry per parameter.
+
+    """
+    m_min_pos = m[m > 0].min() if np.any(m > 0) else m.max()
+    f_min_pos = f[f > 0].min() if np.any(f > 0) else f.max()
+    lo_m = max(0.05 * m_min_pos, EPS_S)
+    hi_m = max(0.5 * (float(m.max()) - float(m.min())), lo_m * 1.5)
+    lo_f = max(0.05 * f_min_pos, EPS_S)
+    hi_f = max(0.5 * (float(f.max()) - float(f.min())), lo_f * 1.5)
+    if kind == "2d":
+        lo_b = [0.0, 0.0, 0.0]
+        hi_b = [_INF, _INF, _INF]
+        for _ in range(n):
+            lo_b += [0.0, 0.0, lo_m, lo_f]
+            hi_b += [_INF, _INF, hi_m, hi_f]
+        return lo_b, hi_b
+    lo0, hi0 = (lo_m, hi_m) if kind == "1d-malloc" else (lo_f, hi_f)
+    lo_b = [0.0, 0.0]
+    hi_b = [_INF, _INF]
+    for _ in range(n):
+        lo_b += [0.0, lo0]
+        hi_b += [_INF, hi0]
+    return lo_b, hi_b
+
+
+def _combined_predict(kind: str, x: tuple | np.ndarray, p: np.ndarray, indicators: list[np.ndarray]) -> np.ndarray:
+    """Evaluate the combined model at the pooled points.
+
+    Args:
+        kind: "2d", "1d-malloc", or "1d-free".
+        x: the delay data -- (m, f) for "2d", one array otherwise -- in seconds.
+        p: the full parameter vector: the shared parameters first, then one
+        (A_malloc, A_free, m0, f0) block per algorithm ("2d") or one
+        (A, s0) block ("1d-*"), in the pooled algorithms' order.
+        indicators: per-algorithm 0/1 indicator arrays of the pooled points.
+
+    Returns:
+        np.ndarray: the model runtimes in seconds.
+
+    """
+    if kind == "2d":
+        m, f = x
+        t = p[0] + p[1] * m + p[2] * f
+        for k, ind in enumerate(indicators):
+            A_m, A_f, m0, f0 = p[3 + 4 * k : 7 + 4 * k]
+            t += ind * (A_m * m0 / (m + m0) + A_f * f0 / (f + f0))
+        return t
+    s = x
+    t = p[0] + p[1] * s
+    for k, ind in enumerate(indicators):
+        A, s0 = p[2 + 2 * k : 4 + 2 * k]
+        t += ind * (A * s0 / (s + s0))
+    return t
+
+
+def _combined_layout(kind: str) -> tuple[int, int]:
+    """Shared-parameter layout of the combined model.
+
+    Args:
+        kind: "2d", "1d-malloc", or "1d-free".
+
+    Returns:
+        tuple[int, int]: (the number of shared parameters, the
+        per-algorithm block size).
+
+    """
+    return (3, 4) if kind == "2d" else (2, 2)
+
+
+def _combined_order(order: Sequence[str] | None, first_seen: list[str]) -> list[str]:
+    """Normalize the pooled algorithms' order against the data.
+
+    Args:
+        order: the requested order, or None for first appearance.
+        first_seen: the algorithms in first-appearance order.
+
+    Returns:
+        list[str]: the requested algorithms that are present, first, then
+        the remaining ones in first-appearance order.
+
+    """
+    if order is None:
+        return list(first_seen)
+    wanted = [str(a) for a in order if str(a) in set(first_seen)]
+    return wanted + [a for a in first_seen if a not in wanted]
+
+
+def _combined_design(
+    kind: str,
+    x: tuple | np.ndarray,
+    indicators: list[np.ndarray],
+    fades: list[tuple],
+) -> np.ndarray:
+    """Design matrix of the combined model with the fade scales held fixed.
+
+    Args:
+        kind: "2d", "1d-malloc", or "1d-free".
+        x: the delay data (as for `_combined_predict`), in seconds.
+        indicators: per-algorithm 0/1 indicator arrays.
+        fades: per algorithm, the fixed fade scale(s) in seconds --
+        (m0, f0) for "2d", (s0,) for "1d-*".
+
+    Returns:
+        np.ndarray: the design matrix, one column per fitted coefficient.
+
+    """
+    if kind == "2d":
+        m, f = x
+        columns: list[np.ndarray] = [np.ones_like(m), m, f]
+    else:
+        s = x
+        columns = [np.ones_like(s), s]
+    for ind, fl in zip(indicators, fades, strict=True):
+        if kind == "2d":
+            m0, f0 = fl
+            columns.append(m0 / (m + m0) * ind)
+            columns.append(f0 / (f + f0) * ind)
+        else:
+            (s0,) = fl
+            columns.append(s0 / (s + s0) * ind)
+    return np.vstack(columns).T
+
+
+def _robust_combined_vector(kind: str, sol: np.ndarray, fades: list[tuple]) -> list[float]:
+    """Insert the fixed fade scales into a robust combined solution.
+
+    Args:
+        kind: "2d", "1d-malloc", or "1d-free".
+        sol: the least-squares coefficients of `_combined_design`.
+        fades: per algorithm, the fixed fade scale(s) in seconds.
+
+    Returns:
+        list[float]: the full parameter vector with the fades inserted.
+
+    """
+    head, stride = _combined_layout(kind)
+    n_a = stride - (2 if kind == "2d" else 1)
+    p = [0.0] * (head + stride * len(fades))
+    p[:head] = [float(v) for v in sol[:head]]
+    for k, fl in enumerate(fades):
+        base = head + k * stride
+        p[base : base + n_a] = [float(v) for v in sol[base : base + n_a]]
+        p[base + n_a : base + stride] = [float(v) for v in fl]
+    return p
+
+
+def _combined_robust(
+    kind: str,
+    x: tuple | np.ndarray,
+    t: np.ndarray,
+    indicators: list[np.ndarray],
+    fades: list[tuple],
+) -> tuple[float, list[float]]:
+    """Least squares of the combined model with the fade scales held fixed.
+
+    Args:
+        kind: "2d", "1d-malloc", or "1d-free".
+        x: the delay data (as for `_combined_predict`), in seconds.
+        t: the runtimes in seconds.
+        indicators: per-algorithm 0/1 indicator arrays.
+        fades: per algorithm, the fixed fade scale(s) in seconds.
+
+    Returns:
+        tuple: (the residual sum of squares, the full parameter vector
+        with the fixed fades inserted).
+
+    """
+    matrix = _combined_design(kind, x, indicators, fades)
+    sol, *_ = np.linalg.lstsq(matrix, t, rcond=None)
+    ss_res = float(np.sum((t - matrix @ sol) ** 2))
+    return ss_res, _robust_combined_vector(kind, sol, fades)
+
+
+def _own_guess(kind: str, m_a: np.ndarray, f_a: np.ndarray, t_a: np.ndarray) -> dict[str, float]:
+    """Robust grid solution of one algorithm's own sweep.
+
+    Args:
+        kind: "2d", "1d-malloc", or "1d-free" (the pooled kind).
+        m_a: the algorithm's malloc delays in seconds.
+        f_a: the algorithm's free delays in seconds.
+        t_a: the algorithm's runtimes in seconds.
+
+    Returns:
+        dict: W, N_m, N_f, A_m, A_f, m0, f0 in seconds; the inapplicable
+        operation's parameters are NaN, as are all of them with fewer
+        than 3 points.
+
+    """
+    nan = float("nan")
+    out: dict[str, float] = {"W": nan, "N_m": nan, "N_f": nan, "A_m": nan, "A_f": nan, "m0": nan, "f0": nan}
+    if t_a.size < 3:
+        return out
+    if kind == "2d":
+        values = _grid_guess_2d((m_a, f_a), t_a, _fit_bounds_2d(m_a, f_a))
+        out.update(dict(zip(("W", "N_m", "N_f", "A_m", "A_f", "m0", "f0"), values, strict=True)))
+        return out
+    if kind == "1d-malloc":
+        lo_m, hi_m, _lo_f, _hi_f = _fit_bounds_2d(m_a, f_a)
+        W, N, A, s0 = _grid_guess(m_a, t_a, max(lo_m, EPS_S), hi_m)
+        out.update({"W": W, "N_m": N, "A_m": A, "m0": s0})
+        return out
+    _lo_m, _hi_m, lo_f, hi_f = _fit_bounds_2d(m_a, f_a)
+    W, N, A, s0 = _grid_guess(f_a, t_a, lo_f, hi_f)
+    out.update({"W": W, "N_f": N, "A_f": A, "f0": s0})
+    return out
+
+
+def _pick_fade(own: dict[str, float], sub: dict[str, float], name: str, lo: float, hi: float) -> float:
+    """One fade-scale initial value, clipped to the search range.
+
+    The individual fit's value where finite, else the robust grid value,
+    else the geometric mid of the range.
+
+    Args:
+        own: the individual fit's parameters (seconds).
+        sub: the robust grid solution of the algorithm's own sweep.
+        name: the fade's key ("m0" or "f0").
+        lo: the fade's search lower bound (s).
+        hi: the fade's search upper bound (s).
+
+    Returns:
+        float: the initial fade scale in seconds.
+
+    """
+    for source in (own, sub):
+        try:
+            value = float(source.get(name))
+        except TypeError:
+            value = float("nan")
+        except ValueError:
+            value = float("nan")
+        if not math.isnan(value):
+            return float(np.clip(value, lo, hi))
+    return float(np.sqrt(lo * hi))
+
+
+def _combined_initial_fades(
+    prep: _CombinedPrep,
+    p0_map: dict[str, dict[str, float]],
+) -> list[tuple[float, ...]]:
+    """Return the per-algorithm fade-scale initial values for the pooled solution.
+
+    Args:
+        prep: the prepared inputs of the combined fit.
+        p0_map: per algorithm, the individual fit's parameters (seconds).
+
+    Returns:
+        list: per algorithm, (m0, f0) for "2d" and (s0,) for "1d-*", in
+        seconds, clipped to their search ranges.
+
+    """
+    fades: list[tuple[float, ...]] = []
+    head = _combined_layout(prep.kind)[0]
+    for a in prep.order:
+        own = p0_map.get(a, {})
+        sub = _own_guess(prep.kind, prep.m[prep.alg == a], prep.f[prep.alg == a], prep.t[prep.alg == a])
+        if prep.kind == "2d":
+            fades.append(
+                (
+                    _pick_fade(own, sub, "m0", prep.lo_b[head + 2], prep.hi_b[head + 2]),
+                    _pick_fade(own, sub, "f0", prep.lo_b[head + 3], prep.hi_b[head + 3]),
+                )
+            )
+        else:
+            name = "m0" if prep.kind == "1d-malloc" else "f0"
+            fades.append((_pick_fade(own, sub, name, prep.lo_b[head + 1], prep.hi_b[head + 1]),))
+    return fades
+
+
+def _term_seed(own: dict[str, float], name: str, fallback: float) -> float:
+    """One native-cost initial value: the individual fit's, 0-floored.
+
+    Args:
+        own: the individual fit's parameters (seconds).
+        name: the cost's key ("A_m" or "A_f").
+        fallback: the pooled least-squares value on absence or NaN.
+
+    Returns:
+        float: the 0-floored initial value.
+
+    """
+    try:
+        value = float(own.get(name))
+    except TypeError:
+        value = fallback
+    except ValueError:
+        value = fallback
+    if math.isnan(value):
+        value = fallback
+    return max(0.0, value)
+
+
+def _fit_residual_terms(
+    kind: str,
+    data: tuple | np.ndarray,
+    r: np.ndarray,
+    p0: tuple[float, ...],
+    bounds: tuple[float, ...],
+) -> tuple[list[float] | None, str | None]:
+    """Fit one algorithm's Amdahl terms on the shared-parameter residuals.
+
+    Args:
+        kind: "2d", "1d-malloc", or "1d-free".
+        data: the algorithm's delay data, (m, f) for "2d" and the varying
+        delay otherwise, in seconds.
+        r: the residuals after the shared parameters are subtracted (s).
+        p0: the initial (A..., s0...) values, in model order.
+        bounds: the fade-scale search ranges.
+
+    Returns:
+        tuple: (the fitted values, None), or (None, the error message) on
+        non-convergence.
+
+    """
+    if kind == "2d":
+
+        def model_2d(x: tuple | np.ndarray, A_m: float, m0: float, A_f: float, f0: float) -> np.ndarray:
+            mm, ff = x
+            return A_m * m0 / (mm + m0) + A_f * f0 / (ff + f0)
+
+        model = model_2d
+        lo = [0.0, bounds[0], 0.0, bounds[2]]
+        hi = [_INF, bounds[1], _INF, bounds[3]]
+    else:
+
+        def model_1d(sx: np.ndarray, A: float, s0: float) -> np.ndarray:
+            return A * s0 / (sx + s0)
+
+        model = model_1d
+        lo = [0.0, bounds[0]]
+        hi = [_INF, bounds[1]]
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", OptimizeWarning)
+            popt, _pcov = curve_fit(model, data, r, p0=list(p0), bounds=(lo, hi), maxfev=20000)
+        return [float(v) for v in popt], None
+    except (RuntimeError, ValueError) as err:
+        return None, str(err).splitlines()[0]
+
+
+def _stage1_costs(kind: str, p_stage1: list[float]) -> list[tuple[float, ...]]:
+    """Return the pooled least-squares native costs, per algorithm block.
+
+    Args:
+        kind: "2d", "1d-malloc", or "1d-free".
+        p_stage1: the stage-1 parameter vector.
+
+    Returns:
+        list: per block, the (unfloored) native cost value(s).
+
+    """
+    head, stride = _combined_layout(kind)
+    n_a = stride - (2 if kind == "2d" else 1)
+    n = (len(p_stage1) - head) // stride
+    return [tuple(p_stage1[head + k * stride : head + k * stride + n_a]) for k in range(n)]
+
+
+def _combined_stage2(
+    prep: _CombinedPrep,
+    p_stage1: list[float],
+    p0_map: dict[str, dict[str, float]],
+    fades: list[tuple[float, ...]],
+) -> tuple[list[float], list[str]]:
+    """Refine the per-algorithm terms on the stage-1 pooled residuals.
+
+    With the shared parameters subtracted, each algorithm's (A, s0)
+    Amdahl terms are fit on its own points, starting from the individual
+    fit's costs and the pooled solution's fades.
+
+    Args:
+        prep: the prepared inputs of the combined fit.
+        p_stage1: the pooled least-squares parameter vector (stage 1).
+        p0_map: per algorithm, the individual fit's parameters (seconds).
+        fades: the per-algorithm fade-scale initial values.
+
+    Returns:
+        tuple: (the refined parameter vector -- the shared parameters
+        plus the fitted blocks -- the per-algorithm warnings).
+
+    """
+    kind = prep.kind
+    head, stride = _combined_layout(kind)
+    W = p_stage1[0]
+    p = list(p_stage1)
+    notes: list[str] = []
+    for k, a in enumerate(prep.order):
+        idx = prep.indicators[k] == 1
+        base = head + k * stride
+        own = p0_map.get(a, {})
+        if kind == "2d":
+            p0 = (
+                _term_seed(own, "A_m", p[base]),
+                fades[k][0],
+                _term_seed(own, "A_f", p[base + 1]),
+                fades[k][1],
+            )
+            fitted, err = _fit_residual_terms(
+                kind,
+                (prep.m[idx], prep.f[idx]),
+                prep.t[idx] - W - p_stage1[1] * prep.m[idx] - p_stage1[2] * prep.f[idx],
+                p0,
+                prep.fade_bounds,
+            )
+        else:
+            s = prep.m[idx] if kind == "1d-malloc" else prep.f[idx]
+            p0 = (_term_seed(own, "A_m" if kind == "1d-malloc" else "A_f", p[base]), fades[k][0])
+            fitted, err = _fit_residual_terms(kind, s, prep.t[idx] - W - p_stage1[1] * s, p0, prep.fade_bounds)
+        if fitted is None:
+            p[base] = max(0.0, p[base])
+            if kind == "2d":
+                p[base + 1] = max(0.0, p[base + 1])
+            notes.append(
+                f"{a}: the Amdahl terms did not converge on the pooled residuals ({err}); the pooled values are kept"
+            )
+            continue
+        if kind == "2d":
+            p[base : base + stride] = [fitted[0], fitted[2], fitted[1], fitted[3]]
+        else:
+            p[base : base + stride] = fitted
+    return p, notes
+
+
+def _clip_shared(kind: str, p: list[float], floor: float) -> list[float]:
+    """Copy a parameter vector with its shared part clipped to its bound.
+
+    The pooled least-squares solution is unbounded, while curve_fit
+    requires its initial guess strictly inside the bounds.
+
+    Args:
+        kind: "2d", "1d-malloc", or "1d-free".
+        p: the parameter vector.
+        floor: the lower bound for the shared parameters.
+
+    Returns:
+        list[float]: the vector with the shared part clipped at `floor`.
+
+    """
+    head = _combined_layout(kind)[0]
+    p = list(p)
+    p[:head] = [max(v, floor) for v in p[:head]]
+    return p
+
+
+def _combined_optimize(
+    prep: _CombinedPrep,
+    p0_vector: list[float],
+    fallback: list[float],
+) -> tuple[list[float], np.ndarray | None, list[str]]:
+    """Run the final joint curve_fit of a combined fit.
+
+    Args:
+        prep: the prepared inputs of the combined fit.
+        p0_vector: the initial parameter vector (the stage-2 solution).
+        fallback: the robust parameter vector to report when curve_fit
+        does not converge.
+
+    Returns:
+        tuple: (the fitted parameter vector, the parameter covariance or
+        None, the warnings).
+
+    """
+    notes: list[str] = []
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", OptimizeWarning)
+            popt, pcov = curve_fit(
+                prep.model, prep.xdata, prep.t, p0=p0_vector, bounds=(prep.lo_b, prep.hi_b), maxfev=40000
+            )
+        return [float(v) for v in popt], pcov, notes
+    except (RuntimeError, ValueError) as err:
+        notes.append(f"curve_fit did not converge ({str(err).splitlines()[0]})")
+        notes.append("constrained fit unavailable; the staged pooled least-squares solution is reported")
+        return list(fallback), None, notes
+
+
+class CombinedSweep(NamedTuple):
+    """The pooled delay-sweep data of one scenario, every algorithm.
+
+    The per-point arrays must be in the same order as `algorithms`.
+    """
+
+    m_delays: pd.Series  # the malloc delays in nanoseconds
+    f_delays: pd.Series  # the free delays in nanoseconds
+    runtimes: pd.Series  # the runtimes in seconds
+    algorithms: pd.Series  # the per-point algorithm labels
+
+
+class _CombinedPrep(NamedTuple):
+    """The validated, prepared inputs of one combined fit."""
+
+    kind: str  # "2d", "1d-malloc", or "1d-free"
+    m: np.ndarray  # pooled malloc delays (s)
+    f: np.ndarray  # pooled free delays (s)
+    t: np.ndarray  # pooled runtimes (s)
+    alg: np.ndarray  # per-point algorithm labels
+    order: list[str]  # the pooled algorithms' order
+    indicators: list[np.ndarray]  # per-algorithm 0/1 indicator arrays
+    lo_b: list[float]  # lower bounds, one per parameter
+    hi_b: list[float]  # upper bounds, one per parameter
+    eps: float  # the floor for the initial guess
+    ss_tot: float  # the pooled total sum of squares
+    xdata: tuple | np.ndarray  # the delay data for curve_fit
+    fade_bounds: tuple[float, ...]  # the (lo, hi) range of each fade scale
+    model: Callable[..., np.ndarray]  # the curve_fit model function
+
+
+def _combined_fun(kind: str, indicators: list[np.ndarray]) -> Callable[..., np.ndarray]:
+    """Return the curve_fit model function of one combined fit.
+
+    Args:
+        kind: "2d", "1d-malloc", or "1d-free".
+        indicators: per-algorithm 0/1 indicator arrays.
+
+    Returns:
+        Callable[..., np.ndarray]: the model runtime of the pooled points
+        for a parameter vector.
+
+    """
+
+    def model(x: tuple | np.ndarray, *params: float) -> np.ndarray:
+        return _combined_predict(kind, x, np.asarray(params, dtype=float), indicators)
+
+    return model
+
+
+def _combined_prepare(sweep: CombinedSweep, order: Sequence[str] | None) -> _CombinedPrep:
+    """Validate and prepare the pooled data of one combined fit.
+
+    Args:
+        sweep: the pooled sweep data (every algorithm of one scenario).
+        order: the pooled algorithms' order, or None for first
+        appearance.
+
+    Returns:
+        _CombinedPrep: the seconds-converted arrays, the normalized
+        algorithm order, the parameter bounds, and the initial-guess
+        constants.
+
+    Raises:
+        ValueError: if the arrays have unequal shapes, fewer than 3
+        pooled points, or neither delay varies.
+
+    """
+    m = np.asarray(sweep.m_delays, dtype=float) * 1e-9  # ns -> s
+    f = np.asarray(sweep.f_delays, dtype=float) * 1e-9
+    t = np.asarray(sweep.runtimes, dtype=float)
+    alg = np.array([str(a) for a in sweep.algorithms], dtype=object)
+    if m.shape != f.shape or m.shape != t.shape or m.shape != alg.shape:
+        msg = "delays, runtimes and algorithms must all have the same shape"
+        raise ValueError(msg)
+    if m.size < 3:
+        msg = "need at least 3 data points"
+        raise ValueError(msg)
+    kind = _combined_kind(m, f)
+    if not kind:
+        msg = "fewer than 2 distinct delays in the pooled data"
+        raise ValueError(msg)
+    first_seen = list(dict.fromkeys(alg))
+    order = _combined_order(order, first_seen)
+    indicators = [(alg == a).astype(float) for a in order]
+    lo_b, hi_b = _combined_bounds(kind, len(order), m, f)
+    head = _combined_layout(kind)[0]
+    return _CombinedPrep(
+        kind,
+        m,
+        f,
+        t,
+        alg,
+        order,
+        indicators,
+        lo_b,
+        hi_b,
+        1e-9 * max(1.0, float(np.max(np.abs(t)))),
+        float(np.sum((t - t.mean()) ** 2)),
+        (m, f) if kind == "2d" else (m if kind == "1d-malloc" else f),
+        (lo_b[head + 2], hi_b[head + 2], lo_b[head + 3], hi_b[head + 3])
+        if kind == "2d"
+        else (lo_b[head + 1], hi_b[head + 1]),
+        _combined_fun(kind, indicators),
+    )
+
+
+def _combined_corner_notes(
+    kind: str,
+    p: np.ndarray,
+    order: list[str],
+    guess_A: list[tuple[float, ...]],
+    hi_b: list[float],
+) -> list[str]:
+    """Corner diagnostics of a combined fit, as in the individual fits.
+
+    A native cost the data wanted negative is floored at 0; a fade scale
+    at the search cap leaves its A (and W) weakly constrained.
+
+    Args:
+        kind: "2d", "1d-malloc", or "1d-free".
+        p: the fitted parameter vector.
+        order: the pooled algorithms' order.
+        guess_A: per algorithm, the (unfloored) native-cost initial values.
+        hi_b: the upper bounds, one entry per parameter.
+
+    Returns:
+        list[str]: the diagnostics.
+
+    """
+    notes: list[str] = []
+    head, stride = _combined_layout(kind)
+    small = 1e-6 * max(abs(float(p[0])), 1e-9)
+    for k, a in enumerate(order):
+        base = head + k * stride
+        if kind == "2d":
+            if guess_A[k][0] < 0 and p[base] <= small:
+                notes.append(f"unconstrained fit wanted A_malloc<0 ({a}); A_malloc (and f_malloc) constrained to 0")
+            if guess_A[k][1] < 0 and p[base + 1] <= small:
+                notes.append(f"unconstrained fit wanted A_free<0 ({a}); A_free (and f_free) constrained to 0")
+            if p[base + 2] >= hi_b[base + 2] * 0.999:
+                notes.append(f"m0 ({a}) reached the search cap: A_malloc and W are weakly constrained")
+            if p[base + 3] >= hi_b[base + 3] * 0.999:
+                notes.append(f"f0 ({a}) reached the search cap: A_free and W are weakly constrained")
+        else:
+            tag = "malloc" if kind == "1d-malloc" else "free"
+            if guess_A[k][0] < 0 and p[base] <= small:
+                notes.append(f"unconstrained fit wanted A_{tag}<0 ({a}); A_{tag} constrained to 0")
+            if p[base + 1] >= hi_b[base + 1] * 0.999:
+                notes.append(f"{tag[0]}0 ({a}) reached the search cap: A_{tag} and W are weakly constrained")
+    return notes
+
+
+def _combined_slope_notes(kind: str, p: np.ndarray) -> list[str]:
+    """Compute the shared-slope diagnostics of a combined fit.
+
+    Args:
+        kind: "2d", "1d-malloc", or "1d-free".
+        p: the fitted parameter vector.
+
+    Returns:
+        list[str]: one note per non-positive shared parameter.
+
+    """
+    notes: list[str] = []
+    if float(p[0]) <= 0:
+        notes.append("non-positive baseline runtime: no runtime budget visible in this sweep")
+    if kind in {"2d", "1d-malloc"} and float(p[1]) <= 0:
+        notes.append("non-positive malloc slope: no allocation cost visible for the shared malloc delay")
+    n_f_idx = 2 if kind == "2d" else 1
+    if kind in {"2d", "1d-free"} and float(p[n_f_idx]) <= 0:
+        notes.append("non-positive free slope: no free cost visible for the shared free delay")
+    return notes
+
+
+class _CombinedErrors(NamedTuple):
+    """The standard-error closures of one combined fit."""
+
+    param: Callable[[int], float]  # per-parameter standard error
+    function: Callable[[Callable[[np.ndarray], float]], float]  # error of a function of the parameters
+
+
+def _combined_errors(pcov: np.ndarray | None, p: np.ndarray) -> _CombinedErrors:
+    """Compute the standard errors of a combined fit from its covariance.
+
+    Args:
+        pcov: the parameter covariance matrix, or None.
+        p: the fitted parameter vector.
+
+    Returns:
+        _CombinedErrors: the per-parameter standard error and the
+        chain-rule error of a function of the parameters, or constant
+        NaN closures when the covariance is unavailable.
+
+    """
+    if pcov is None or not np.all(np.isfinite(np.asarray(pcov, dtype=float))):
+
+        def err_of(_i: int) -> float:
+            return float("nan")
+
+        def f_err(_f_of_p: Callable[[np.ndarray], float]) -> float:
+            return float("nan")
+
+        return _CombinedErrors(err_of, f_err)
+    cov = np.asarray(pcov, dtype=float)
+    cov = 0.5 * (cov + cov.T)
+    sqrt_diag = np.sqrt(np.clip(np.diag(cov), 0.0, None))
+
+    def err_of(i: int) -> float:
+        return float(sqrt_diag[i])
+
+    def f_err(f_of_p: Callable[[np.ndarray], float]) -> float:
+        g = np.zeros(p.size)
+        for i in range(p.size):
+            pp = p.copy()
+            pm = p.copy()
+            step = max(abs(p[i]) * 1e-6, 1e-12)
+            pp[i] += step
+            pm[i] -= step
+            g[i] = (f_of_p(pp) - f_of_p(pm)) / (2 * step)
+        return float(np.sqrt(max(float(g @ cov @ g), 0.0)))
+
+    return _CombinedErrors(err_of, f_err)
+
+
+def _combined_per_algorithm(
+    kind: str,
+    p: np.ndarray,
+    W: float,
+    order: list[str],
+    errors: _CombinedErrors,
+) -> dict[str, dict[str, float]]:
+    """Every pooled algorithm's native costs, fade scales, and fractions.
+
+    Args:
+        kind: "2d", "1d-malloc", or "1d-free".
+        p: the fitted parameter vector.
+        W: the shared baseline runtime in seconds.
+        order: the pooled algorithms' order.
+        errors: the standard-error closures of the parameter vector.
+
+    Returns:
+        dict: per algorithm, A_malloc/A_free (s), m0/f0 (s), the Amdahl
+        fractions, and their standard errors (NaN where inapplicable).
+
+    """
+    head, stride = _combined_layout(kind)
+    err_of = errors.param
+    f_err = errors.function
+    per_algorithm: dict[str, dict[str, float]] = {}
+    for k, a in enumerate(order):
+        base = head + k * stride
+        if kind == "2d":
+            A_m, A_f = float(p[base]), float(p[base + 1])
+            T0 = W + A_m + A_f
+
+            def f_malloc_of(q: np.ndarray, b: int = base) -> float:
+                total = q[0] + q[b] + q[b + 1]
+                return q[b] / total if total > EPS_S else 0.0
+
+            def f_free_of(q: np.ndarray, b: int = base) -> float:
+                total = q[0] + q[b] + q[b + 1]
+                return q[b + 1] / total if total > EPS_S else 0.0
+
+            per_algorithm[a] = {
+                "A_malloc": A_m,
+                "A_malloc_err": err_of(base),
+                "A_free": A_f,
+                "A_free_err": err_of(base + 1),
+                "m0": float(p[base + 2]),
+                "m0_err": err_of(base + 2),
+                "f0": float(p[base + 3]),
+                "f0_err": err_of(base + 3),
+                "f_malloc": A_m / T0 if T0 > EPS_S else 0.0,
+                "f_malloc_err": f_err(f_malloc_of),
+                "f_free": A_f / T0 if T0 > EPS_S else 0.0,
+                "f_free_err": f_err(f_free_of),
+            }
+            continue
+        if kind == "1d-malloc":
+            A, s0 = float(p[base]), float(p[base + 1])
+            T0 = W + A
+
+            def f_malloc_of_1d(q: np.ndarray, b: int = base) -> float:
+                total = q[0] + q[b]
+                return q[b] / total if total > EPS_S else 0.0
+
+            per_algorithm[a] = {
+                "A_malloc": A,
+                "A_malloc_err": err_of(base),
+                "A_free": float("nan"),
+                "A_free_err": float("nan"),
+                "m0": s0,
+                "m0_err": err_of(base + 1),
+                "f0": float("nan"),
+                "f0_err": float("nan"),
+                "f_malloc": A / T0 if T0 > EPS_S else 0.0,
+                "f_malloc_err": f_err(f_malloc_of_1d),
+                "f_free": float("nan"),
+                "f_free_err": float("nan"),
+            }
+            continue
+        A, s0 = float(p[base]), float(p[base + 1])
+        T0 = W + A
+
+        def f_free_of_1d(q: np.ndarray, b: int = base) -> float:
+            total = q[0] + q[b]
+            return q[b] / total if total > EPS_S else 0.0
+
+        per_algorithm[a] = {
+            "A_malloc": float("nan"),
+            "A_malloc_err": float("nan"),
+            "A_free": A,
+            "A_free_err": err_of(base),
+            "m0": float("nan"),
+            "m0_err": float("nan"),
+            "f0": s0,
+            "f0_err": err_of(base + 1),
+            "f_malloc": float("nan"),
+            "f_malloc_err": float("nan"),
+            "f_free": A / T0 if T0 > EPS_S else 0.0,
+            "f_free_err": f_err(f_free_of_1d),
+        }
+    return per_algorithm
+
+
+def fit_combined(
+    sweep: CombinedSweep,
+    order: Sequence[str] | None = None,
+    p0: dict[str, dict[str, float]] | None = None,
+) -> dict:
+    """Fit one (machine, setup, grid) scenario over all of its algorithms.
+
+    The shared parameters -- W (the baseline runtime) and the malloc/free
+    call counts N_malloc and N_free -- are fit once on the pooled data of
+    every pooled algorithm, while each algorithm keeps its own native
+    costs (A_malloc, A_free) and fade scales (m0, f0): the two-operation
+    Amdahl model of `model_2d` with a per-algorithm (A, s0) pair, or the
+    1-D reduction when only one delay varies in the pooled data. The fit
+    is staged -- a pooled least-squares solution for the shared
+    parameters, a per-algorithm fit of the Amdahl terms on the pooled
+    residuals, and a final joint curve_fit started from those values --
+    so the result does not depend on the initial guess.
+
+    Args:
+        sweep: the pooled sweep data (every algorithm of the scenario).
+        order: the pooled algorithms' order; defaults to first appearance.
+        p0: per algorithm, the individual fit's parameters (keys W, N_m,
+        N_f, A_m, A_f, m0, f0) in seconds as the initial guess; missing
+        values fall back to a robust grid guess on the algorithm's own
+        data.
+
+    Returns:
+        dict: the model kind, the pooled algorithms' order, the shared
+        parameters (W, N_malloc, N_free) with their standard errors, the
+        pooled r2, the per-algorithm native costs, fade scales, and
+        Amdahl fractions with their standard errors, the warnings, and
+        the joint (fit_params, pcov) pair.
+
+    """
+    prep = _combined_prepare(sweep, order)
+    fades = _combined_initial_fades(prep, p0 or {})
+    _ss_res, p_stage1 = _combined_robust(prep.kind, prep.xdata, prep.t, prep.indicators, fades)
+    p_stage2, stage_notes = _combined_stage2(prep, p_stage1, p0 or {}, fades)
+    fit_params, pcov, opt_notes = _combined_optimize(
+        prep, _clip_shared(prep.kind, p_stage2, prep.eps), _clip_shared(prep.kind, p_stage2, 0.0)
+    )
+    notes = stage_notes + opt_notes
+    p = np.asarray(fit_params, dtype=float)
+    r2 = (
+        1.0 - float(np.sum((prep.t - _combined_predict(prep.kind, prep.xdata, p, prep.indicators)) ** 2)) / prep.ss_tot
+        if prep.ss_tot > 0
+        else float("nan")
+    )
+    W = float(p[0])
+    n_f_idx = 2 if prep.kind == "2d" else 1
+    notes.extend(_combined_slope_notes(prep.kind, p))
+    notes.extend(_combined_corner_notes(prep.kind, p, prep.order, _stage1_costs(prep.kind, p_stage1), prep.hi_b))
+    errors = _combined_errors(pcov, p)
+    return {
+        "model": prep.kind,
+        "order": list(prep.order),
+        "W": W,
+        "W_err": errors.param(0),
+        "N_malloc": float(p[1]) if prep.kind in {"2d", "1d-malloc"} else float("nan"),
+        "N_malloc_err": errors.param(1) if prep.kind in {"2d", "1d-malloc"} else float("nan"),
+        "N_free": float(p[n_f_idx]) if prep.kind in {"2d", "1d-free"} else float("nan"),
+        "N_free_err": errors.param(n_f_idx) if prep.kind in {"2d", "1d-free"} else float("nan"),
+        "r2": r2,
+        "per_algorithm": _combined_per_algorithm(prep.kind, p, W, prep.order, errors),
+        "warnings": notes,
+        "fit_params": fit_params,
+        "pcov": pcov,
+    }
