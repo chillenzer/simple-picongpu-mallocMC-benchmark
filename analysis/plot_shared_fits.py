@@ -11,7 +11,10 @@ algorithm's individual fit (dot, error bar) against the value fitted once
 across the algorithms (dashed vertical with a plus marker); the A_malloc
 and A_free columns show, per algorithm, the individual value (open marker)
 and the value of the combined fit (filled marker), joined by a segment.
-The x-axes are logarithmic. By default every machine gets its figure,
+Every A_* value is annotated with its Amdahl fraction f -- the share of
+the zero-delay runtime T0 = W + A_malloc + A_free that the operation's
+native cost occupies (T0 is summed over the terms the row carries). The
+x-axes are logarithmic. By default every machine gets its figure,
 `--machine` restricts the run to one.
 """
 
@@ -206,12 +209,47 @@ def _draw_shared_panel(ax: plt.Axes, data: ForestData, field: str, *, first: boo
         _hbar(ax, value, error, i, data.colors[scen])
 
 
+def _amdahl_fraction(row: pd.Series, field: str) -> float | None:
+    """Return the Amdahl fraction f = A/T0 of one fits row's A_* value.
+
+    T0, the zero-delay runtime, is the sum of the W, A_malloc and A_free
+    terms the row carries.
+
+    Args:
+        row: one row of the `fits` or `shared_fits` table.
+        field: the A_* field to express as a fraction.
+
+    Returns:
+        float | None: the fraction (0 when T0 is degenerate), or None when
+        the value is unavailable.
+
+    """
+    if pd.isna(row[field]):
+        return None
+    total = sum(float(row[t]) for t in ("W", "A_malloc", "A_free") if pd.notna(row[t]))
+    return float(row[field]) / total if total > 0 else 0.0
+
+
+def _fraction_text(fraction: float) -> str:
+    """Return one Amdahl fraction's display label, e.g. `f=12.9%`.
+
+    Args:
+        fraction: the Amdahl fraction in [0, 1].
+
+    Returns:
+        str: the label.
+
+    """
+    return f"f={100 * fraction:.3g}%"
+
+
 def _draw_compare_panel(ax: plt.Axes, data: ForestData, field: str, *, first: bool) -> None:
     """Draw one A-column: per algorithm, the individual and combined values.
 
     Each algorithm's individual value (open marker) is joined by a segment
     to the value of the combined fit (filled marker), each with its
-    error bar.
+    error bar and annotated above (individual) or below (combined) with
+    its Amdahl fraction f.
 
     Args:
         ax: the axis to fill.
@@ -251,6 +289,18 @@ def _draw_compare_panel(ax: plt.Axes, data: ForestData, field: str, *, first: bo
                 label=label,
             )
             _hbar(ax, value_i[0], value_i[1], i, data.colors[scen])
+            fraction = _amdahl_fraction(ind, field)
+            if fraction is not None:
+                ax.text(
+                    value_i[0],
+                    i - 0.22,
+                    _fraction_text(fraction),
+                    ha="center",
+                    va="bottom",
+                    fontsize=6,
+                    color=data.colors[scen],
+                    zorder=6,
+                )
         if value_j is not None:
             label = "shared fit" if first and not shared_labeled else None
             shared_labeled = True
@@ -258,6 +308,18 @@ def _draw_compare_panel(ax: plt.Axes, data: ForestData, field: str, *, first: bo
                 [value_j[0]], [i], marker=data.markers[algo], s=45, color=data.colors[scen], zorder=5, label=label
             )
             _hbar(ax, value_j[0], value_j[1], i, data.colors[scen])
+            fraction = _amdahl_fraction(row, field)
+            if fraction is not None:
+                ax.text(
+                    value_j[0],
+                    i + 0.22,
+                    _fraction_text(fraction),
+                    ha="center",
+                    va="top",
+                    fontsize=6,
+                    color=data.colors[scen],
+                    zorder=6,
+                )
 
 
 def _snug_xlim(ax: plt.Axes) -> None:

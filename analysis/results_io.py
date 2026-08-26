@@ -134,22 +134,6 @@ def scenario_name(setup: str, x: float, y: float, z: float) -> str:
     return f"{setup} {grid_label(x, y, z)}"
 
 
-def scenario_filename(setup: str, x: float, y: float, z: float) -> str:
-    """Filename of one scenario's runtime-stack figure.
-
-    Args:
-        setup: the scenario's setup name.
-        x: the scenario's x grid dimension.
-        y: the scenario's y grid dimension.
-        z: the scenario's z grid dimension (NaN for 2-D).
-
-    Returns:
-        str: the PDF filename, e.g. `runtime-stack-FoilLCT-256x1280.pdf`.
-
-    """
-    return f"runtime-stack-{scenario_name(setup, x, y, z).replace(' ', '-')}.pdf"
-
-
 def particle_memory_gb(x: float, y: float, z: float) -> int:
     """Estimated particle memory consumption in GB of one grid.
 

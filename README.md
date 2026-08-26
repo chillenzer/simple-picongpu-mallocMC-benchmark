@@ -141,18 +141,12 @@ The Makefile pins the dependency versions (the `dependencies` section of
   free delay sweeps side by side, all axes sharing the x- and y-axes,
   fitted curve + bootstrap sleeve, and the scenario's combined fit as a
   heavy line where one exists).
-- `analysis/plot_shared_fits.py` — one forest figure per sweep machine
-  (`figures/sweeps-shared-<machine>.pdf`: one row per (scenario, algorithm),
-  the shared W / N_malloc / N_free values against each algorithm's
-  individual fit, and the individual vs combined A_malloc / A_free).
-- `analysis/plot_runtime_stack.py` — one runtime-budget figure per
-  (setup, grid) scenario that has at least one usable fit
-  (`figures/runtime-stack-<setup>-<grid>.pdf`: the fitted W/A_malloc/A_free
-  bars per allocator per hardware, segment-coloured and labelled, fitted
-  total annotated, each bar labelled with its percentage of the triplet's
-  total runtime; the segments come from the scenario's combined fit -- one
-  shared W and the per-allocator A terms -- where it exists, and from the
-  allocator's individual fit otherwise, as named in the title).
+ - `analysis/plot_shared_fits.py` — one forest figure per sweep machine
+   (`figures/sweeps-shared-<machine>.pdf`: one row per (scenario, algorithm),
+   the shared W / N_malloc / N_free values against each algorithm's
+   individual fit, and the individual vs combined A_malloc / A_free, each
+   A_* value annotated with its Amdahl fraction f, the share of the
+   zero-delay runtime W + A_malloc + A_free the native cost occupies).
 - `analysis/plot_foil_lct.py` — the FoilLCT bar chart of the no-delay runs
   (`figures/foil_lct.pdf`).
 - `analysis/plot_kelvin_helmholtz.py` — the KelvinHelmholtz violin chart of
@@ -308,10 +302,8 @@ figures*, joined by the single HDF5 file `output/results.h5`:
 - one script per figure, each reading `output/results.h5` (all take
   `--show` to display the figure in a window): `plot_sweeps.py`
   (`figures/sweeps-<machine>.pdf`, `--machine` for one machine),
-  `plot_shared_fits.py` (`figures/sweeps-shared-<machine>.pdf`, `--machine`
-  for one machine), `plot_runtime_stack.py`
-  (`figures/runtime-stack-<setup>-<grid>.pdf`, `--name` for one scenario),
-  `plot_foil_lct.py` (`figures/foil_lct.pdf`),
+   `plot_shared_fits.py` (`figures/sweeps-shared-<machine>.pdf`, `--machine`
+   for one machine), `plot_foil_lct.py` (`figures/foil_lct.pdf`),
   `plot_kelvin_helmholtz.py` (`figures/kelvin_helmholtz.pdf`).
 
 The simplest way to run the whole thing (or any single figure) is the
@@ -323,8 +315,7 @@ make results              # only output/results.h5, from the run logs
 make summary              # only the summary tables
 make figures/foil_lct.pdf # one figure by file name (also:
 make figures/sweeps-hal.pdf # figures/sweeps-<machine>.pdf,
-make figures/sweeps-shared-hal.pdf # figures/sweeps-shared-<machine>.pdf,
-make figures/runtime-stack-FoilLCT-256x1280.pdf
+make figures/sweeps-shared-hal.pdf # figures/sweeps-shared-<machine>.pdf
 ```
 
 or the scripts directly (run from the repository root):
