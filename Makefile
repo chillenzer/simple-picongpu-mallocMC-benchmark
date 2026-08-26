@@ -334,28 +334,40 @@ check:
 
 # --- analysis targets --------------------------------------------------------
 
-# The analysis Python environment is locked by conda-lock.yml (generated
-# from the environment.yml recipe; see the README, "Reproducing the
-# analysis"). `make env` creates it with the first of these tools found on
-# PATH:
+# The analysis Python environment is pinned by two committed lock files
+# (see the README, "Reproducing the analysis"):
+#   conda-lock.yml       the conda-lock lock (the regeneration source;
+#                        read by `conda-lock install`)
+#   conda-linux-64.lock  the rendered per-platform *explicit* lock, a
+#                        plain list of exact package URLs that
+#                        `make env` installs from: any version of
+#                        micromamba, mamba, or conda installs it without
+#                        invoking a solver
+# `make env` creates the environment with the first of these tools found
+# on PATH:
 #   micromamba  standalone binary, no root needed (recommended;
 #               https://micro.mamba.pm/api/micromamba/linux-64/latest)
-#   mamba       conda's drop-in solver (conda install -c conda-forge mamba)
-#   conda       goes through `conda-lock install` (pip install conda-lock)
-# Force a specific tool with `make env ENV_TOOL=<tool>`. Re-running is
-# safe: the environment is re-resolved from the same lock and updated in
-# place.
+#   conda       real conda; its `create --file <explicit lock>` is the
+#               most broadly supported install path (miniforge always
+#               ships it)
+#   mamba       last resort (systems with mamba but no conda)
+# (All three take the same `create -f <explicit lock>` form; because the
+# lock is explicit, none of them invoke a solver.) Force a specific tool
+# with `make env ENV_TOOL=<tool>`. Re-running is safe for micromamba and
+# mamba (the environment is updated in place); conda reports the
+# environment as existing (conda env remove first).
 ENV_NAME   := mallocmc-bench
+ENV_LOCK   := conda-linux-64.lock
 MICROMAMBA := $(shell command -v micromamba 2>/dev/null)
-MAMBA      := $(shell command -v mamba 2>/dev/null)
 CONDA      := $(shell command -v conda 2>/dev/null)
+MAMBA      := $(shell command -v mamba 2>/dev/null)
 
 ifeq ($(ENV_TOOL),)
 ifeq ($(MICROMAMBA),)
-ifeq ($(MAMBA),)
-ENV_TOOL := conda
-else
+ifeq ($(CONDA),)
 ENV_TOOL := mamba
+else
+ENV_TOOL := conda
 endif
 else
 ENV_TOOL := micromamba
@@ -365,29 +377,28 @@ endif
 env:
 ifeq ($(ENV_TOOL),micromamba)
 ifdef MICROMAMBA
-	$(MICROMAMBA) create -n $(ENV_NAME) -f conda-lock.yml -y
+	$(MICROMAMBA) create -n $(ENV_NAME) -f $(ENV_LOCK) -y
 else
 	@echo "make env: micromamba not found on PATH (ENV_TOOL=micromamba);"
 	@echo "           download it from https://micro.mamba.pm/api/micromamba/linux-64/latest"
-	@echo "           or re-run with ENV_TOOL=mamba / ENV_TOOL=conda."
+	@echo "           or re-run with ENV_TOOL=conda / ENV_TOOL=mamba."
 	@exit 1
 endif
-else ifeq ($(ENV_TOOL),mamba)
-ifdef MAMBA
-	$(MAMBA) create -n $(ENV_NAME) -f conda-lock.yml -y
+else ifeq ($(ENV_TOOL),conda)
+ifdef CONDA
+	$(CONDA) create -n $(ENV_NAME) -f $(ENV_LOCK) -y
+else
+	@echo "make env: conda not found on PATH (ENV_TOOL=conda); install it with"
+	@echo "           Miniforge (https://github.com/conda-forge/miniforge), or"
+	@echo "           re-run with ENV_TOOL=micromamba / ENV_TOOL=mamba."
+	@exit 1
+endif
+else ifdef MAMBA
+	$(MAMBA) create -n $(ENV_NAME) -f $(ENV_LOCK) -y
 else
 	@echo "make env: mamba not found on PATH (ENV_TOOL=mamba); install it with"
 	@echo "           conda install -c conda-forge mamba, or re-run with"
 	@echo "           ENV_TOOL=micromamba / ENV_TOOL=conda."
-	@exit 1
-endif
-else ifdef CONDA
-	@command -v conda-lock >/dev/null 2>&1 || { echo "make env: conda-lock not found on PATH; pip install conda-lock,"; \
-	  echo "           or install micromamba/mamba and re-run with ENV_TOOL=that."; exit 1; }
-	conda-lock install --name $(ENV_NAME) conda-lock.yml
-else
-	@echo "make env: $(ENV_TOOL) is not usable: none of micromamba, mamba, conda"
-	@echo "           was found on PATH (and ENV_TOOL, if set, must be one of them)."
 	@exit 1
 endif
 

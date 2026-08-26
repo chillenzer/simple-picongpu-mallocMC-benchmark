@@ -324,18 +324,22 @@ python3 analysis/plot_foil_lct.py
 The Python dependencies of the analysis are declared in
 `requirements.txt` (permissive manifest, lowest verified versions) and
 rigorously pinned, including the Python version, by the content-hashed
-`conda-lock.yml` lock of the `environment.yml` recipe.
+`conda-lock.yml` lock of the `environment.yml` recipe. From it, the
+committed `conda-linux-64.lock` is rendered: a plain list of the exact
+package files, installable by any version of `micromamba`, `mamba`, or
+`conda` without invoking a solver (`make env` installs from it).
 
 - Primary path: `make env` creates the locked environment with the first
-  of `micromamba`, `mamba`, `conda` found on PATH (the conda route runs
-  `conda-lock install`; `pip install conda-lock` if it is missing).
-  Force a specific tool with `make env ENV_TOOL=<tool>`. `micromamba` is
-  the recommended choice (single static binary, no root needed,
+  of `micromamba`, `conda`, `mamba` found on PATH (the order prefers the
+  front ends whose `create --file` support for explicit locks is the most
+  established; the install itself is solver-free for all of them). Force
+  a specific tool with `make env ENV_TOOL=<tool>`. `micromamba` is the
+  recommended choice (single static binary, no root needed,
   <https://micro.mamba.pm/api/micromamba/linux-64/latest>):
 
   ```
   make env                                  # create the locked environment
-  micromamba activate mallocmc-bench        # or: mamba / conda activate
+  micromamba activate mallocmc-bench        # or: conda / mamba activate
   make                                      # ...then run the analysis
   ```
 
@@ -345,8 +349,10 @@ rigorously pinned, including the Python version, by the content-hashed
   the locked environment's versions take precedence.
 - Refreshing the lock (after editing `environment.yml`):
   `pip install conda-lock`, then
-  `conda-lock lock -f environment.yml -p linux-64 --micromamba`; review
-  and commit both `environment.yml` and `conda-lock.yml` together.
+  `conda-lock lock -f environment.yml -p linux-64 --micromamba` (updates
+  `conda-lock.yml`) and `conda-lock render -p linux-64` (updates
+  `conda-linux-64.lock`); review and commit `environment.yml` and both
+  lock files together.
 - pip path (no lock): `pip install -r requirements.txt`.
 - This covers the Python analysis only. The C++ build harness has its own
   dependencies (CMake, compilers; the PIConGPU / mallocMC pins in
