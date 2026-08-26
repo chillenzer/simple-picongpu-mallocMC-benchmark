@@ -10,10 +10,10 @@ for every (setup, grid) scenario with at least one usable fit, one figure
 triplet of three segment bars per allocator (in the file's
 `algorithm_order`): the fitted W (grey), A_malloc (blue) and A_free
 (orange) side by side, so the individual costs compare directly across the
-allocators, with the fitted total annotated above and the measured
-zero-delay runtime (median, IQR error bar) overlaid at each triplet. By
-default every scenario gets its figure, `--name` restricts the run to one,
-e.g. `--name FoilLCT-256x1280`.
+allocators, with the fitted total annotated above each triplet and each bar
+labelled with its percentage of the triplet's total runtime. By default
+every scenario gets its figure, `--name` restricts the run to one, e.g.
+`--name FoilLCT-256x1280`.
 """
 
 from __future__ import annotations
@@ -26,7 +26,6 @@ from typing import NamedTuple
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import pandas as pd
-from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from results_io import (
     RESULTS,
@@ -115,29 +114,6 @@ def scenario_budgets(fits: pd.DataFrame, target: tuple) -> dict[str, dict[str, t
     return budget
 
 
-def scenario_baselines(baselines: pd.DataFrame, target: tuple) -> dict[str, dict[str, tuple[float, float, float]]]:
-    """Per-machine measured zero-delay runtime of one (setup, grid) scenario.
-
-    Args:
-        baselines: the baselines table of the results file.
-        target: the (setup, x, y, z) scenario key.
-
-    Returns:
-        dict: per machine, the {algorithm: (p25, p50, p75)} baseline.
-
-    """
-    points: dict[str, dict[str, tuple[float, float, float]]] = {}
-    for _, row in baselines.iterrows():
-        if scenario_key(row["setup"], row["x"], row["y"], row["z"]) != target:
-            continue
-        points.setdefault(row["machine"], {})[row["algorithm"]] = (
-            float(row["p25"]),
-            float(row["p50"]),
-            float(row["p75"]),
-        )
-    return points
-
-
 class TripletCtx(NamedTuple):
     """Drawing context for one algorithm's runtime-budget triplet."""
 
@@ -145,16 +121,17 @@ class TripletCtx(NamedTuple):
     x: float
     bar_w: float
     segments: tuple[float, float, float]
-    baseline: tuple[float, float, float] | None
     algorithm: str
 
 
 def draw_runtime_triplet(ctx: TripletCtx) -> float:
-    """Draw one algorithm's three segment bars and its baseline point.
+    """Draw one algorithm's three segment bars, each with a percentage label.
 
     The bars of the triplet are coloured per segment (W grey, A_malloc
     blue, A_free orange); the algorithm itself is named by its slot and
-    the label under the x axis, and the fitted total is annotated above.
+    the label under the x axis, the fitted total is annotated above, and
+    each bar is labelled with its share of the triplet's total runtime,
+    W/(W+A_malloc+A_free) for the W bar and so on.
 
     Args:
         ctx: the triplet drawing context.
@@ -164,24 +141,19 @@ def draw_runtime_triplet(ctx: TripletCtx) -> float:
 
     """
     ax, x, bar_w = ctx.ax, ctx.x, ctx.bar_w
+    total = sum(ctx.segments)
     for k, ((_seg, color), value) in enumerate(zip(RUNTIME_SEGMENTS, ctx.segments, strict=True)):
         ax.bar(x + (k - 1) * bar_w, value, width=bar_w, color=color, edgecolor="k", linewidth=0.5)
-    total = sum(ctx.segments)
-    top = max(total, ctx.baseline[2] if ctx.baseline is not None else 0.0)
-    ax.text(x, top, f"{total:.3g}", ha="center", va="bottom", fontsize=8)
-    if ctx.baseline is not None:
-        lo, med, hi = ctx.baseline
-        ax.errorbar(
-            [x],
-            [med],
-            yerr=[[med - lo], [hi - med]],
-            fmt="none",
-            ecolor="k",
-            elinewidth=1,
-            capsize=2.5,
-            zorder=5,
-        )
-        ax.plot([x], [med], marker="o", markersize=5, mfc="k", mec="w", mew=0.5, zorder=6)
+        if value > 0 and total > 0:
+            ax.text(
+                x + (k - 1) * bar_w,
+                value / 2,
+                f"{100 * value / total:.1f}%",
+                ha="center",
+                va="center",
+                fontsize=7,
+            )
+    ax.text(x, total, f"{total:.3g}", ha="center", va="bottom", fontsize=8)
     ax.text(
         x,
         -0.06,
@@ -198,7 +170,7 @@ def draw_runtime_triplet(ctx: TripletCtx) -> float:
 
 def runtime_stack_figure(
     scenario: tuple,
-    entries: list[tuple[str, dict, dict]],
+    entries: list[tuple[str, dict]],
     algorithms: list[str],
 ) -> plt.Figure:
     """Draw one figure: the runtime budget per allocator, per hardware.
@@ -207,13 +179,13 @@ def runtime_stack_figure(
     segment-coloured bars per allocator (the triplet per allocator, in the
     file's `algorithm_order`): the fitted W (grey), A_malloc (blue) and
     A_free (orange) side by side. The allocator is named by the label
-    under its triplet; the fitted total is annotated above it, and the
-    measured zero-delay point (median, IQR) is overlaid.
+    under its triplet, the fitted total is annotated above it, and each
+    bar carries its percentage of the triplet's total.
 
     Args:
         scenario: the (setup, x, y, z) scenario key.
         entries: per hardware, (short name, {algorithm: (W, A_malloc,
-        A_free)}, {algorithm: (p25, p50, p75)}).
+        A_free)}).
         algorithms: the allocators' display order.
 
     Returns:
@@ -221,11 +193,11 @@ def runtime_stack_figure(
 
     """
     setup, x, y, z = scenario
-    hw_names = [hw for hw, _budget, _baseline in entries]
+    hw_names = [hw for hw, _budget in entries]
     fig, ax = plt.subplots(figsize=(6.5, 5.0))
     if not hw_names:
         return fig
-    present = [algorithm for algorithm in algorithms if any(algorithm in budget for _hw, budget, _base in entries)]
+    present = [algorithm for algorithm in algorithms if any(algorithm in budget for _hw, budget in entries)]
     n_algorithms = len(present)
     triplet_w = 0.8 / n_algorithms
     bar_w = 0.8 * triplet_w / 3
@@ -235,11 +207,7 @@ def runtime_stack_figure(
             if algorithm not in entries[i][1]:
                 continue
             pos = i + (j - (n_algorithms - 1) / 2) * triplet_w
-            total = draw_runtime_triplet(
-                TripletCtx(ax, pos, bar_w, entries[i][1][algorithm], entries[i][2].get(algorithm), algorithm)
-            )
-            if algorithm in entries[i][2]:
-                max_total = max(max_total, entries[i][2][algorithm][2])
+            total = draw_runtime_triplet(TripletCtx(ax, pos, bar_w, entries[i][1][algorithm], algorithm))
             max_total = max(max_total, total)
     if max_total <= 0:
         return fig
@@ -252,7 +220,6 @@ def runtime_stack_figure(
     handles = [
         Patch(facecolor=color, edgecolor="k", linewidth=0.5, label=segment) for segment, color in RUNTIME_SEGMENTS
     ]
-    handles.append(Line2D([], [], marker="o", color="k", mfc="k", mec="k", label="measured (0 delay)"))
     ax.legend(handles=handles, loc="upper left", frameon=True)
     fig.suptitle(f"Runtime budget: {scenario_name(setup, x, y, z)}")
     return fig
@@ -279,7 +246,6 @@ def main(*, name: str | None = None, show: bool = False, results: Path = RESULTS
         return 1
     with file:
         fits = read_table(file, "fits")
-        baselines = read_table(file, "baselines")
         runs = read_table(file, "runs")
         algorithms = algorithm_order(file)
         sweep = sweep_machine_labels(file)
@@ -300,8 +266,7 @@ def main(*, name: str | None = None, show: bool = False, results: Path = RESULTS
     FIGURES.mkdir(exist_ok=True)
     for scenario in scenarios:
         budget = scenario_budgets(fits, scenario)
-        baseline = scenario_baselines(baselines, scenario)
-        entries = [(str(machine_hardware[m]), budget.get(m, {}), baseline.get(m, {})) for m in machines]
+        entries = [(str(machine_hardware[m]), budget.get(m, {})) for m in machines]
         path = FIGURES / scenario_filename(*scenario)
         runtime_stack_figure(scenario, entries, algorithms).savefig(path)
         print(f"wrote {path}")

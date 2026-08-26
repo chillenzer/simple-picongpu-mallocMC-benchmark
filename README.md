@@ -131,7 +131,8 @@ The Makefile pins the dependency versions (the `dependencies` section of
   (setup, grid) scenario that has at least one usable fit
   (`figures/runtime-stack-<setup>-<grid>.pdf`: the fitted W/A_malloc/A_free
   bars per allocator per hardware, segment-coloured and labelled, fitted
-  total annotated, measured zero-delay point overlaid).
+  total annotated, each bar labelled with its percentage of the triplet's
+  total runtime).
 - `analysis/plot_foil_lct.py` — the FoilLCT bar chart of the no-delay runs
   (`figures/foil_lct.pdf`).
 - `analysis/plot_kelvin_helmholtz.py` — the KelvinHelmholtz violin chart of
