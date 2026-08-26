@@ -6,7 +6,7 @@
 set -e
 set -x
 
-# Absolutize only relative paths: run_all.sh passes the flags file absolute.
+# Absolutize only relative paths: the Makefile passes them relative.
 case "$1" in
   /*) FOLDER=$1 ;;
   *) FOLDER="$(pwd -P)/$1" ;;

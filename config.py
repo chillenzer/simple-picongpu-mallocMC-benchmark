@@ -3,12 +3,13 @@
 SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
 SPDX-License-Identifier: MIT
 
-The build harness (the Makefile, run_all.sh, and the per-machine log_*.sh
-launchers) parses no config format itself; it calls this helper to look up
-individual values:
+The build harness (the Makefile and the per-machine log_*.sh launchers)
+parses no config format itself; it calls this helper to look up individual
+values:
 
     python3 config.py get dependencies.picongpu.hash
     python3 config.py list examples
+    python3 config.py list run-matrix
     python3 config.py check
 
 `check` validates the structure and the file references (flag files,
@@ -224,6 +225,30 @@ def _check_benchmark_files(data: dict, errors: list[str]) -> None:
                 _missing_file(Path("param") / algorithm / "mallocMC.param", "algorithms", errors)
 
 
+def _run_matrix(data: dict) -> list[str]:
+    """Return the (malloc, free) delay combinations as "<malloc>_<free>" tokens.
+
+    The order mirrors the historical run_all.sh sweep: the baseline first,
+    then each arm value twice (malloc delay, then free delay, the other held
+    at 0), then the full joint grid.
+
+    Args:
+        data: the parsed configuration.
+
+    Returns:
+        list[str]: one "<malloc>_<free>" token per combination.
+
+    """
+    baseline = data["delays"]["baseline"]
+    arms = data["delays"]["arms"]["values"]
+    joint = data["delays"]["joint"]["values"]
+    combinations = [f"{baseline[0]}_{baseline[1]}"]
+    for delay in arms:
+        combinations += [f"{delay}_0", f"0_{delay}"]
+    combinations += [f"{malloc_delay}_{free_delay}" for malloc_delay in joint for free_delay in joint]
+    return combinations
+
+
 def _cmd_check() -> None:
     """Validate the structure and file references of `config.json`.
 
@@ -292,6 +317,12 @@ def main() -> int:
         _fail(f"unknown command '{command}' (expected get, list or check)")
     if len(rest) != 1:
         _fail(f"usage: config.py {command} <dotted.key>")
+    if rest[0] == "run-matrix":
+        if command != "list":
+            _fail("'run-matrix' is a list, not a scalar key")
+        for combination in _run_matrix(_load()):
+            print(combination)
+        return 0
     value = _lookup(_load(), rest[0])
     if command == "get":
         _print_scalar(value, rest[0])

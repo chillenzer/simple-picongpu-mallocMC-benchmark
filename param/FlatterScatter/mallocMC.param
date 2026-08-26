@@ -40,7 +40,7 @@ namespace picongpu {
  * FlatterScatter; the malloc and free delays (in nanoseconds) are injected
  * into every allocation and free request and read at run time from the
  * MALLOCMC_MALLOC_DELAY / MALLOCMC_FREE_DELAY environment variables
- * (run_all.sh sets them for each run).
+ * (the Makefile run targets set them for each run).
  */
 using DeviceHeap = mallocMC::Allocator<
     alpaka::AccToTag<pmacc::Acc<DIM1>>,

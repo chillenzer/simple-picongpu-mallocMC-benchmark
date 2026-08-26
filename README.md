@@ -23,7 +23,8 @@ and free latency on simulation runtime.
   (the `algorithms` list in `config.json` and
   `param/<Algorithm>/mallocMC.param`)
 - **Delay combinations** (nanoseconds, the `delays` section of `config.json`;
-  `run_all.sh` derives the full combination set from it): a `(0, 0)`
+  the Makefile run targets derive the full combination set from it,
+  `python3 config.py list run-matrix`): a `(0, 0)`
   baseline, the malloc-delay sweep with free delay 0 and the free-delay sweep
   with malloc delay 0 over the 12 log-spaced values `100`…`100000000`
   (1/4-decade steps, skipping the intermediate steps between `1e5` and
@@ -36,8 +37,8 @@ and free latency on simulation runtime.
   in via `param/<Algorithm>/mallocMC.param`; the delays are not a
   compile-time option, mallocMC reads them at run time from the
   `MALLOCMC_MALLOC_DELAY` and `MALLOCMC_FREE_DELAY` environment variables
-  (set by `run_all.sh` / `run_folder.sh` for every run). Changing the sweep
-  therefore never requires recompiling.
+  (set by `run_folder.sh` for every run). Changing the sweep therefore never
+  requires recompiling.
 - **Layout**: `build/<Example>/<Algorithm>/` holds one build; its flag
   lines are run once per combination:
   `MALLOCMC_MALLOC_DELAY=<M> MALLOCMC_FREE_DELAY=<F> bin/picongpu ...`
@@ -64,36 +65,44 @@ The Makefile pins the dependency versions (the `dependencies` section of
   verifies the referenced flag, parameter, and profile files). It parses the
   file with the stdlib `json` module, so no third-party package (no PyYAML,
   no yq) is needed in the cluster environment.
-- `Makefile` — the build harness and the analysis driver. The harness
-  clones the pinned PIConGPU and mallocMC, prepares one input directory per
-  (example, algorithm) (`pic-create` + parameter overlay) and builds it
-  (`pic-build`); it reads its configuration from `config.json` (validated up
-  front). The overlay copies `param/<Algorithm>/*.param` (the algorithm's
-  `mallocMC.param`, i.e. the creation policy), `param/<Example>/*.param` and
-  any per-(example, algorithm) overrides from `param/<Example>/<Algorithm>/`.
-  It is invoked as `make build PROFILE=<profile> PARAM_DIR=param` (see
-  *Usage* below); `make check` prints the resolved build configuration and
-  stops. The driver builds the analysis numbers and figures: `make` (the
-  default goal) makes all figures plus the summary tables, `make results`
-  only rebuilds `output/results.h5` from the run logs, `make summary` only
-  prints the tables, and a single figure is built by its file name, e.g.
-  `make figures/foil_lct.pdf`. The numbers are rebuilt from the run logs on
-  every invocation; make does not list the log files themselves as
-  prerequisites (their names are machine-specific).
-- `run_all.sh` — for every example, every algorithm and every `(malloc
-  delay, free delay)` combination derived from the `delays` section of
-  `config.json`, runs the example's flag lines from the matching build with
-  both environment variables set; `bash run_all.sh --check` prints the
-  derived run matrix and stops.
+- `Makefile` — the build harness, the run orchestrator, and the analysis
+  driver. The harness clones the pinned PIConGPU and mallocMC, prepares one
+  input directory per (example, algorithm) (`pic-create` + parameter
+  overlay) and builds it (`pic-build`); it reads its configuration from
+  `config.json` (validated up front). The overlay copies
+  `param/<Algorithm>/*.param` (the algorithm's `mallocMC.param`, i.e. the
+  creation policy), `param/<Example>/*.param` and any per-(example,
+  algorithm) overrides from `param/<Example>/<Algorithm>/`. It is invoked as
+  `make build PROFILE=<profile> PARAM_DIR=param` (see *Usage* below);
+  `make check` prints the resolved build and run configuration and stops.
+  The run orchestrator sweeps the full run matrix (examples x algorithms x
+  (malloc delay, free delay) combinations) once per *repetition*
+  (`REPEATS`, default 1) of `make runs MACHINE=<machine>`; `REP=<i>`
+  restricts an invocation to one repetition (the slurm case: one job per
+  repetition). Every finished (combination, repetition) writes a stamp
+  under `run-stamps/`, so an interrupted series resumes where it stopped.
+  The stamps depend only on the example's flags file: rebuilding the
+  binaries never invalidates finished runs, and `make clean` / `distclean`
+  do not touch `run-stamps/` (`make clean-runs [MACHINE=<m>]` does). Each
+  run gets one self-contained log in the machine's output directory (a
+  metadata header — machine, commit, the pinned dependency hashes, the
+  slurm job when running under slurm, and the sha256 of the binary used —
+  plus the run's full output). The analysis driver builds the numbers and
+  figures: `make` (the default goal) makes all figures plus the summary
+  tables, `make results` only rebuilds `output/results.h5` from the run
+  logs, `make summary` only prints the tables, and a single figure is built
+  by its file name, e.g. `make figures/foil_lct.pdf`. The numbers are
+  rebuilt from the run logs on every invocation; make does not list the log
+  files themselves as prerequisites (their names are machine-specific).
 - `run_folder.sh` — runs one already-built example folder, once per flag
   line; takes optional fourth (malloc delay, default `0`) and fifth (free
   delay, default `0`) arguments in nanoseconds, passed via the
   `MALLOCMC_MALLOC_DELAY` / `MALLOCMC_FREE_DELAY` environment variables.
 - `log_{setup,run}_<machine>.sh` — per-machine launchers (hal, rosi,
-  rosi-a100): log the environment, load the machine's modules, and run
-  `make build` / `run_all.sh` with the machine's profile from the `machines`
-  table in `config.json`, writing the logs to the machine's output
-  directory.
+  rosi-a100): log the environment, load the machine's modules (setup), and
+  run `make build` / `make runs MACHINE=<machine>` with the machine's
+  profile from the `machines` table in `config.json`, writing the session
+  log to the machine's output directory.
 - `profiles/` — HPC environment profiles (module/spack setup, `PIC_BACKEND`,
   `PICSRC`). One per machine.
 - `flags/` — one `picongpu` command line per benchmark run, per example.
@@ -152,8 +161,8 @@ resolving it, which is the way to sanity-check a change before a long build
 or benchmark:
 
 ```
-make check
-bash run_all.sh --check
+make check             # includes the derived run matrix
+python3 config.py list run-matrix
 ```
 
 1. Build all examples and algorithms (slow the first time: one full
@@ -182,27 +191,45 @@ bash run_all.sh --check
      `pic-build` runs incrementally. `make -j` builds the independent
      (example, algorithm) pairs in parallel; the default is serial.
 
-   `make clean` removes `build/`, `figures/` and `output/results.h5`,
-   `make distclean` removes `src/` as well; alternatively delete just a
-   single `build/<Ex>/<Algo>/` folder, or only its `.input-stamp`, to
-   rebuild one example and algorithm.
+    `make clean` removes `build/`, `figures/` and `output/results.h5`,
+    `make distclean` removes `src/` as well; neither touches the run stamps
+    (finished runs stay finished after a rebuild). Alternatively delete just
+    a single `build/<Ex>/<Algo>/` folder, or only its `.input-stamp`, to
+    rebuild one example and algorithm.
 
-2. Run the benchmarks:
+2. Run the benchmarks (the sweep, once per repetition):
 
    ```
-   bash run_all.sh profiles/hal.sh flags
+   make runs MACHINE=hal                    # REPEATS=1 (the default)
+   make runs MACHINE=hal REPEATS=3          # three full-sweep repetitions
+   make runs MACHINE=rosi REPEATS=3 REP=2   # only repetition 2 (one slurm job)
+   make full MACHINE=hal                    # build, then run
+   make clean-runs [MACHINE=hal]            # forget finished runs (logs kept)
    ```
 
-      For every example, every algorithm and every `(malloc delay, free
-      delay)` combination derived from the `delays` section of `config.json`,
-      each flag line is run as
-     `MALLOCMC_MALLOC_DELAY=<M> MALLOCMC_FREE_DELAY=<F> bin/picongpu ...`
-     from `build/<Ex>/<Algo>/`. Stdout contains one
-     `Running example: <Ex> / Using allocator: <Algo>, malloc delay: <M> ns,
-     free delay: <F> ns` section per run; each run's result is picongpu's
-     `calculation ... simulation time:` line.
+   One run is one (example, algorithm) build through one `(malloc delay,
+   free delay)` combination derived from the `delays` section of
+   `config.json`: every flag line of the example is run as
+   `MALLOCMC_MALLOC_DELAY=<M> MALLOCMC_FREE_DELAY=<F> bin/picongpu ...` from
+   `build/<Ex>/<Algo>/` (via `run_folder.sh`), in sweep order (example,
+   algorithm, repetition, then the delay combination). Each run writes one
+   self-contained
+   log `run_<machine>_<Ex>_<Algo>_m<M>_f<F>_r<I>_<time>.txt` to the machine's
+   output directory (metadata header: machine, commit, the pinned
+   dependencies, the slurm job id when running under slurm, and the sha256
+   of the binary used; then the run's full output, including the
+   `calculation ... simulation time:` line). Each finished run stamps
+   `run-stamps/<machine>/<Ex>/<Algo>/<M>_<F>/rep-<I>.stamp` (its content:
+   the log path), so an interrupted series resumes where it stopped, and a
+   rebuild never invalidates finished runs. The launchers
+   `log_run_<machine>.sh` do this with a session log (environment block +
+   progress) on top; the rosi ones take the repetition number as their
+   first argument (`sbatch log_run_rosi.sh 1`, with `REPEATS` in the
+   environment) so each slurm job runs exactly one full-sweep repetition —
+   all slurm allocation options come from the `sbatch` line, the scripts
+   carry no `#SBATCH` directives.
 
-Single run (one built folder, one combination):
+Single run (one built folder, one combination, one flags file):
 
 ```
 bash run_folder.sh build/FoilLCT/FlatterScatter flags/FoilLCT.flags profiles/hal.sh 10000 0
@@ -211,16 +238,17 @@ bash run_folder.sh build/FoilLCT/FlatterScatter flags/FoilLCT.flags profiles/hal
 ## Changing what is benchmarked
 
 Most of it is now in `config.json` (run `python3 config.py check` after
-editing; `make check` / `bash run_all.sh --check` show what
+editing; `make check` / `python3 config.py list run-matrix` show what
 would be done).
 
 - **Delay combinations**: edit the `delays` section of `config.json`
-  (`baseline`, `arms.values`, `joint.values`); `run_all.sh` derives the full
-  combination set from it: `baseline` is the `(0, 0)` reference run, `arms`
-  are the single-delay sweeps (one value at a time with the other delay held
-  at 0, on a log grid from `100` to `1e8` ns in 1/4-decade steps, skipping
-  the intermediate steps between `1e5` and `1e6`), and `joint` is a 3x3 grid
-  coupling both delays so the two-operation fit is constrained off the arms.
+  (`baseline`, `arms.values`, `joint.values`); the Makefile run targets
+  derive the full combination set from it: `baseline` is the `(0, 0)`
+  reference run, `arms` are the single-delay sweeps (one value at a time with
+  the other delay held at 0, on a log grid from `100` to `1e8` ns in
+  1/4-decade steps, skipping the intermediate steps between `1e5` and `1e6`),
+  and `joint` is a 3x3 grid coupling both delays so the two-operation fit is
+  constrained off the arms.
   The delays are applied at run time via `MALLOCMC_MALLOC_DELAY` /
   `MALLOCMC_FREE_DELAY`, so changing the sweep requires no rebuild. The large
   delays let each Amdahl term `A*s0/(d+s0)` decay into its `1/d` tail so the

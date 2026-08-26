@@ -9,7 +9,6 @@ set -e
 # The machine-specific values (output folder, profile) come from config.json.
 MACHINE=hal
 FOLDER=$(python3 config.py get "machines.$MACHINE.output")
-PROFILE=$(python3 config.py get "machines.$MACHINE.profile")
 FILENAME="$FOLDER/run_$(date --rfc-3339=seconds | sed 's/ /_/g').txt"
 mkdir -p "$FOLDER"
 
@@ -31,4 +30,8 @@ mkdir -p "$FOLDER"
   echo "========================"
 } >>"$FILENAME"
 
-bash run_all.sh "$PROFILE" flags/ 2>&1 | tee -a "$FILENAME"
+# REPEATS (default 1) and REP (default: all repetitions) are environment
+# variables, like the Makefile's invocation values. Each finished
+# (combination, repetition) writes a stamp, so an interrupted sweep
+# continues where it stopped.
+make runs MACHINE="$MACHINE" REPEATS="${REPEATS:-1}" REP="${REP:-}" 2>&1 | tee -a "$FILENAME"

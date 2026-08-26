@@ -3,7 +3,7 @@
 # SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
 # SPDX-License-Identifier: MIT
 #
-# Two purposes, one Makefile:
+# Three purposes, one Makefile:
 #
 # 1. The benchmark build harness (rewritten from setup.sh): clones the
 #    pinned PIConGPU and mallocMC into src/, prepares one input directory
@@ -15,7 +15,27 @@
 #      make build PROFILE=profiles/hal.sh PARAM_DIR=param   # clone + inputs + builds
 #      make check                                           # resolved configuration
 #
-# 2. The analysis driver: builds the benchmark numbers (output/results.h5)
+# 2. The benchmark run orchestrator (rewritten from run_all.sh): sweeps one
+#    full repetition of the run matrix (examples x algorithms x (malloc
+#    delay, free delay) combinations, the `delays` section of config.json)
+#    per invocation, one (combination, repetition) at a time:
+#
+#      make runs MACHINE=hal                          # all repetitions
+#      make runs MACHINE=rosi REPEATS=3 REP=2         # one repetition (= one slurm job)
+#      make full MACHINE=hal                          # build, then run
+#      make clean-runs [MACHINE=hal]                  # forget finished runs
+#
+#    Each finished (example, algorithm, combination, repetition) writes a
+#    stamp under run-stamps/, which makes an interrupted series resumable.
+#    The stamps depend only on the example's flags file, so rebuilding the
+#    binaries never invalidates finished runs (and `make clean` /
+#    `distclean` do not touch run-stamps/). Every run gets one
+#    self-contained log (run_<machine>_<Ex>_<Algo>_m<M>_f<F>_r<I>_<time>.txt)
+#    in the machine's output directory: a metadata header (machine, commit,
+#    the pinned dependency hashes, the slurm job when running under slurm,
+#    the sha256 of the binary used) followed by the run's full output.
+#
+# 3. The analysis driver: builds the benchmark numbers (output/results.h5)
 #    and the figures (figures/) from the run logs. The numbers are rebuilt
 #    from the run logs on every invocation: make deliberately does not list
 #    files of the output/ tree as prerequisites, because their names are
@@ -27,7 +47,9 @@
 #    with `make results`.
 #
 # `make clean` removes everything generated (build/, figures/ and
-# output/results.h5); `make distclean` removes src/ as well.
+# output/results.h5); `make distclean` removes src/ as well. Neither touches
+# the run stamps (run-stamps/), which are the record of finished runs;
+# `make clean-runs` removes them.
 #
 # From the repository root, with the machine's environment loaded (in
 # practice via the log_setup_<machine>.sh launchers) for the harness.
@@ -37,7 +59,9 @@
 # the build flags, the profile content, the toolchain versions). Like
 # setup.sh, `make build` without -j runs the targets serially;
 # `make build -j` builds the independent (example, algorithm) pairs in
-# parallel.
+# parallel. The run targets are serial by construction (one GPU): `runs`
+# fans out to one sub-make per (combination, repetition) stamp in sweep
+# order, and a stamp that is already up to date is skipped.
 
 .DEFAULT_GOAL := all
 
@@ -98,6 +122,30 @@ PROFILE   ?=
 PARAM_DIR ?= param
 PARAM_DIR := $(patsubst %/,%,$(strip $(PARAM_DIR)))
 
+# Runs are addressed by the machines table of config.json; REPEATS is how
+# many full-sweep repetitions the series is made of, and REP restricts an
+# invocation to one repetition (the slurm case: one job per repetition).
+# Like PROFILE, MACHINE is an invocation value rather than a configuration
+# key, so a stray exported value must not stand in for it.
+ifeq ($(origin MACHINE),environment)
+MACHINE =
+endif
+MACHINE ?=
+REPEATS ?= 1
+REP ?=
+
+# The (malloc, free) delay combinations of one repetition, one
+# "<malloc>_<free>" token per line, derived from config.json by config.py.
+COMBOS := $(shell $(PY) config.py list run-matrix)
+
+# Only `runs` and `full` need a machine; `clean-runs` also accepts an empty
+# one (it then removes the stamps of every machine).
+ifneq ($(filter runs full,$(MAKECMDGOALS)),)
+ifeq ($(strip $(MACHINE)),)
+$(error specify MACHINE=<machine> from the config machines table, e.g. make runs MACHINE=hal)
+endif
+endif
+
 # Stamps: written by the phony drivers below, consumed as prerequisites.
 PICONGPU_STAMP    := $(PICONGPU_ABS)/.dep-stamp
 MALLOCMC_STAMP    := $(MALLOCMC_ABS)/.dep-stamp
@@ -115,7 +163,8 @@ endif
 endif
 
 .PHONY: all build check clean distclean results summary figures \
-	figures-sweeps figures-runtime-stack picongpu-src mallocmc-src env-check
+	figures-sweeps figures-runtime-stack picongpu-src mallocmc-src env-check \
+	runs full clean-runs
 
 # --- per (example, algorithm) harness targets ------------------------------
 
@@ -166,16 +215,114 @@ endef
 
 $(foreach p,$(PAIRS),$(eval $(call pair_rules,$(firstword $(subst /, ,$(p))),$(lastword $(subst /, ,$(p))),$(p))))
 
+# --- run stamps: one per (combination, repetition) --------------------------
+#
+# A run is one (example, algorithm) build through one (malloc delay, free
+# delay) combination: the example's whole flags file once, with the
+# combination's delays in the environment. The sweep order is example, then
+# algorithm, then repetition, and within a repetition the combination order
+# of `config.py list run-matrix`, so every repetition is a full sweep and
+# when REPEATS is finished, every build has finished it.
+#
+# The stamp is the record that the run happened (its content is the run's
+# log), and it is what makes an interrupted series resumable. Its only
+# prerequisite is the example's flags file: editing flags/<Ex>.flags
+# invalidates exactly that example's stamped runs, and nothing that
+# `make build` touches (pins, profile, toolchain, a rebuild) ever
+# invalidates a finished run. The recipe itself refuses to start while the
+# build's binary is missing.
+#
+# The repetitions of this invocation (all of 1..REPEATS, or only REP in the
+# slurm case: one job per repetition) are expanded at parse time into one
+# explicit target per (combination, repetition).
+REPS := $(strip $(shell seq 1 '$(REPEATS)' 2>/dev/null))
+
+# $1 = malloc delay (ns), $2 = free delay (ns), $3 = example, $4 = algorithm,
+# $5 = repetition number. The recipe carries no shell of its own (the rule
+# is generated by $(eval $(call ...)) and is therefore expanded twice), it
+# just hands the parameters to run_stamp.sh, which does the rest.
+define run_stamp_rules
+run-stamps/$(MACHINE)/$(3)/$(4)/$(1)_$(2)/rep-$(5).stamp: flags/$(3).flags
+	@bash run_stamp.sh "$(MACHINE)" "$(REPEATS)" "$(3)" "$(4)" "$(1)" "$(2)" "$(5)"
+endef
+
+$(foreach c,$(COMBOS),$(foreach e,$(EXAMPLES),$(foreach a,$(ALGORITHMS),$(foreach r,$(REPS),$(eval $(call run_stamp_rules,$(firstword $(subst _, ,$(c))),$(lastword $(subst _, ,$(c))),$(e),$(a),$(r)))))))
+
+# --- run targets -------------------------------------------------------------
+
+ifeq ($(strip $(REP)),)
+RUN_REPS := $(REPS)
+else
+RUN_REPS := $(REP)
+endif
+RUN_STAMPS := $(foreach e,$(EXAMPLES),$(foreach a,$(ALGORITHMS),$(foreach i,$(RUN_REPS),$(addprefix run-stamps/$(MACHINE)/$(e)/$(a)/,$(addsuffix /rep-$(i).stamp,$(COMBOS))))))
+
+# The fan-out: one sub-make per (combination, repetition) stamp, in sweep
+# order, serially (one GPU; -j cannot parallelize a single recipe). A stamp
+# that is up to date (present and not older than the flags file, so the
+# freshness test make itself would apply) is skipped without a sub-make;
+# everything else goes through make's normal freshness rules.
+runs:
+	@python3 config.py get "machines.$(MACHINE).output" >/dev/null || { echo "make runs: MACHINE=$(MACHINE) is not in the config machines table" >&2; exit 1; }
+	@if [ -z "$(REPS)" ]; then
+	  echo "make runs: REPEATS must be a positive integer (got '$(REPEATS)')" >&2
+	  exit 1
+	fi
+	@if [ -n "$(REP)" ]; then
+	  case "$$(printf '%s' "$(REP)" | tr -d '0-9')" in
+	    "") : ;;
+	    *) echo "make runs: REP must be a positive integer (got '$(REP)')" >&2; exit 1 ;;
+	  esac
+	  if [ "$(REP)" -lt 1 ] || [ "$(REP)" -gt "$(REPEATS)" ]; then
+	    echo "make runs: REP=$(REP) is outside 1..$(REPEATS)" >&2
+	    exit 1
+	  fi
+	fi
+	@STAMPED=0
+	@for stamp in $(RUN_STAMPS); do
+	  EX=$$(printf '%s\n' "$$stamp" | cut -d/ -f3)
+	  if [ -f "$$stamp" ] && [ ! "flags/$$EX.flags" -nt "$$stamp" ]; then
+	    STAMPED=$$(($$STAMPED + 1))
+	    continue
+	  fi
+	  $(MAKE) --no-print-directory "$$stamp"
+	done
+	@echo "runs [$(MACHINE)]: $${STAMPED} of $(words $(RUN_STAMPS)) runs already stamped."
+
+# The one-command machine-side flow: build the harness, then run the whole
+# series. The analysis (figures, summary) stays a plain `make`, which is
+# where it belongs once the logs are on a laptop.
+full:
+	@$(MAKE) build PROFILE="$$(python3 config.py get machines.$(MACHINE).profile)" PARAM_DIR=param
+	@$(MAKE) runs
+
+# Remove the run stamps (of all machines, or of one): the next `make runs`
+# then repeats those series, into new logs. The logs themselves are kept.
+clean-runs:
+	@if [ -n "$(MACHINE)" ]; then
+	  python3 config.py get "machines.$(MACHINE).output" >/dev/null || { echo "make clean-runs: MACHINE=$(MACHINE) is not in the config machines table" >&2; exit 1; }
+	  rm -rf "run-stamps/$(MACHINE)"
+	  echo "removed run-stamps/$(MACHINE)"
+	else
+	  rm -rf run-stamps
+	  echo "removed run-stamps"
+	fi
+
 # --- top-level targets -----------------------------------------------------
 
 all: figures summary
 
 build: $(BINARIES)
+	@echo "=== binaries ==="
+	@sha256sum $(BINARIES)
 
 check:
 	$(PY) config.py check
 	@printf 'examples:   %s\n' "$(EXAMPLES)"
 	@printf 'algorithms: %s\n' "$(ALGORITHMS)"
+	@printf 'runs:       %s combinations per repetition: %s\n' \
+		"$$(python3 config.py list run-matrix | wc -l | tr -d ' ')" \
+		"$$(python3 config.py list run-matrix | tr '\n' ' ' | sed 's/ *$$//')"
 	@printf 'picongpu:   %s @ %s\n' "$(PICONGPU_ABS)" "$(PICONGPU_SHORT)"
 	@printf 'mallocmc:   %s @ %s\n' "$(MALLOCMC_ABS)" "$(MALLOCMC_SHORT)"
 	# Each value comes through a double-quoted command substitution, so any

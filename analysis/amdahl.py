@@ -31,7 +31,7 @@ reported instead. The parameter covariance from `curve_fit` is propagated to
 f (and to W, N, A, s0) as standard errors.
 
 When a sweep imposes a delay on both operations (the (malloc_delay,
-free_delay) combination runs of run_all.sh), each operation gets its own
+free_delay) combination runs of the delay matrix), each operation gets its own
 Amdahl term, i.e. the native cost of an operation only fades while its own
 imposed delay grows. Such a sweep is then fitted with the two-operation
 (separable, no cross-term) model

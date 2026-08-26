@@ -4,7 +4,8 @@ SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zent
 SPDX-License-Identifier: MIT
 
 Shared by the analysis scripts: every one of them starts from the `set -x`
-trace of a `run_all.sh` / `run_folder.sh` run and needs one record per
+trace of a `run_folder.sh` run (invoked by the Makefile run targets, or by
+the historical `run_all.sh`) and needs one record per
 `bin/picongpu` run. This module extracts those records, independent of which
 historical log layout produced the trace:
 
