@@ -344,12 +344,12 @@ package files, installable by any version of `micromamba`, `mamba`, or
 `conda` without invoking a solver (`make env` installs from it).
 
 - Primary path: `make env` creates the locked environment with the first
-  of `micromamba`, `conda`, `mamba` found on PATH (the order prefers the
-  front ends whose `create --file` support for explicit locks is the most
-  established; the install itself is solver-free for all of them). Force
-  a specific tool with `make env ENV_TOOL=<tool>`. `micromamba` is the
-  recommended choice (single static binary, no root needed,
-  <https://micro.mamba.pm/api/micromamba/linux-64/latest>):
+  of `mamba`, `micromamba`, `conda` found on PATH (mamba is the default;
+  the install itself is solver-free for all of them). Force a specific
+  tool with `make env ENV_TOOL=<tool>` (`micromamba` is a single static
+  binary, no root needed,
+  <https://micro.mamba.pm/api/micromamba/linux-64/latest>; on mamba 1.x,
+  which cannot read the explicit lock, use `ENV_TOOL=conda`):
 
   ```
   make env                                  # create the locked environment

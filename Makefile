@@ -344,13 +344,13 @@ check:
 #                        micromamba, mamba, or conda installs it without
 #                        invoking a solver
 # `make env` creates the environment with the first of these tools found
-# on PATH:
-#   micromamba  standalone binary, no root needed (recommended;
-#               https://micro.mamba.pm/api/micromamba/linux-64/latest)
-#   conda       real conda; its `create --file <explicit lock>` is the
-#               most broadly supported install path (miniforge always
-#               ships it)
-#   mamba       last resort (systems with mamba but no conda)
+# on PATH (mamba is the default; it must be new enough to read the
+# explicit lock, i.e. mamba 2.x -- mamba 1.x looks for a package named
+# after the lock file; use ENV_TOOL=conda for such installs):
+#   mamba       default
+#   micromamba  standalone binary, no root needed
+#               (https://micro.mamba.pm/api/micromamba/linux-64/latest)
+#   conda       base conda, e.g. for older mamba installs
 # (All three take the same `create -f <explicit lock>` form; because the
 # lock is explicit, none of them invoke a solver.) Force a specific tool
 # with `make env ENV_TOOL=<tool>`. Re-running is safe for micromamba and
@@ -358,19 +358,19 @@ check:
 # environment as existing (conda env remove first).
 ENV_NAME   := mallocmc-bench
 ENV_LOCK   := conda-linux-64.lock
+MAMBA      := $(shell command -v mamba 2>/dev/null)
 MICROMAMBA := $(shell command -v micromamba 2>/dev/null)
 CONDA      := $(shell command -v conda 2>/dev/null)
-MAMBA      := $(shell command -v mamba 2>/dev/null)
 
 ifeq ($(ENV_TOOL),)
+ifeq ($(MAMBA),)
 ifeq ($(MICROMAMBA),)
-ifeq ($(CONDA),)
-ENV_TOOL := mamba
-else
 ENV_TOOL := conda
-endif
 else
 ENV_TOOL := micromamba
+endif
+else
+ENV_TOOL := mamba
 endif
 endif
 
