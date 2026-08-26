@@ -9,8 +9,10 @@ machine's hardware title (from the file's `machine_titles`): one row per
 algorithm present in the data (in the
 `algorithm_order` of the file), the malloc delay sweep (free delay 0) on
 the left and the free delay sweep (malloc delay 0) on the right, each axis
-titled after the swept delay, all axes sharing the x- and y-axes. Each swept
-curve shows the median with IQR error bars and overlays the fitted model
+titled after the swept delay, all axes sharing the x- and y-axes and
+drawing each scenario (setup, grid) with the same colour and marker, on
+every axis that carries it. Each swept curve shows the median with IQR
+error bars and overlays the fitted model
 (solid), the extrapolation to A_malloc = A_free = 0 (dashed) and, for
 two-operation fits, the intermediate extrapolation that keeps only the held
 operation's native cost (dotted); the gaps at the smallest delay are marked
@@ -53,7 +55,9 @@ mpl.use("pdf")
 
 FIGURES = Path("figures")
 
-# one distinct marker per (setup, grid) series, shared by all axes
+# one distinct marker per (setup, grid) series, shared by all axes; the
+# series' colour is likewise assigned once per series (from the default
+# property cycle), in the same order as its marker.
 MARKERS = ("o", "s", "^", "D", "v", "P", "h", "X", "8")
 # A gap marker is only drawn when the model difference exceeds this (s).
 VISIBLE_GAP_S = 1e-9
@@ -122,6 +126,7 @@ class Cluster(NamedTuple):
     short: str
     secondary_short: str
     series_markers: dict
+    series_colors: dict
     fits_by_key: dict
 
 
@@ -506,15 +511,18 @@ def draw_series(cluster: Cluster, result: pd.DataFrame, name: tuple) -> bool:
     # the autoscaled x limits.
     pos = x > 0
     x, ye_min, y, ye_max = x[pos], ye_min[pos], y[pos], ye_max[pos]
-    eb = cluster.ax.errorbar(
+    key = _group_key((name[0], name[2], name[3], name[4]))
+    cluster.ax.errorbar(
         x,
         y,
         yerr=(y - ye_min, ye_max - y),
         linestyle="none",
-        marker=cluster.series_markers[_group_key(name[:5])],
+        marker=cluster.series_markers[key],
         label=series_label(name, cluster.secondary_short),
+        color=cluster.series_colors[key],
     )
-    color = eb.lines[0].get_color()
+    # The fit is keyed by (setup, algorithm, grid): unlike the colour and
+    # marker, it depends on the algorithm of this row.
     params = cluster.fits_by_key.get(_group_key(name[:5]))
     # A 1-D fit only applies when it was made on the plotted delay; the
     # 2-D fit applies to either direction.
@@ -522,10 +530,16 @@ def draw_series(cluster: Cluster, result: pd.DataFrame, name: tuple) -> bool:
         params = None
     if params is None:
         return False
-    return draw_model_lines(cluster, x, color, params, float(name[5]) * 1e-9)
+    return draw_model_lines(cluster, x, cluster.series_colors[key], params, float(name[5]) * 1e-9)
 
 
-def plot_delay_axis(ax: plt.Axes, data: MachineData, series_markers: dict, x_delay: str = MALLOC_DELAY) -> plt.Axes:
+def plot_delay_axis(
+    ax: plt.Axes,
+    data: MachineData,
+    series_markers: dict,
+    series_colors: dict,
+    x_delay: str = MALLOC_DELAY,
+) -> plt.Axes:
     """Fill one sweep axis: the data curves, the fits, and the axis decoration.
 
     The x-axis shows `x_delay`; the other delay is held per curve.
@@ -534,6 +548,7 @@ def plot_delay_axis(ax: plt.Axes, data: MachineData, series_markers: dict, x_del
         ax: the axis to fill.
         data: the machine's drawing data.
         series_markers: the per-series marker assignment.
+        series_colors: the per-series colour assignment.
         x_delay: the swept delay column, MALLOC_DELAY or FREE_DELAY.
 
     Returns:
@@ -544,7 +559,7 @@ def plot_delay_axis(ax: plt.Axes, data: MachineData, series_markers: dict, x_del
     short = "malloc" if x_delay == MALLOC_DELAY else "free"
     secondary_short = "free" if secondary == FREE_DELAY else "malloc"
     fits_by_key = collect_fits(data.fits, data.covs)
-    cluster = Cluster(ax, x_delay, short, secondary_short, series_markers, fits_by_key)
+    cluster = Cluster(ax, x_delay, short, secondary_short, series_markers, series_colors, fits_by_key)
     # One curve per (setup, algorithm, grid, held delay): the x-axis is
     # `x_delay`.
     has_2d = False
@@ -564,13 +579,14 @@ def plot_delay_axis(ax: plt.Axes, data: MachineData, series_markers: dict, x_del
     return ax
 
 
-def single_algorithm_figure(title: str, data: MachineData, series_markers: dict) -> plt.Figure:
+def single_algorithm_figure(title: str, data: MachineData, series_markers: dict, series_colors: dict) -> plt.Figure:
     """Build the single-row figure: the two sweeps side by side, both axes shared.
 
     Args:
         title: the figure title (the hardware the runs were made on).
         data: the machine's drawing data.
         series_markers: the per-series marker assignment.
+        series_colors: the per-series colour assignment.
 
     Returns:
         plt.Figure: the figure.
@@ -578,8 +594,8 @@ def single_algorithm_figure(title: str, data: MachineData, series_markers: dict)
     """
     fig, axes = plt.subplots(1, 2, figsize=(6.5 * 2, 5.5), sharex=True, sharey=True, layout="constrained")
     fig.suptitle(title)
-    plot_delay_axis(axes[0], data, series_markers, x_delay=MALLOC_DELAY)
-    plot_delay_axis(axes[1], data, series_markers, x_delay=FREE_DELAY)
+    plot_delay_axis(axes[0], data, series_markers, series_colors, x_delay=MALLOC_DELAY)
+    plot_delay_axis(axes[1], data, series_markers, series_colors, x_delay=FREE_DELAY)
     # The y-axis is shared: subplots already hides the right axis'
     # tick labels, drop its label too. The shared x-axis keeps its tick
     # labels under both side-by-side columns, as in any subplots figure.
@@ -590,7 +606,13 @@ def single_algorithm_figure(title: str, data: MachineData, series_markers: dict)
     return fig
 
 
-def multi_algorithm_figure(title: str, data: MachineData, series_markers: dict, algorithms: list[str]) -> plt.Figure:
+def multi_algorithm_figure(
+    title: str,
+    data: MachineData,
+    series_markers: dict,
+    series_colors: dict,
+    algorithms: list[str],
+) -> plt.Figure:
     """Build the multi-row figure: one row per algorithm, the left column names it.
 
     All data axes share the x- and y-axes; the shared x tick labels and
@@ -600,6 +622,7 @@ def multi_algorithm_figure(title: str, data: MachineData, series_markers: dict, 
         title: the figure title (the hardware the runs were made on).
         data: the machine's drawing data.
         series_markers: the per-series marker assignment.
+        series_colors: the per-series colour assignment.
         algorithms: the algorithms present in the data, in row order.
 
     Returns:
@@ -635,8 +658,8 @@ def multi_algorithm_figure(title: str, data: MachineData, series_markers: dict, 
         label_ax = fig.add_subplot(gridspec[i, 0])
         label_ax.axis("off")
         label_ax.text(0.9, 0.5, algorithm, rotation=90, ha="right", va="center", fontsize=12)
-        plot_delay_axis(malloc_ax, sub_data[algorithm], series_markers, x_delay=MALLOC_DELAY)
-        plot_delay_axis(free_ax, sub_data[algorithm], series_markers, x_delay=FREE_DELAY)
+        plot_delay_axis(malloc_ax, sub_data[algorithm], series_markers, series_colors, x_delay=MALLOC_DELAY)
+        plot_delay_axis(free_ax, sub_data[algorithm], series_markers, series_colors, x_delay=FREE_DELAY)
         free_ax.set_ylabel("")
         row_axes.append((malloc_ax, free_ax))
     # The x-axis is shared, but add_subplot(sharex=...) does not hide the
@@ -671,22 +694,30 @@ def machine_figure(title: str, data: MachineData, algorithms: list[str]) -> plt.
 
     """
     stats = data.stats
-    # Assign each (setup, grid) series its marker once, in plot order, so
-    # the same series is drawn with the same marker on every axis.
+    # Assign each scenario (setup, grid) its marker and its colour once, in
+    # plot order, so the same scenario is drawn with the same marker and
+    # colour on every axis and in every algorithm row, even where only some
+    # axes carry it.
+    cycle = plt.rcParams["axes.prop_cycle"].by_key()["color"]
     series_markers = {}
-    for name, _ in stats.groupby(list(GROUP_KEYS), dropna=False):
+    series_colors = {}
+    for name, _ in stats.groupby(["setup", "x", "y", "z"], dropna=False):
         key = _group_key(name)
         if key not in series_markers:
             series_markers[key] = MARKERS[len(series_markers) % len(MARKERS)]
-    if len(series_markers) > len(MARKERS):
-        warnings.warn(f"more than {len(MARKERS)} (setup, algorithm, grid) series; the markers repeat", stacklevel=2)
+            series_colors[key] = cycle[len(series_colors) % len(cycle)]
+    if len(series_markers) > len(MARKERS) or len(series_colors) > len(cycle):
+        warnings.warn(
+            f"more than {min(len(MARKERS), len(cycle))} (setup, grid) scenarios; markers and colours repeat",
+            stacklevel=2,
+        )
     present = set(stats["algorithm"])
     present_algorithms = [algorithm for algorithm in algorithms if algorithm in present]
     if len(present_algorithms) <= 1:
         # Single-row layout: one algorithm only, no row header.
-        fig = single_algorithm_figure(title, data, series_markers)
+        fig = single_algorithm_figure(title, data, series_markers, series_colors)
     else:
-        fig = multi_algorithm_figure(title, data, series_markers, present_algorithms)
+        fig = multi_algorithm_figure(title, data, series_markers, series_colors, present_algorithms)
     # Re-limit the shared axes to snugly fit the drawn content (data
     # points, fit lines and sleeves; see `snug_xlims` and `snug_ylims`)
     # instead of the padded autoscaled range.
