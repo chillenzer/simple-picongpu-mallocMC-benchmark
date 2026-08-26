@@ -11,9 +11,12 @@ triplet of three segment bars per allocator (in the file's
 `algorithm_order`): the fitted W (grey), A_malloc (blue) and A_free
 (orange) side by side, so the individual costs compare directly across the
 allocators, with the fitted total annotated above each triplet and each bar
-labelled with its percentage of the triplet's total runtime. By default
-every scenario gets its figure, `--name` restricts the run to one, e.g.
-`--name FoilLCT-256x1280`.
+labelled with its percentage of the triplet's total runtime. The segments
+come from the scenario's combined (shared-parameter) fit -- one shared W
+and the per-allocator A_malloc/A_free of the fit made across all of the
+scenario's algorithms -- where it exists, and from the allocator's
+individual fit otherwise. By default every scenario gets its figure,
+`--name` restricts the run to one, e.g. `--name FoilLCT-256x1280`.
 """
 
 from __future__ import annotations
@@ -60,58 +63,123 @@ def _floor0(value: float) -> float:
     return max(0.0, float(value))
 
 
-def list_scenarios(fits: pd.DataFrame) -> list[tuple]:
-    """Collect the unique (setup, x, y, z) scenarios with at least one usable fit.
-
-    Rows of the fits table without a complete fit (no model or a missing
-    W) are ignored, so a scenario whose machines only have no-delay runs
-    gets no figure.
+def _scenario_sort_key(scenario: tuple) -> tuple:
+    """Return the sort key of a (setup, x, y, z) scenario.
 
     Args:
-        fits: the fits table of the results file.
+        scenario: the scenario key (a missing 2-D z sorts first).
+
+    Returns:
+        tuple: the sort key.
+
+    """
+    return (scenario[0], scenario[1] or 0, scenario[2] or 0, scenario[3] if scenario[3] is not None else -1)
+
+
+def _scenario_keys(table: pd.DataFrame) -> list[tuple]:
+    """Collect the ordered unique scenario keys of one fits-like table.
+
+    Rows without a complete fit (no model or a missing W) are ignored.
+
+    Args:
+        table: a fits table (the individual `fits` or the combined
+        `shared_fits`).
 
     Returns:
         list[tuple]: the ordered scenario keys.
 
     """
     seen: set[tuple] = set()
-    scenarios = []
-    for _, row in fits.iterrows():
+    scenarios: list[tuple] = []
+    for _, row in table.iterrows():
         if not row["model"] or pd.isna(row["W"]):
             continue
         key = scenario_key(row["setup"], row["x"], row["y"], row["z"])
         if key not in seen:
             seen.add(key)
             scenarios.append(key)
-    return sorted(scenarios, key=lambda k: (k[0], k[1] or 0, k[2] or 0, k[3] if k[3] is not None else -1))
+    return sorted(scenarios, key=_scenario_sort_key)
 
 
-def scenario_budgets(fits: pd.DataFrame, target: tuple) -> dict[str, dict[str, tuple[float, float, float]]]:
-    """Per-machine runtime budget of one (setup, grid) scenario.
+def list_scenarios(fits: pd.DataFrame, shared: pd.DataFrame) -> list[tuple]:
+    """Collect the unique (setup, x, y, z) scenarios with usable fit data.
 
-    Built from the valid fits of each machine; a missing allocation cost
-    (a 1-D fit on the other operation) is treated as 0.
+    A scenario qualifies when its individual fits or its combined fit has
+    at least one usable row, so a scenario whose machines only have
+    no-delay runs gets no figure.
 
     Args:
-        fits: the fits table of the results file.
+        fits: the individual fits table of the results file.
+        shared: the combined (shared-parameter) fits table.
+
+    Returns:
+        list[tuple]: the ordered scenario keys.
+
+    """
+    scenarios = _scenario_keys(fits)
+    seen = set(scenarios)
+    for key in _scenario_keys(shared):
+        if key not in seen:
+            seen.add(key)
+            scenarios.append(key)
+    return sorted(scenarios, key=_scenario_sort_key)
+
+
+def _row_budget(row: pd.Series) -> tuple[float, float, float]:
+    """Return the (W, A_malloc, A_free) budget of one fits row, floored at 0.
+
+    A missing allocation cost (a 1-D fit on the other operation) is
+    treated as 0.
+
+    Args:
+        row: one row of a fits table.
+
+    Returns:
+        tuple[float, float, float]: the floored budget.
+
+    """
+    return (
+        _floor0(row["W"]),
+        _floor0(row["A_malloc"]) if pd.notna(row["A_malloc"]) else 0.0,
+        _floor0(row["A_free"]) if pd.notna(row["A_free"]) else 0.0,
+    )
+
+
+def scenario_budgets(
+    fits: pd.DataFrame,
+    shared: pd.DataFrame,
+    target: tuple,
+) -> tuple[dict[str, dict[str, tuple[float, float, float]]], bool]:
+    """Per-machine runtime budget of one (setup, grid) scenario.
+
+    Built from the scenario's combined fit where it exists -- one shared W
+    plus the per-allocator A_malloc/A_free of the fit made across all of
+    the scenario's algorithms -- and from the valid individual fits of
+    each machine otherwise.
+
+    Args:
+        fits: the individual fits table of the results file.
+        shared: the combined (shared-parameter) fits table.
         target: the (setup, x, y, z) scenario key.
 
     Returns:
-        dict: per machine, the {algorithm: (W, A_malloc, A_free)} budget.
+        tuple: (per machine, the {algorithm: (W, A_malloc, A_free)}
+        budget; True when the budget came from the combined fit).
 
     """
     budget: dict[str, dict[str, tuple[float, float, float]]] = {}
+    for _, row in shared.iterrows():
+        if scenario_key(row["setup"], row["x"], row["y"], row["z"]) != target or not row["model"] or pd.isna(row["W"]):
+            continue
+        budget.setdefault(row["machine"], {})[row["algorithm"]] = _row_budget(row)
+    if budget:
+        return budget, True
+    budget = {}
     for _, row in fits.iterrows():
-        if scenario_key(row["setup"], row["x"], row["y"], row["z"]) != target:
+        if scenario_key(row["setup"], row["x"], row["y"], row["z"]) != target or not row["model"] or pd.isna(row["W"]):
             continue
-        if not row["model"] or pd.isna(row["W"]):
-            continue
-        budget.setdefault(row["machine"], {})[row["algorithm"]] = (
-            _floor0(row["W"]),
-            _floor0(row["A_malloc"]) if pd.notna(row["A_malloc"]) else 0.0,
-            _floor0(row["A_free"]) if pd.notna(row["A_free"]) else 0.0,
-        )
-    return budget
+        budget.setdefault(row["machine"], {})[row["algorithm"]] = _row_budget(row)
+    return budget, False
 
 
 class TripletCtx(NamedTuple):
@@ -172,6 +240,8 @@ def runtime_stack_figure(
     scenario: tuple,
     entries: list[tuple[str, dict]],
     algorithms: list[str],
+    *,
+    combined: bool = False,
 ) -> plt.Figure:
     """Draw one figure: the runtime budget per allocator, per hardware.
 
@@ -187,6 +257,9 @@ def runtime_stack_figure(
         entries: per hardware, (short name, {algorithm: (W, A_malloc,
         A_free)}).
         algorithms: the allocators' display order.
+        combined: whether the budgets come from the scenario's combined
+        (shared-parameter) fit rather than the individual fits; named in
+        the title.
 
     Returns:
         plt.Figure: the figure.
@@ -221,7 +294,10 @@ def runtime_stack_figure(
         Patch(facecolor=color, edgecolor="k", linewidth=0.5, label=segment) for segment, color in RUNTIME_SEGMENTS
     ]
     ax.legend(handles=handles, loc="upper left", frameon=True)
-    fig.suptitle(f"Runtime budget: {scenario_name(setup, x, y, z)}")
+    if combined:
+        fig.suptitle(f"Runtime budget: {scenario_name(setup, x, y, z)} (combined fit)")
+    else:
+        fig.suptitle(f"Runtime budget: {scenario_name(setup, x, y, z)}")
     return fig
 
 
@@ -246,6 +322,7 @@ def main(*, name: str | None = None, show: bool = False, results: Path = RESULTS
         return 1
     with file:
         fits = read_table(file, "fits")
+        shared = read_table(file, "shared_fits") if "shared_fits" in file else pd.DataFrame()
         runs = read_table(file, "runs")
         algorithms = algorithm_order(file)
         sweep = sweep_machine_labels(file)
@@ -256,19 +333,19 @@ def main(*, name: str | None = None, show: bool = False, results: Path = RESULTS
     # The x-axis lists every sweep machine with data, in the file's order;
     # a machine without a fit in the scenario keeps its (empty) slot.
     machines = [m for m in sweep if m in machine_hardware]
-    scenarios = list_scenarios(fits)
+    scenarios = list_scenarios(fits, shared)
     if name is not None:
         scenarios = [scenario for scenario in scenarios if scenario_filename(*scenario) == f"runtime-stack-{name}.pdf"]
         if not scenarios:
-            available = ", ".join(scenario_name(*scenario) for scenario in list_scenarios(fits))
+            available = ", ".join(scenario_name(*scenario) for scenario in list_scenarios(fits, shared))
             print(f"no scenario {name!r} with fits (available: {available})", file=sys.stderr)
             return 1
     FIGURES.mkdir(exist_ok=True)
     for scenario in scenarios:
-        budget = scenario_budgets(fits, scenario)
+        budget, combined = scenario_budgets(fits, shared, scenario)
         entries = [(str(machine_hardware[m]), budget.get(m, {})) for m in machines]
         path = FIGURES / scenario_filename(*scenario)
-        runtime_stack_figure(scenario, entries, algorithms).savefig(path)
+        runtime_stack_figure(scenario, entries, algorithms, combined=combined).savefig(path)
         print(f"wrote {path}")
     if show:
         plt.show()
