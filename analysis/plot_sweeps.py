@@ -9,7 +9,7 @@ machine's hardware title (from the file's `machine_titles`): one row per
 algorithm present in the data (in the
 `algorithm_order` of the file), the malloc delay sweep (free delay 0) on
 the left and the free delay sweep (malloc delay 0) on the right, each axis
-titled after the swept delay, the axes sharing the y-axis. Each swept
+titled after the swept delay, all axes sharing the x- and y-axes. Each swept
 curve shows the median with IQR error bars and overlays the fitted model
 (solid), the extrapolation to A_malloc = A_free = 0 (dashed) and, for
 two-operation fits, the intermediate extrapolation that keeps only the held
@@ -58,10 +58,10 @@ MARKERS = ("o", "s", "^", "D", "v", "P", "h", "X", "8")
 # A gap marker is only drawn when the model difference exceeds this (s).
 VISIBLE_GAP_S = 1e-9
 # Padding, in decades, left between the drawn content and the frame by
-# `_snug_ylims`; the y-axis is logarithmic, so the margin is applied in log
-# space, where a small linear percentage is only a vanishing fraction of a
-# decade.
-_YLIM_PAD_DEC = 0.05
+# `snug_ylims` and `snug_xlims`; both axes are logarithmic, so the margin is
+# applied in log space, where a small linear percentage is only a vanishing
+# fraction of a decade.
+_LOG_PAD_DEC = 0.05
 
 
 class Fit1d(NamedTuple):
@@ -178,33 +178,36 @@ def legend_first(axes: Iterable[plt.Axes]) -> None:
             break
 
 
-def snug_ylims(fig: plt.Figure) -> None:
-    """Fit the shared y-axis snugly to everything drawn on it.
+def _snug_shared_axis(fig: plt.Figure, axis: str) -> None:
+    """Fit one shared logarithmic axis snugly to everything drawn on it.
 
     The default autoscale spans every artist and pads that range with a 5%
     log-space margin, leaving a generous band around the content. Re-limit the
-    shared y-axis to the union, over all of the figure's axes, of the drawn
-    data points (medians and their IQR bars), the fitted and extrapolation
-    lines (and their A/f gap markers), and the bootstrap error sleeves, with
-    ``_YLIM_PAD_DEC`` of a decade left between the content and the frame so
+    shared axis to the union, over all of the figure's axes, of the drawn data
+    points (medians and their IQR bars), the fitted and extrapolation lines
+    (and their A/f gap markers), and the bootstrap error sleeves, with
+    ``_LOG_PAD_DEC`` of a decade left between the content and the frame so
     nothing is clipped.
 
     Args:
-        fig: the figure whose shared y-axis is re-limited.
+        fig: the figure whose shared axis is re-limited.
+        axis: "x" or "y".
 
     """
+    getter = "get_xdata" if axis == "x" else "get_ydata"
+    index = 0 if axis == "x" else 1
     lows: list[float] = []
     highs: list[float] = []
     for ax in fig.axes:
         for child in ax.get_children():
-            if hasattr(child, "get_ydata"):
-                values = np.asarray(child.get_ydata(), dtype=float)
+            if hasattr(child, getter):
+                values = np.asarray(getattr(child, getter)(), dtype=float)
             elif hasattr(child, "get_segments"):
                 segments = child.get_segments()
-                values = np.concatenate([seg[:, 1] for seg in segments]) if len(segments) else np.array([])
+                values = np.concatenate([seg[:, index] for seg in segments]) if len(segments) else np.array([])
             elif hasattr(child, "get_paths"):
                 paths = [path for path in child.get_paths() if len(path.vertices)]
-                values = np.concatenate([path.vertices[:, 1] for path in paths]) if paths else np.array([])
+                values = np.concatenate([path.vertices[:, index] for path in paths]) if paths else np.array([])
             else:
                 continue
             values = values[np.isfinite(values)]
@@ -215,12 +218,33 @@ def snug_ylims(fig: plt.Figure) -> None:
     if not lows:
         return
     # Pad in log space, so the margin is a visible, symmetric fraction of a
-    # decade on the log-scale y-axis.
-    lo = 10 ** (math.log10(min(lows)) - _YLIM_PAD_DEC)
-    hi = 10 ** (math.log10(max(highs)) + _YLIM_PAD_DEC)
+    # decade on the log-scale axis.
+    lo = 10 ** (math.log10(min(lows)) - _LOG_PAD_DEC)
+    hi = 10 ** (math.log10(max(highs)) + _LOG_PAD_DEC)
+    setter = "set_xlim" if axis == "x" else "set_ylim"
     for ax in fig.axes:
         if ax.containers:
-            ax.set_ylim(lo, hi)
+            getattr(ax, setter)(lo, hi)
+
+
+def snug_ylims(fig: plt.Figure) -> None:
+    """Fit the shared y-axis snugly to everything drawn on it (see `_snug_shared_axis`).
+
+    Args:
+        fig: the figure whose shared y-axis is re-limited.
+
+    """
+    _snug_shared_axis(fig, "y")
+
+
+def snug_xlims(fig: plt.Figure) -> None:
+    """Fit the shared x-axis snugly to everything drawn on it (see `_snug_shared_axis`).
+
+    Args:
+        fig: the figure whose shared x-axis is re-limited.
+
+    """
+    _snug_shared_axis(fig, "x")
 
 
 def collect_fits(fits: pd.DataFrame, covs: dict) -> dict[tuple, Fit1d | Fit2d]:
@@ -541,7 +565,7 @@ def plot_delay_axis(ax: plt.Axes, data: MachineData, series_markers: dict, x_del
 
 
 def single_algorithm_figure(title: str, data: MachineData, series_markers: dict) -> plt.Figure:
-    """Build the single-row figure: the two sweeps side by side, y-axis shared.
+    """Build the single-row figure: the two sweeps side by side, both axes shared.
 
     Args:
         title: the figure title (the hardware the runs were made on).
@@ -552,12 +576,13 @@ def single_algorithm_figure(title: str, data: MachineData, series_markers: dict)
         plt.Figure: the figure.
 
     """
-    fig, axes = plt.subplots(1, 2, figsize=(6.5 * 2, 5.5), sharey=True, layout="constrained")
+    fig, axes = plt.subplots(1, 2, figsize=(6.5 * 2, 5.5), sharex=True, sharey=True, layout="constrained")
     fig.suptitle(title)
     plot_delay_axis(axes[0], data, series_markers, x_delay=MALLOC_DELAY)
     plot_delay_axis(axes[1], data, series_markers, x_delay=FREE_DELAY)
     # The y-axis is shared: subplots already hides the right axis'
-    # tick labels, drop its label too.
+    # tick labels, drop its label too. The shared x-axis keeps its tick
+    # labels under both side-by-side columns, as in any subplots figure.
     axes[1].set_ylabel("")
     # Legend on the left-most axis that actually has a curve (one
     # cluster's delay sweep may not have arrived yet).
@@ -567,6 +592,9 @@ def single_algorithm_figure(title: str, data: MachineData, series_markers: dict)
 
 def multi_algorithm_figure(title: str, data: MachineData, series_markers: dict, algorithms: list[str]) -> plt.Figure:
     """Build the multi-row figure: one row per algorithm, the left column names it.
+
+    All data axes share the x- and y-axes; the shared x tick labels and
+    column titles are shown on the last row that has data.
 
     Args:
         title: the figure title (the hardware the runs were made on).
@@ -594,8 +622,15 @@ def multi_algorithm_figure(title: str, data: MachineData, series_markers: dict, 
     gridspec = fig.add_gridspec(len(algorithms), 3, width_ratios=[0.16, 1, 1])
     row_axes = []
     for i, algorithm in enumerate(algorithms):
-        malloc_ax = fig.add_subplot(gridspec[i, 1], sharey=None if i == 0 else row_axes[0][0])
-        free_ax = fig.add_subplot(gridspec[i, 2], sharey=malloc_ax)
+        if i == 0:
+            malloc_ax = fig.add_subplot(gridspec[i, 1])
+            free_ax = fig.add_subplot(gridspec[i, 2], sharey=malloc_ax, sharex=malloc_ax)
+        else:
+            # All axes share both axes (the sweeps cover the same delay
+            # range); the shared x tick labels are shown on the last row
+            # that has data (see below).
+            malloc_ax = fig.add_subplot(gridspec[i, 1], sharey=row_axes[0][0], sharex=row_axes[0][0])
+            free_ax = fig.add_subplot(gridspec[i, 2], sharey=malloc_ax, sharex=malloc_ax)
         # The left column names the row's algorithm.
         label_ax = fig.add_subplot(gridspec[i, 0])
         label_ax.axis("off")
@@ -604,6 +639,19 @@ def multi_algorithm_figure(title: str, data: MachineData, series_markers: dict, 
         plot_delay_axis(free_ax, sub_data[algorithm], series_markers, x_delay=FREE_DELAY)
         free_ax.set_ylabel("")
         row_axes.append((malloc_ax, free_ax))
+    # The x-axis is shared, but add_subplot(sharex=...) does not hide the
+    # redundant tick labels (subplots does): keep them, together with the
+    # repeated column titles, on the last row that actually has data.
+    shown = max(
+        (i for i, (malloc_ax, free_ax) in enumerate(row_axes) if malloc_ax.containers or free_ax.containers),
+        default=None,
+    )
+    for i, (malloc_ax, free_ax) in enumerate(row_axes):
+        if i != shown:
+            malloc_ax.tick_params(axis="x", labelbottom=False)
+            free_ax.tick_params(axis="x", labelbottom=False)
+            malloc_ax.set_xlabel("")
+            free_ax.set_xlabel("")
     # Legend on the left-most axis of the first row that has a curve.
     legend_first(ax for malloc_ax, free_ax in row_axes for ax in (malloc_ax, free_ax))
     return fig
@@ -639,10 +687,11 @@ def machine_figure(title: str, data: MachineData, algorithms: list[str]) -> plt.
         fig = single_algorithm_figure(title, data, series_markers)
     else:
         fig = multi_algorithm_figure(title, data, series_markers, present_algorithms)
-    # Re-limit the shared y-axis to snugly fit the drawn content (data
-    # points, fit lines and sleeves; see `snug_ylims`) instead of the padded
-    # autoscaled range.
+    # Re-limit the shared axes to snugly fit the drawn content (data
+    # points, fit lines and sleeves; see `snug_xlims` and `snug_ylims`)
+    # instead of the padded autoscaled range.
     snug_ylims(fig)
+    snug_xlims(fig)
     return fig
 
 

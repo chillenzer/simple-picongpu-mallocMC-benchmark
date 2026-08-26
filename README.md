@@ -125,7 +125,8 @@ The Makefile pins the dependency versions (the `dependencies` section of
   runtimes, figure metadata; `--raw` adds the parsed runs).
 - `analysis/plot_sweeps.py` — one delay-sweep figure per sweep machine
   (`figures/sweeps-<machine>.pdf`: one row per algorithm, the malloc and
-  free delay sweeps side by side, fitted curve + bootstrap sleeve).
+  free delay sweeps side by side, all axes sharing the x- and y-axes,
+  fitted curve + bootstrap sleeve).
 - `analysis/plot_runtime_stack.py` — one runtime-budget figure per
   (setup, grid) scenario that has at least one usable fit
   (`figures/runtime-stack-<setup>-<grid>.pdf`: the fitted W/A_malloc/A_free
