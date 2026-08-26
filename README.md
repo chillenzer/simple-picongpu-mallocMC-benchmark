@@ -326,20 +326,23 @@ The Python dependencies of the analysis are declared in
 rigorously pinned, including the Python version, by the content-hashed
 `conda-lock.yml` lock of the `environment.yml` recipe.
 
-- Primary path (micromamba, a single static binary from
-  <https://micro.mamba.pm/api/micromamba/linux-64/latest>, no root
-  needed):
+- Primary path: `make env` creates the locked environment with the first
+  of `micromamba`, `mamba`, `conda` found on PATH (the conda route runs
+  `conda-lock install`; `pip install conda-lock` if it is missing).
+  Force a specific tool with `make env ENV_TOOL=<tool>`. `micromamba` is
+  the recommended choice (single static binary, no root needed,
+  <https://micro.mamba.pm/api/micromamba/linux-64/latest>):
 
   ```
-  make env                                   # create the locked environment
-  micromamba activate mallocmc-bench
-  make                                       # ...then run the analysis
+  make env                                  # create the locked environment
+  micromamba activate mallocmc-bench        # or: mamba / conda activate
+  make                                      # ...then run the analysis
   ```
 
-  (or `make PY=$(micromamba prefix -n mallocmc-bench)/bin/python3`).
-  If you have packages in your pip *user* site (`pip install --user`),
-  export `PYTHONNOUSERSITE=1` so the locked environment's versions take
-  precedence.
+  (or `make PY=<prefix>/bin/python3`; e.g.
+  `micromamba prefix -n mallocmc-bench`). If you have packages in your
+  pip *user* site (`pip install --user`), export `PYTHONNOUSERSITE=1` so
+  the locked environment's versions take precedence.
 - Refreshing the lock (after editing `environment.yml`):
   `pip install conda-lock`, then
   `conda-lock lock -f environment.yml -p linux-64 --micromamba`; review
