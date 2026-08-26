@@ -57,11 +57,19 @@ FIGURES = Path("figures")
 MARKERS = ("o", "s", "^", "D", "v", "P", "h", "X", "8")
 # A gap marker is only drawn when the model difference exceeds this (s).
 VISIBLE_GAP_S = 1e-9
-# Padding, in decades, left between the drawn content and the frame by
-# `snug_ylims` and `snug_xlims`; both axes are logarithmic, so the margin is
-# applied in log space, where a small linear percentage is only a vanishing
-# fraction of a decade.
-_LOG_PAD_DEC = 0.05
+# Padding left between the drawn content and the frame by `snug_ylims` and
+# `snug_xlims`. Both axes are logarithmic, so the margins are always applied
+# in log space, where a small linear percentage is only a vanishing fraction
+# of a decade.
+#   y: a fixed margin, in decades, on each end (the runtime range is narrow,
+#      so a fixed margin already looks snug).
+#   x: a fraction of the log span on each end (log-proportional). The delay
+#      axis spans many decades, so a fixed decade margin would be a vanishing
+#      fraction of the width and the content would sit flush against the
+#      frame; a span-proportional margin stays visible however wide the axis
+#      is.
+_Y_LOG_PAD_DEC = 0.05
+_X_LOG_PAD_FRAC = 0.05
 
 
 class Fit1d(NamedTuple):
@@ -185,9 +193,12 @@ def _snug_shared_axis(fig: plt.Figure, axis: str) -> None:
     log-space margin, leaving a generous band around the content. Re-limit the
     shared axis to the union, over all of the figure's axes, of the drawn data
     points (medians and their IQR bars), the fitted and extrapolation lines
-    (and their A/f gap markers), and the bootstrap error sleeves, with
-    ``_LOG_PAD_DEC`` of a decade left between the content and the frame so
-    nothing is clipped.
+    (and their A/f gap markers), and the bootstrap error sleeves, with a
+    log-space margin left between the content and the frame so nothing is
+    clipped. The y margin is a fixed number of decades (``_Y_LOG_PAD_DEC``);
+    the x margin is a fraction of the log span (``_X_LOG_PAD_FRAC``), since a
+    fixed decade margin is a vanishing fraction of a delay axis that spans
+    many decades and would leave the content flush against the frame.
 
     Args:
         fig: the figure whose shared axis is re-limited.
@@ -217,10 +228,12 @@ def _snug_shared_axis(fig: plt.Figure, axis: str) -> None:
             highs.append(float(values.max()))
     if not lows:
         return
-    # Pad in log space, so the margin is a visible, symmetric fraction of a
-    # decade on the log-scale axis.
-    lo = 10 ** (math.log10(min(lows)) - _LOG_PAD_DEC)
-    hi = 10 ** (math.log10(max(highs)) + _LOG_PAD_DEC)
+    lo0, hi0 = min(lows), max(highs)
+    # Pad in log space, so the margin is a symmetric fraction of the axis.
+    span = math.log10(hi0 / lo0)
+    pad = _X_LOG_PAD_FRAC * span if axis == "x" else _Y_LOG_PAD_DEC
+    lo = 10 ** (math.log10(lo0) - pad)
+    hi = 10 ** (math.log10(hi0) + pad)
     setter = "set_xlim" if axis == "x" else "set_ylim"
     for ax in fig.axes:
         if ax.containers:
