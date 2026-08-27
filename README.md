@@ -75,12 +75,16 @@ The Makefile pins the dependency versions (the `dependencies` section of
   algorithm) overrides from `param/<Example>/<Algorithm>/`. It is invoked as
   `make build PROFILE=<profile> PARAM_DIR=param` (see *Usage* below);
   `make check` prints the resolved build and run configuration and stops.
-  The run orchestrator sweeps the full run matrix (examples x algorithms x
-  (malloc delay, free delay) combinations) once per *repetition*
-  (`REPEATS`, default 1) of `make runs MACHINE=<machine>`; `REP=<i>`
-  restricts an invocation to one repetition (the slurm case: one job per
-  repetition). Every finished (combination, repetition) writes a stamp
-  under `run-stamps/`, so an interrupted series resumes where it stopped.
+  The run orchestrator sweeps the run matrix of one *sweep phase*
+  (examples x algorithms x (malloc delay, free delay) combinations) once
+  per *repetition* (`REPEATS`, default 1) of `make runs MACHINE=<machine>`;
+  `REP=<i>` restricts an invocation to one repetition (the slurm case:
+  one job per repetition). `PHASE` selects the delay combinations
+  (`initial`, the fast first scan, or `arms`, the full ladder, the default):
+  the run stamps make the phases incremental, so an `arms` sweep after an
+  `initial` one re-runs only the new combinations. Every finished
+  (combination, repetition) writes a stamp under `run-stamps/`, so an
+  interrupted series resumes where it stopped.
   The stamps depend only on the example's flags file: rebuilding the
   binaries never invalidates finished runs, and `make clean` / `distclean`
   do not touch `run-stamps/` (`make clean-runs [MACHINE=<m>]` does). Each
@@ -112,8 +116,10 @@ The Makefile pins the dependency versions (the `dependencies` section of
 - `log_{setup,run}_<machine>.sh` — per-machine launchers (hal, rosi,
   rosi-a100): log the environment, load the machine's modules (setup), and
   run `make build` / `make runs MACHINE=<machine>` with the machine's
-  profile from the `machines` table in `config.json`, writing the session
-  log to the machine's output directory (each such log opens with a
+  profile from the `machines` table in `config.json` (the sweep invocation
+  values `REPEATS`, `REP` and `PHASE` pass through as environment
+  variables), writing the session log to the machine's output directory
+  (each such log opens with a
   machine-readable `# metadata:` line, kind `setup`, that the analysis
   skips).
 - `profiles/` — HPC environment profiles (module/spack setup, `PIC_BACKEND`,
@@ -190,8 +196,9 @@ resolving it, which is the way to sanity-check a change before a long build
 or benchmark:
 
 ```
-make check             # includes the derived run matrix
-python3 config.py list run-matrix
+make check                              # includes both sweep phases' matrices
+python3 config.py list run-matrix       # the arms phase (the default)
+python3 config.py list run-matrix initial
 ```
 
 1. Build all examples and algorithms (slow the first time: one full
@@ -229,12 +236,28 @@ python3 config.py list run-matrix
 2. Run the benchmarks (the sweep, once per repetition):
 
    ```
-   make runs MACHINE=hal                    # REPEATS=1 (the default)
+   make runs MACHINE=hal                    # arms phase, REPEATS=1 (the defaults)
+   make runs MACHINE=hal PHASE=initial      # the fast first scan (17 combinations)
    make runs MACHINE=hal REPEATS=3          # three full-sweep repetitions
    make runs MACHINE=rosi REPEATS=3 REP=2   # only repetition 2 (one slurm job)
-   make full MACHINE=hal                    # build, then run
+   make full MACHINE=hal                    # build, then run (PHASE passes through)
    make clean-runs [MACHINE=hal]            # forget finished runs (logs kept)
+   make sweep-status MACHINE=hal            # which runs are stamped (arms phase)
    ```
+
+   The sweep is two phases (`PHASE`, default `arms`), from the `delays`
+   section of `config.json`: `initial` runs the baseline plus the
+   `delays.arms.initial` arm subset (17 combinations: enough to anchor the
+   asymptote and the bend band of the fit without the near-degenerate joint
+   points), and `arms` runs the baseline plus the full arm ladder plus the
+   joint grid when one is configured (25 combinations, the joint grid
+   currently empty). The phases are incremental through the run stamps: run
+   `PHASE=initial` first, check the interim fit (step 3), then run
+   `PHASE=arms` to extend the same series — it re-runs only the eight
+   combinations without an up-to-date stamp. Per machine, the initial phase
+   costs about 80 h (hal) or 41 h (rosi) per repetition, and the extension
+   about 67 h or 35 h, against 172 h / 89 h for the old 34-combination
+   design.
 
    One run is one (example, algorithm) build through one `(malloc delay,
    free delay)` combination derived from the `delays` section of
@@ -277,18 +300,22 @@ editing; `make check` / `python3 config.py list run-matrix` show what
 would be done).
 
 - **Delay combinations**: edit the `delays` section of `config.json`
-  (`baseline`, `arms.values`, `joint.values`); the Makefile run targets
-  derive the full combination set from it: `baseline` is the `(0, 0)`
-  reference run, `arms` are the single-delay sweeps (one value at a time with
-  the other delay held at 0, on a log grid from `100` to `1e8` ns in
-  1/4-decade steps, skipping the intermediate steps between `1e5` and `1e6`),
-  and `joint` is a 3x3 grid coupling both delays so the two-operation fit is
-  constrained off the arms.
-  The delays are applied at run time via `MALLOCMC_MALLOC_DELAY` /
-  `MALLOCMC_FREE_DELAY`, so changing the sweep requires no rebuild. The large
-  delays let each Amdahl term `A*s0/(d+s0)` decay into its `1/d` tail so the
-  asymptote `W + A + N*d` gets anchored; this matters most for free, whose
-  native cost fades slowly.
+  (`baseline`, `arms.values`, `arms.initial`, `joint.values`); the Makefile
+  run targets derive the combination set of each sweep phase from it:
+  `baseline` is the `(0, 0)` reference run, `arms.values` is the arm ladder
+  (the single-delay sweeps, one value at a time with the other delay held at
+  0, on a log grid from `100` to `1e8` ns in 1/4-decade steps),
+  `arms.initial` is the phase-1 subset of the ladder (a log-dense ladder
+  through the bend band plus both asymptote anchors, so the fit is fully
+  anchored with fewer, cheaper runs), and `joint` is an optional grid
+  coupling both delays that constrains the two-operation fit off the arms
+  (empty by default: a sparse arm ladder plus a joint grid is
+  near-degenerate for the 7-parameter fit, so add joint values only with
+  the full ladder, and keep them on the ladder). The delays are applied at
+  run time via `MALLOCMC_MALLOC_DELAY` / `MALLOCMC_FREE_DELAY`, so changing
+  the sweep requires no rebuild. The large delays let each Amdahl term
+  `A*s0/(d+s0)` decay into its `1/d` tail so the asymptote `W + A + N*d`
+  gets anchored; this matters most for free, whose native cost fades slowly.
 - **Grids / steps / other picongpu flags**: edit `flags/<Example>.flags`
   (one command line per run).
 - **Allocator configuration**: `param/<Algorithm>/mallocMC.param` defines

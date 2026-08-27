@@ -33,8 +33,9 @@ mkdir -p "$FOLDER"
   echo "========================"
 } >>"$FILENAME"
 
-# REPEATS (default 1) and REP (default: all repetitions) are environment
-# variables, like the Makefile's invocation values. Each finished
-# (combination, repetition) writes a stamp, so an interrupted sweep
-# continues where it stopped.
-make runs MACHINE="$MACHINE" REPEATS="${REPEATS:-1}" REP="${REP:-}" 2>&1 | tee -a "$FILENAME"
+# REPEATS (default 1), REP (default: all repetitions) and PHASE (default
+# arms) are environment variables, like the Makefile's invocation values.
+# Each finished (combination, repetition) writes a stamp, so an interrupted
+# sweep continues where it stopped, and a phase extension re-runs only the
+# new combinations.
+make runs MACHINE="$MACHINE" PHASE="${PHASE:-arms}" REPEATS="${REPEATS:-1}" REP="${REP:-}" 2>&1 | tee -a "$FILENAME"

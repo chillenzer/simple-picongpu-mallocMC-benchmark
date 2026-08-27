@@ -16,15 +16,21 @@
 #      make check                                           # resolved configuration
 #
 # 2. The benchmark run orchestrator (rewritten from run_all.sh): sweeps one
-#    full repetition of the run matrix (examples x algorithms x (malloc
-#    delay, free delay) combinations, the `delays` section of config.json)
+#    full repetition of one sweep phase (examples x algorithms x the phase's
+#    (malloc, free) delay combinations, the `delays` section of config.json)
 #    per invocation, one (combination, repetition) at a time:
 #
-#      make runs MACHINE=hal                          # all repetitions
+#      make runs MACHINE=hal                          # full (arms) sweep
+#      make runs MACHINE=hal PHASE=initial            # fast first scan
 #      make runs MACHINE=rosi REPEATS=3 REP=2         # one repetition (= one slurm job)
 #      make full MACHINE=hal                          # build, then run
 #      make clean-runs [MACHINE=hal]                  # forget finished runs
+#      make sweep-status MACHINE=hal [PHASE=...]      # which runs are stamped
 #
+#    PHASE selects the delay combinations: `initial` (the baseline plus the
+#    delays.arms.initial subset) and `arms` (the default: the full arm ladder
+#    plus the joint grid when one is configured). The phases are incremental:
+#    an `arms` sweep after an `initial` one re-runs only the new combinations.
 #    Each finished (example, algorithm, combination, repetition) writes a
 #    stamp under run-stamps/, which makes an interrupted series resumable.
 #    The stamps depend only on the example's flags file, so rebuilding the
@@ -145,13 +151,29 @@ MACHINE ?=
 REPEATS ?= 1
 REP ?=
 
-# The (malloc, free) delay combinations of one repetition, one
+# PHASE selects the sweep's delay combinations from the `delays` section of
+# config.json. `initial` is the fast first scan (the baseline plus the
+# delays.arms.initial subset); `arms` (the default) is the full arm ladder
+# plus the joint grid when one is configured. The phases are incremental:
+# the run stamps of an `initial` sweep remain up to date for an `arms` sweep,
+# so a series can start minimal and be extended in place. Like MACHINE,
+# PHASE is an invocation value rather than a configuration key, so a stray
+# exported value must not stand in for it.
+ifeq ($(origin PHASE),environment)
+PHASE =
+endif
+PHASE   ?= arms
+ifneq ($(filter-out initial arms,$(PHASE)),)
+$(error specify PHASE=initial or arms (got '$(PHASE)'))
+endif
+
+# The (malloc, free) delay combinations of the phase, one
 # "<malloc>_<free>" token per line, derived from config.json by config.py.
-COMBOS := $(shell $(PY) config.py list run-matrix)
+COMBOS := $(shell $(PY) config.py list run-matrix $(PHASE))
 
 # Only `runs` and `full` need a machine; `clean-runs` also accepts an empty
 # one (it then removes the stamps of every machine).
-ifneq ($(filter runs full,$(MAKECMDGOALS)),)
+ifneq ($(filter runs full sweep-status,$(MAKECMDGOALS)),)
 ifeq ($(strip $(MACHINE)),)
 $(error specify MACHINE=<machine> from the config machines table, e.g. make runs MACHINE=hal)
 endif
@@ -320,6 +342,23 @@ clean-runs:
 	  echo "removed run-stamps"
 	fi
 
+# Which runs of the machine and phase are already stamped, and which are
+# still pending: one `pending <stamp>` line for each unstamped
+# (combination, repetition), then an X of Y summary. The combination set is
+# the phase's, the repetition set the REPEATS/REP one, exactly as for
+# `runs`, so `make sweep-status MACHINE=hal PHASE=arms` shows what an arms
+# sweep would still do on top of an initial sweep.
+sweep-status:
+	@STAMPED=0
+	@for stamp in $(RUN_STAMPS); do
+	  if [ -f "$$stamp" ]; then
+	    STAMPED=$$(($$STAMPED + 1))
+	  else
+	    echo "pending $$stamp"
+	  fi
+	done
+	@echo "sweep-status [$(MACHINE)] phase $(PHASE): $${STAMPED} of $(words $(RUN_STAMPS)) runs stamped (REPEATS=$(REPEATS)$(if $(REP), REP=$(REP)))"
+
 # --- top-level targets -----------------------------------------------------
 
 all: figures summary
@@ -332,9 +371,12 @@ check:
 	$(PY) config.py check
 	@printf 'examples:   %s\n' "$(EXAMPLES)"
 	@printf 'algorithms: %s\n' "$(ALGORITHMS)"
-	@printf 'runs:       %s combinations per repetition: %s\n' \
-		"$$(python3 config.py list run-matrix | wc -l | tr -d ' ')" \
-		"$$(python3 config.py list run-matrix | tr '\n' ' ' | sed 's/ *$$//')"
+	@printf 'runs:       %s combinations per repetition (initial): %s\n' \
+		"$$(python3 config.py list run-matrix initial | wc -l | tr -d ' ')" \
+		"$$(python3 config.py list run-matrix initial | tr '\n' ' ' | sed 's/ *$$//')"
+	@printf 'runs:       %s combinations per repetition (arms):    %s\n' \
+		"$$(python3 config.py list run-matrix arms | wc -l | tr -d ' ')" \
+		"$$(python3 config.py list run-matrix arms | tr '\n' ' ' | sed 's/ *$$//')"
 	@printf 'picongpu:   %s @ %s\n' "$(PICONGPU_ABS)" "$(PICONGPU_SHORT)"
 	@printf 'mallocmc:   %s @ %s\n' "$(MALLOCMC_ABS)" "$(MALLOCMC_SHORT)"
 	# Each value comes through a double-quoted command substitution, so any

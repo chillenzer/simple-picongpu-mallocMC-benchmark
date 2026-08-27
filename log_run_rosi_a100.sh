@@ -31,8 +31,9 @@ echo "========================" | tee -a "$FILENAME"
 
 # One slurm job runs one full-sweep repetition: the first argument is the
 # repetition number (REP), REPEATS is the total number of repetitions of
-# the series (environment variable, default 1). Submit one job per
-# repetition with the same REPEATS, e.g.
+# the series (environment variable, default 1), and PHASE (environment
+# variable, default arms) selects the sweep's delay combinations. Submit one
+# job per repetition with the same REPEATS, e.g.
 #
 #   sbatch log_run_rosi_a100.sh 1   # with REPEATS=3 in the environment
 #   sbatch log_run_rosi_a100.sh 2
@@ -40,5 +41,7 @@ echo "========================" | tee -a "$FILENAME"
 #
 # (All slurm allocation options come from the sbatch invocation itself; this
 # script carries no #SBATCH directives.) Without a repetition number the job
-# runs all remaining repetitions serially.
-make runs MACHINE="$MACHINE" REPEATS="${REPEATS:-1}" REP="${1:-}" 2>&1 | tee -a "$FILENAME"
+# runs all remaining repetitions serially. The run stamps make the phases
+# incremental: an arms job after an initial sweep re-runs only the new
+# combinations.
+make runs MACHINE="$MACHINE" PHASE="${PHASE:-arms}" REPEATS="${REPEATS:-1}" REP="${1:-}" 2>&1 | tee -a "$FILENAME"
