@@ -22,9 +22,11 @@ A record carries the run context (`setup`, `algorithm`, the `x`/`y`/`z`
 grid dimensions; a missing `z` of a 2-D run is filled with NaN by
 `runs_to_df`) plus, for run-time sweeps, the imposed `malloc_sleeptime` /
 `free_sleeptime` in nanoseconds and a `configuration` tag ("run-time" or
-"compile-time"), and the runtime in seconds from the run's
-`calculation  simulation time:` line. A log file without any parseable run
-(a build log) simply yields no records.
+"compile-time"), the number of simulation steps from the run's `-s`
+argument, and the runtimes in seconds of the run's `initialization time:`,
+`calculation  simulation time:` (its own simulation time) and
+`full simulation time:` (simulation plus initialisation and I/O) lines. A
+log file without any parseable run (a build log) simply yields no records.
 """
 
 from __future__ import annotations
@@ -57,6 +59,12 @@ LEGACY_MALLOC_DELAY_CMD = "MALLOCMC_SLEEP_TIME="
 VARIANT_CD_RE = re.compile(r"(?:^|/)build/(\w+)/(\w+)-sleep(\d+)$")
 BUILD_ALGO_CD_RE = re.compile(r"(?:^|/)build/(\w+)/(\w+)$")
 BUILD_CD_RE = re.compile(r"(?:^|/)build/(\w+)$")
+# The `-s` step count of one ran picongpu command (no other traced line
+# carries it).
+SIM_STEPS_RE = re.compile(r"-s (\d+)\b")
+# The trailing `= <value> sec` of a `* simulation time:` /
+# `initialization time:` line, in the shared format.
+TIME_VALUE_RE = re.compile(r"= ([\d.]+) sec")
 
 GROUP_KEYS = ("setup", "algorithm", "x", "y", "z")
 MALLOC_DELAY = "malloc_sleeptime"
@@ -144,8 +152,94 @@ def _update_delays(line: str, malloc_delay: int | None, free_delay: int | None) 
     return malloc_delay, free_delay
 
 
+def _flush(pending: dict | None) -> dict | None:
+    """Return the pending record when it measured a runtime, else None.
+
+    Args:
+        pending: the run's record in progress, or None.
+
+    Returns:
+        dict | None: the record, or None when it is absent or the run
+        aborted before printing its calculation time.
+
+    """
+    if pending is not None and "runtime in s" in pending:
+        return pending
+    return None
+
+
+def _time_line(value: str, pending: dict) -> bool:
+    """Record one of the run's time lines on the pending record.
+
+    The rosi logs run the combinations on several GPUs at once, so the
+    time lines of the concurrent runs interleave; the first value of each
+    line keeps the record of the run that finished first (the one the old
+    parser recorded).
+
+    Args:
+        value: the stripped log line.
+        pending: the run's record in progress.
+
+    Returns:
+        bool: True when the line is the run's `full simulation time:`,
+        which ends the record.
+
+    """
+    if value.startswith("calculation") and "simulation time" in value and "runtime in s" not in pending:
+        pending.update(parse_simulation_time(value))
+    elif value.startswith("full simulation time"):
+        time = TIME_VALUE_RE.search(value)
+        if time is not None and "full_runtime_s" not in pending:
+            pending["full_runtime_s"] = float(time[1])
+        return True
+    elif value.startswith("initialization time") and "init_time_s" not in pending:
+        time = TIME_VALUE_RE.search(value)
+        if time is not None:
+            pending["init_time_s"] = float(time[1])
+    return False
+
+
+def _start_run(line: str, context: dict, malloc_delay: int | None, free_delay: int | None) -> dict | None:
+    """Start a pending record at one traced `bin/picongpu` command line.
+
+    Args:
+        line: the stripped `set -x` trace line.
+        context: the run context of the current `build/...` directory.
+        malloc_delay: the remembered malloc delay, or None.
+        free_delay: the remembered free delay, or None.
+
+    Returns:
+        dict | None: the started record, or None when the line is no
+        `bin/picongpu` command of a known context.
+
+    """
+    if RUN_CMD not in line or "setup" not in context:
+        return None
+    # In the run-time layout the env vars override the variant sleeptime; in
+    # the per-variant layout they are absent.
+    pending = dict(context) | parse_grid(line)
+    steps = SIM_STEPS_RE.search(line)
+    if steps is not None:
+        pending["sim_steps"] = int(steps[1])
+    if malloc_delay is not None or free_delay is not None:
+        pending |= {
+            "malloc_sleeptime": (malloc_delay if malloc_delay is not None else 0),
+            "free_sleeptime": (free_delay if free_delay is not None else 0),
+            "configuration": "run-time",
+        }
+    return pending
+
+
 def parse_log(log_path: Path) -> Iterator[dict]:
     """Yield one record per picongpu run of a single run log.
+
+    The record is yielded when the run's `full simulation time:` line is
+    seen (or, if a run ends without that line, at the next run context or
+    at the end of the log), so the full and the initialisation runtimes,
+    printed right after and long before the calculation time, belong to
+    the same record. A run that aborted before printing its calculation
+    time (a core-dump, an out-of-memory) carries no runtime and is not
+    yielded.
 
     Yields:
         dict: one record per picongpu run of the log.
@@ -158,27 +252,29 @@ def parse_log(log_path: Path) -> Iterator[dict]:
         free_delay = None
         for line in map(str.strip, file):
             if line.startswith(CD_CMD):
-                # A new run context invalidates the remembered delay values.
+                # A new run context invalidates the remembered delay values
+                # and, in case the run never printed its full time, ends
+                # the pending record.
                 setup = parse_setup(line)
                 if setup is not None:
+                    record = _flush(pending)
+                    if record is not None:
+                        yield record
+                    pending = None
                     context = setup
                     malloc_delay = None
                     free_delay = None
             elif line.startswith("+ "):
                 malloc_delay, free_delay = _update_delays(line, malloc_delay, free_delay)
-                if RUN_CMD in line and "setup" in context:
-                    # In the run-time layout the env vars override the variant
-                    # sleeptime; in the per-variant layout they are absent.
-                    pending = dict(context) | parse_grid(line)
-                    if malloc_delay is not None or free_delay is not None:
-                        pending |= {
-                            "malloc_sleeptime": (malloc_delay if malloc_delay is not None else 0),
-                            "free_sleeptime": (free_delay if free_delay is not None else 0),
-                            "configuration": "run-time",
-                        }
-            elif line.startswith("calculation") and "simulation time" in line and pending is not None:
-                yield {**pending, **parse_simulation_time(line)}
+                pending = _start_run(line, context, malloc_delay, free_delay) or pending
+            elif pending is not None and _time_line(line, pending):
+                record = _flush(pending)
+                if record is not None:
+                    yield record
                 pending = None
+        record = _flush(pending)
+        if record is not None:
+            yield record
 
 
 def run_to_df(run: dict) -> pd.DataFrame:

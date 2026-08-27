@@ -10,9 +10,11 @@
 #   run_stamp.sh <machine> <repeats> <example> <algorithm> <malloc-ns> <free-ns> <rep>
 #
 # The run is recorded in one self-contained log in the machine's output
-# directory (a metadata header - machine, commit, the pinned dependency
-# hashes, the slurm job when running under slurm, the sha256 of the binary
-# used - followed by the run's full output), and its success is stamped in
+# directory (a metadata header - machine, the start datetime, the commit,
+# the pinned and the checked-out dependency hashes, the sha256 of the
+# binary used, the host, the slurm job and node list when running under
+# slurm, the GPU and its driver, the loaded modules and the compiler -
+# followed by the run's full output), and its success is stamped in
 # run-stamps/<machine>/<example>/<algorithm>/<malloc>_<free>/rep-<rep>.stamp
 # (content: the log path). An existing stamp is what makes `make runs`
 # skip the run.
@@ -40,9 +42,23 @@ fi
 PROFILE=$(python3 config.py get "machines.${MACHINE}.profile")
 OUTDIR=$(python3 config.py get "machines.${MACHINE}.output")
 # The pins of config.json, not the checkout: they are what the binary was
-# built from.
+# built from (the `# source:` line of the header, when the build wrote one,
+# records the actually checked-out hashes instead).
 PIC_PIN=$(python3 config.py get dependencies.picongpu.hash)
 MC_PIN=$(python3 config.py get dependencies.mallocmc.hash)
+SOURCE_STAMP="build/${EXAMPLE}/${ALGORITHM}/.source-stamp"
+
+# The machine's toolchain (modules, spack packages) is loaded once here, so
+# the header records the compiler and modules the run will use; the
+# re-source by run_folder.sh then only re-affirms the same environment.
+# shellcheck disable=SC1090
+source "$PROFILE"
+if command -v "${CXX:-cc}" >/dev/null 2>&1; then
+  CXX_FIRST="$(${CXX:-cc} --version 2>/dev/null | head -n 1 || true)"
+else
+  CXX_FIRST=unavailable
+fi
+GPU_INFO="$(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null | tr '\n' ', ' | sed 's/, $//')"
 
 mkdir -p "$OUTDIR"
 LOG="$OUTDIR/run_${MACHINE}_${EXAMPLE}_${ALGORITHM}_m${MALLOC_DELAY}_f${FREE_DELAY}_r${REP}_$(date --rfc-3339=seconds | sed 's/ /_/g').txt"
@@ -53,13 +69,24 @@ echo "  log: $LOG"
 {
   echo "# run: ${EXAMPLE}/${ALGORITHM}, malloc delay ${MALLOC_DELAY} ns, free delay ${FREE_DELAY} ns, rep ${REP}/${REPEATS} [${MACHINE}]"
   echo "# machine: ${MACHINE}"
+  echo "# started: $(date --rfc-3339=seconds)"
   echo "# commit: $(git rev-parse HEAD 2>/dev/null || echo unavailable)"
   echo "# picongpu: ${PIC_PIN:0:8} (pinned)"
   echo "# mallocmc: ${MC_PIN:0:8} (pinned)"
-  if [ -n "${SLURM_JOB_ID:-}" ]; then
-    echo "# slurm_job: ${SLURM_JOB_ID}"
+  if [ -f "$SOURCE_STAMP" ]; then
+    echo "# source: $(tr '\n' ' ' <"$SOURCE_STAMP")"
   fi
   echo "# binary: $(sha256sum "$BIN" | awk '{print $1}')  $BIN"
+  echo "# host: $(hostname 2>/dev/null || echo unavailable)"
+  if [ -n "${SLURM_JOB_ID:-}" ]; then
+    echo "# slurm_job: ${SLURM_JOB_ID}"
+    if [ -n "${SLURM_JOB_NODELIST:-}" ]; then
+      echo "# slurm_nodes: ${SLURM_JOB_NODELIST}"
+    fi
+  fi
+  echo "# gpu: ${GPU_INFO:-unavailable}"
+  echo "# modules: ${LOADEDMODULES:-unavailable}"
+  echo "# cxx: ${CXX_FIRST}"
   echo
 } >"$LOG"
 

@@ -83,11 +83,13 @@ The Makefile pins the dependency versions (the `dependencies` section of
   under `run-stamps/`, so an interrupted series resumes where it stopped.
   The stamps depend only on the example's flags file: rebuilding the
   binaries never invalidates finished runs, and `make clean` / `distclean`
-  do not touch `run-stamps/` (`make clean-runs [MACHINE=<m>]` does). Each
-  run gets one self-contained log in the machine's output directory (a
-  metadata header — machine, commit, the pinned dependency hashes, the
-  slurm job when running under slurm, and the sha256 of the binary used —
-  plus the run's full output). The analysis driver builds the numbers and
+   do not touch `run-stamps/` (`make clean-runs [MACHINE=<m>]` does). Each
+   run gets one self-contained log in the machine's output directory (a
+   metadata header — machine, the start datetime, the commit, the pinned
+   and the checked-out dependency hashes, the sha256 of the binary used,
+   the host, the slurm job and node list when running under slurm, the GPU
+   and its driver, the loaded modules, and the compiler — plus the run's
+   full output). The analysis driver builds the numbers and
   figures: `make` (the default goal) makes all figures plus the summary
   tables, `make results` only rebuilds `output/results.h5` from the run
   logs, `make summary` only prints the tables, and a single figure is built
@@ -112,8 +114,18 @@ The Makefile pins the dependency versions (the `dependencies` section of
   per-(example, algorithm) overrides (`param/<Example>/<Algorithm>/`).
 - `analysis/run_logs.py` — shared parsing of the benchmark run logs: one
   record per `bin/picongpu` run (example, algorithm, grid, imposed delays,
-  runtime) from the raw `set -x` trace of any of the historical log layouts;
-  the basis of the analysis scripts below.
+  the number of simulation steps, and the runtime plus the full and the
+  initialisation runtimes) from the raw `set -x` trace of any of the
+  historical log layouts (a run that aborted before printing its
+  calculation time yields no record); the basis of the analysis scripts
+  below.
+- `analysis/log_meta.py` — the provenance of one run log: the start
+  datetime, the commit, the binary's sha256, the PIConGPU / mallocMC
+  versions, the GPU (model, driver, CUDA version), the CPU, the compiler,
+  the host and the slurm job, as carried by each historical log layout
+  (the current `# key: value` header of `run_stamp.sh`, the legacy
+  "Logging environment" dumps, the slurm build+run logs); the fields a log
+  generation does not carry stay empty.
 - `analysis/results_io.py` — shared access to the results HDF5 file: the
   table read/write, the per-fit covariance groups, and the schema helpers
   (grid/scenario labels, the no-delay mask, the particle-memory model).
@@ -125,7 +137,8 @@ The Makefile pins the dependency versions (the `dependencies` section of
 - `analysis/compute_results.py` — the single "numbers" entry point: parses
   the sweep machines' run logs (the `machines` table of `config.json`) and
   the legacy per-cluster `output/<cluster>/` directories (grouped by their
-  short hardware name), and computes the group runtime statistics, the
+  short hardware name), attaches to every run the provenance of its log
+  file (see `log_meta.py`), and computes the group runtime statistics, the
   Amdahl fits of every (machine, example, algorithm, grid) sweep (with the
   parameter covariances), the combined (shared-parameter) fit of every
   (machine, example, grid) scenario spanned by at least two algorithms, the
@@ -217,13 +230,15 @@ python3 config.py list run-matrix
    `config.json`: every flag line of the example is run as
    `MALLOCMC_MALLOC_DELAY=<M> MALLOCMC_FREE_DELAY=<F> bin/picongpu ...` from
    `build/<Ex>/<Algo>/` (via `run_folder.sh`), in sweep order (example,
-   algorithm, repetition, then the delay combination). Each run writes one
-   self-contained
-   log `run_<machine>_<Ex>_<Algo>_m<M>_f<F>_r<I>_<time>.txt` to the machine's
-   output directory (metadata header: machine, commit, the pinned
-   dependencies, the slurm job id when running under slurm, and the sha256
-   of the binary used; then the run's full output, including the
-   `calculation ... simulation time:` line). Each finished run stamps
+    algorithm, repetition, then the delay combination). Each run writes one
+    self-contained
+    log `run_<machine>_<Ex>_<Algo>_m<M>_f<F>_r<I>_<time>.txt` to the machine's
+    output directory (metadata header: machine, the start datetime, the
+    commit, the pinned and the checked-out dependencies, the sha256 of the
+    binary used, the host, the slurm job and node list when running under
+    slurm, the GPU and its driver, the loaded modules, and the compiler;
+    then the run's full output, including the
+    `calculation ... simulation time:` line). Each finished run stamps
    `run-stamps/<machine>/<Ex>/<Algo>/<M>_<F>/rep-<I>.stamp` (its content:
    the log path), so an interrupted series resumes where it stopped, and a
    rebuild never invalidates finished runs. The launchers
@@ -388,6 +403,15 @@ Notes:
   `compute_results.py --configuration run-time` (or `compile-time`) to
   compute the statistics and the fits only from runs of that configuration;
   the stored runs always stay complete.
+- Beyond the run's own numbers, every stored run carries the provenance of
+  the log file it came from (per log, repeated on all of its runs; parsed
+  by `log_meta.py` from each historical log layout, empty where the log
+  generation carried nothing): the start datetime, the commit, the
+  binary's sha256, the PIConGPU / mallocMC versions (the config pins as
+  fallback, the build's checked-out hashes where the log carries them),
+  the GPU (model, driver, CUDA version), the CPU, the compiler (the traced
+  toolchain load, else the machine's modules of `config.json`), the host,
+  and the slurm job id.
 - The Python analysis needs `numpy`, `pandas`, `scipy`, `matplotlib`,
   `seaborn`, and `h5py`; see "Reproducing the analysis" for the declared
   and locked versions.

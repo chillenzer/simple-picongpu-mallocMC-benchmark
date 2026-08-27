@@ -31,9 +31,13 @@
 #    binaries never invalidates finished runs (and `make clean` /
 #    `distclean` do not touch run-stamps/). Every run gets one
 #    self-contained log (run_<machine>_<Ex>_<Algo>_m<M>_f<F>_r<I>_<time>.txt)
-#    in the machine's output directory: a metadata header (machine, commit,
-#    the pinned dependency hashes, the slurm job when running under slurm,
-#    the sha256 of the binary used) followed by the run's full output.
+#    in the machine's output directory: a metadata header (machine, the
+#    start datetime, the commit, the pinned and the checked-out dependency
+#    hashes, the sha256 of the binary used, the host, the slurm job and
+#    node list when running under slurm, the GPU and its driver, the loaded
+#    modules, the compiler) followed by the run's full output. The
+#    checked-out hashes come from build/<Ex>/<Algo>/.source-stamp, which
+#    the build writes whenever it (re)builds the binary.
 #
 # 3. The analysis driver: builds the benchmark numbers (output/results.h5)
 #    and the figures (figures/) from the run logs. The numbers are rebuilt
@@ -211,6 +215,13 @@ build/$(3)/bin/picongpu: build/$(3)/.input-stamp $(MALLOCMC_STAMP) $(PROFILE_ENV
 	cd "build/$(3)"
 	export CMAKE_PREFIX_PATH="$(MALLOCMC_ABS):$${CMAKE_PREFIX_PATH:-}"
 	pic-build -c "$(FLAGS)"
+	# The actually checked-out source hashes of the (just) built binary:
+	# run_stamp.sh records them in the log header (the `# source:` line).
+	# (The rule body lives in a define/eval, so the shell's dollars need
+	# four of them to survive both make expansions.)
+	@printf 'picongpu %s\nmallocmc %s\n' \
+	  "$$$$(git -C "$(PICONGPU_ABS)" rev-parse HEAD)" \
+	  "$$$$(git -C "$(MALLOCMC_ABS)" rev-parse HEAD)" >".source-stamp"
 endef
 
 $(foreach p,$(PAIRS),$(eval $(call pair_rules,$(firstword $(subst /, ,$(p))),$(lastword $(subst /, ,$(p))),$(p))))

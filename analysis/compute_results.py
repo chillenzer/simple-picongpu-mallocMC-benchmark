@@ -9,7 +9,12 @@ the pre-refactor scripts: the sweep world is the `machines` table of
 world is the union of those output directories and the legacy per-cluster
 output directories of `LEGACY_HARDWARE`, grouped by the short hardware
 name (e.g. `A30`, `V100`) the comparison charts have always used. It
-parses both into one runs table and computes from it
+parses both into one runs table -- every run carrying, beside its runtime,
+its full and initialisation simulation times and the number of its
+simulation steps, plus the provenance of the log file it came from (start
+datetime, commit, binary hash, dependency versions, GPU, driver and CUDA
+version, CPU, compiler, host, slurm job; as parsed by `log_meta.py`, the
+fields a log does not carry stay empty) -- and computes from it
 
 - `group_stats`, `fits`, `baselines`: the group runtime descriptions,
   the Amdahl fit (the per-fit parameter vector and covariance are stored
@@ -35,10 +40,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import amdahl
+import log_meta
 import numpy as np
 import pandas as pd
 from results_io import (
     RESULTS,
+    RUN_METRIC_COLUMNS,
+    RUN_SOURCE_COLUMNS,
     RUN_TIME,
     grid_label,
     no_delay_mask,
@@ -70,7 +78,18 @@ LEGACY_HARDWARE = {
     "rosi-sleeptimes": "V100",
 }
 
-RUNS_COLUMNS = ["machine", "hardware", *GROUP_KEYS, MALLOC_DELAY, FREE_DELAY, "configuration", RUN_TIME, "rep"]
+RUNS_COLUMNS = [
+    "machine",
+    "hardware",
+    *GROUP_KEYS,
+    MALLOC_DELAY,
+    FREE_DELAY,
+    "configuration",
+    RUN_TIME,
+    *RUN_METRIC_COLUMNS,
+    "rep",
+    *RUN_SOURCE_COLUMNS,
+]
 GROUP_STATS_COLUMNS = [
     "machine",
     *GROUP_KEYS,
@@ -223,12 +242,18 @@ def load_machines(config: dict) -> tuple[dict[str, dict], dict[Path, str]]:
     return sweep, legacy
 
 
-def read_all_runs(sweep: dict[str, dict], legacy: dict[Path, str]) -> tuple[pd.DataFrame, list[str]]:
+def read_all_runs(sweep: dict[str, dict], legacy: dict[Path, str], config: dict) -> tuple[pd.DataFrame, list[str]]:
     """Parse every run log of both worlds into one runs table.
+
+    Each run record is enriched with the provenance metadata of its log
+    file; the dependency pins of `config.json` and the sweep machines'
+    module lists serve as the fallbacks of the logs that carry none of
+    their own.
 
     Args:
         sweep: as from `load_machines`.
         legacy: as from `load_machines`.
+        config: the parsed `config.json`.
 
     Returns:
         tuple: (the runs table, the sweep machine labels, in config order).
@@ -238,17 +263,21 @@ def read_all_runs(sweep: dict[str, dict], legacy: dict[Path, str]) -> tuple[pd.D
         (machine, setup, algorithm, grid, delay) group in file order.
 
     """
+    dependencies = config.get("dependencies", {})
+    picongpu_pin = str(dependencies.get("picongpu", {}).get("hash", ""))
+    mallocmc_pin = str(dependencies.get("mallocmc", {}).get("hash", ""))
     frames = []
     for label, machine in sweep.items():
+        modules_hint = " ".join(str(module) for module in machine.get("modules", []))
         for log_dir in machine["dirs"]:
-            frame = _parse_dir(log_dir)
+            frame = _parse_dir(log_dir, picongpu_pin=picongpu_pin, mallocmc_pin=mallocmc_pin, modules_hint=modules_hint)
             if frame.empty:
                 continue
             frame["machine"] = label
             frame["hardware"] = machine["hardware"]
             frames.append(frame)
     for log_dir, hardware in legacy.items():
-        frame = _parse_dir(log_dir)
+        frame = _parse_dir(log_dir, picongpu_pin=picongpu_pin, mallocmc_pin=mallocmc_pin)
         if frame.empty:
             continue
         frame["machine"] = ""
@@ -261,11 +290,27 @@ def read_all_runs(sweep: dict[str, dict], legacy: dict[Path, str]) -> tuple[pd.D
     return runs[RUNS_COLUMNS], list(sweep)
 
 
-def _parse_dir(log_dir: Path) -> pd.DataFrame:
-    """Parse one output directory's run logs.
+def _parse_dir(
+    log_dir: Path,
+    *,
+    picongpu_pin: str = "",
+    mallocmc_pin: str = "",
+    modules_hint: str = "",
+) -> pd.DataFrame:
+    """Parse one output directory's run logs, enriched with their provenance.
+
+    Every run record of a log file is merged with that file's provenance
+    metadata (`log_meta.parse_log_metadata`), so the per-log values repeat
+    on all of the file's runs.
 
     Args:
         log_dir: the directory of `*.txt` run logs to parse.
+        picongpu_pin: the PIConGPU hash of `config.json`, the fallback
+        dependency version of a log that carries none of its own.
+        mallocmc_pin: the mallocMC hash of `config.json`, as for
+        `picongpu_pin`.
+        modules_hint: the machine's modules of `config.json` (" "-joined),
+        the fallback compiler of a log that traces none.
 
     Returns:
         pd.DataFrame: the parsed runs, or an empty frame.
@@ -277,6 +322,9 @@ def _parse_dir(log_dir: Path) -> pd.DataFrame:
     frame = parse_logs(log_paths)
     if frame.empty:
         return frame
+    hints = {"picongpu_pin": picongpu_pin, "mallocmc_pin": mallocmc_pin, "modules_hint": modules_hint}
+    rows = [{**log_meta.parse_log_metadata(path, **hints), "name": path} for path in log_paths]
+    frame = frame.merge(pd.DataFrame(rows).set_index("name"), on="name", how="left")
     return frame.drop(columns=["name"]).rename(columns={"runtime in s": RUN_TIME})
 
 
@@ -810,7 +858,7 @@ def main(output: Path, configuration: str | None = None) -> None:
     """
     config = load_config()
     sweep, legacy = load_machines(config)
-    runs, sweep_labels = read_all_runs(sweep, legacy)
+    runs, sweep_labels = read_all_runs(sweep, legacy, config)
     sweep_runs = runs[runs["machine"].isin(sweep_labels)]
     fit_covs: list[tuple[tuple, tuple, tuple]] = []
     shared_covs: list[tuple[tuple, tuple, tuple]] = []

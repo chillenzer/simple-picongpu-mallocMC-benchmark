@@ -34,6 +34,27 @@ from run_logs import FREE_DELAY, MALLOC_DELAY
 RESULTS = Path("output/results.h5")
 # The runtime column of the parsed runs.
 RUN_TIME = "runtime_s"
+# The per-run timing columns added to `RUN_TIME`: the run's full simulation
+# time (initialisation plus simulation plus I/O), its initialisation time,
+# and the number of simulation steps `-s` of the ran command.
+RUN_METRIC_COLUMNS = ("full_runtime_s", "init_time_s", "sim_steps")
+# The provenance columns the log metadata of the log file a run came from
+# is copied onto every one of the file's runs; the values are per log, not
+# per run.
+RUN_SOURCE_COLUMNS = (
+    "started_utc",
+    "commit",
+    "binary_sha256",
+    "picongpu",
+    "mallocmc",
+    "gpu",
+    "gpu_driver",
+    "cuda_version",
+    "cpu",
+    "compiler",
+    "host",
+    "slurm_job",
+)
 # Hardware display order of the comparison figures (GPU generation, the
 # newest last).
 HARDWARE_ORDER = ("V100", "A100", "A30", "GH200", "MI250X (1 GCD)")
