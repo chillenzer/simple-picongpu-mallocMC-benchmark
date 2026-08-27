@@ -12,12 +12,13 @@ header:
 
 The `run` mode carries everything that is known at run time: the run
 context (example, algorithm, imposed delays, the repetition, the
-flags-file line and a short hash of it), the host and the repository
-state, the dependency pins of `config.json`, the sha256 of the binary
-used, the build facts of the tree the binary was built from (read from
-its `CMakeCache.txt`, the same tree `make clean` removes with the
-binary), and a hardware snapshot (GPU, its driver version, CPU, and the
-OS). The `setup` mode marks
+flags-file line and a short hash of it), the host, the user the run
+happens as and the repository state, the dependency pins of
+`config.json`, the sha256 of the binary used, the build facts of the
+tree the binary was built from (read from its `CMakeCache.txt`, the
+same tree `make clean` removes with the binary), and a hardware
+snapshot (GPU, its driver version,
+CPU, and the OS). The `setup` mode marks
 a session log (build or run launch); the analysis skips such files.
 Every single fact is best effort: an unavailable value is the string
 "unavailable", never an error, so a metadata problem can never block a
@@ -197,6 +198,21 @@ def _os_pretty_name() -> str:
     for line in os_release.splitlines():
         if line.startswith("PRETTY_NAME="):
             return line.split("=", 1)[1].strip().strip('"') or UNAVAILABLE
+    return UNAVAILABLE
+
+
+def _user() -> str:
+    """Return the user the run happens as, the placeholder when unknown.
+
+    Returns:
+        str: the login user ($USER), or the slurm job's submitter
+            (SLURM_JOB_USER) when there is no login user, at the
+            "unavailable" placeholder when neither is set.
+    """
+    for variable in ("USER", "SLURM_JOB_USER"):
+        user = os.environ.get(variable)
+        if user:
+            return user
     return UNAVAILABLE
 
 
@@ -398,6 +414,7 @@ def _metadata(kind: str, machine: str, extra: dict[str, object]) -> dict[str, ob
         "ts": datetime.now(UTC).isoformat(timespec="seconds"),
         "machine": machine,
         "hostname": socket.gethostname(),
+        "user": _user(),
     }
     metadata.update(_git_state())
     slurm_job = os.environ.get("SLURM_JOB_ID")
