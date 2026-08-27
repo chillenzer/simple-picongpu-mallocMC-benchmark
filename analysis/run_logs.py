@@ -34,7 +34,7 @@ without it, at the next run or the end of the log), so all three of the
 run's times belong to the same record.
 
 A log is new format if and only if it carries a `# metadata:` line whose
-JSON has `"schema": 1` (the cut rule); the logs of the pre-redesign eras
+JSON has `"schema": 1` (the format rule); the logs of the pre-redesign eras
 must be archived under legacy/ (make legacy-results) instead. A
 `"kind": "setup"` metadata line marks a session log (build or full-series
 launch); such a file yields no records. A file in a sweep machine's

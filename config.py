@@ -9,7 +9,7 @@ values:
 
     python3 config.py get dependencies.picongpu.hash
     python3 config.py list examples
-    python3 config.py list run-matrix
+    python3 config.py list run-matrix [initial|arms]
     python3 config.py check
 
 `check` validates the structure and the file references (flag files,
@@ -25,6 +25,10 @@ import sys
 from pathlib import Path
 
 CONFIG_PATH = Path("config.json")
+
+# The phases of the two-stage sweep: the fast first scan and the full
+# design (the Makefile's PHASE invocation value takes the same keys).
+SWEEP_PHASES = {"initial", "arms"}
 
 
 def _fail(message: str) -> None:
@@ -106,25 +110,28 @@ def _is_str_list(value: object, *, non_empty: bool = True) -> bool:
     return not non_empty or bool(value)
 
 
-def _is_int_list(value: object) -> bool:
-    """Whether `value` is a non-empty list of integers (bools excluded).
+def _is_int_list(value: object, *, non_empty: bool = True) -> bool:
+    """Whether `value` is a list of integers (optionally non-empty), bools excluded.
 
     Args:
         value: the value to test.
+        non_empty: whether an empty list is acceptable.
 
     Returns:
         bool: whether `value` fits.
 
     """
-    return (
-        isinstance(value, list)
-        and bool(value)
-        and all(isinstance(item, int) and not isinstance(item, bool) for item in value)
-    )
+    if not isinstance(value, list) or not all(isinstance(item, int) and not isinstance(item, bool) for item in value):
+        return False
+    return not non_empty or bool(value)
 
 
 def _check_run_matrix(data: dict, errors: list[str]) -> None:
     """Validate examples, algorithms, and the delay sweep.
+
+    The phase-1 arm subset (`delays.arms.initial`) and the optional joint
+    grid (`delays.joint.values`) must be subsets of the arm ladder, so that
+    every combination of a phase is a combination of the full design.
 
     Args:
         data: the parsed configuration.
@@ -138,10 +145,17 @@ def _check_run_matrix(data: dict, errors: list[str]) -> None:
     baseline = _walk(data, "delays.baseline")
     if not _is_int_list(baseline) or len(baseline) != 2:
         errors.append("delays.baseline: must be a list of two integers (malloc, free)")
-    for dotted in ("delays.arms.values", "delays.joint.values"):
-        if _is_int_list(_walk(data, dotted)):
-            continue
-        errors.append(f"{dotted}: must be a non-empty list of integers (nanoseconds)")
+    arms = _walk(data, "delays.arms.values")
+    if not _is_int_list(arms):
+        errors.append("delays.arms.values: must be a non-empty list of integers (nanoseconds)")
+        return
+    arm_set = set(arms)
+    initial = _walk(data, "delays.arms.initial")
+    if initial is not None and (not _is_int_list(initial) or not set(initial) <= arm_set):
+        errors.append("delays.arms.initial: must be a non-empty subset of delays.arms.values")
+    joint = _walk(data, "delays.joint.values")
+    if joint is not None and (not _is_int_list(joint, non_empty=False) or not set(joint) <= arm_set):
+        errors.append("delays.joint.values: must be a subset of delays.arms.values (optional, may be empty)")
 
 
 def _check_build(data: dict, errors: list[str]) -> None:
@@ -256,8 +270,15 @@ def _check_benchmark_files(data: dict, errors: list[str]) -> None:
                 _missing_file(Path("param") / algorithm / "mallocMC.param", "algorithms", errors)
 
 
-def _run_matrix(data: dict) -> list[str]:
-    """Return the (malloc, free) delay combinations as "<malloc>_<free>" tokens.
+def _run_matrix(data: dict, phase: str = "arms") -> list[str]:
+    """Return the (malloc, free) delay combinations of one sweep phase.
+
+    The phases of the two-stage sweep are `initial` (the baseline plus the
+    `delays.arms.initial` arm subset, or the full ladder when the subset is
+    not configured) and `arms` (baseline, full ladder, and the joint grid
+    when one is configured). The initial phase's combinations are a subset
+    of the arms phase's, so the run stamps let a later `arms` sweep pick up
+    where the `initial` sweep stopped.
 
     The order mirrors the historical run_all.sh sweep: the baseline first,
     then each arm value twice (malloc delay, then free delay, the other held
@@ -265,14 +286,24 @@ def _run_matrix(data: dict) -> list[str]:
 
     Args:
         data: the parsed configuration.
+        phase: the sweep phase ("initial" or "arms").
 
     Returns:
         list[str]: one "<malloc>_<free>" token per combination.
 
+    Raises:
+        ValueError: if `phase` is not a known phase.
+
     """
+    if phase not in SWEEP_PHASES:
+        msg = f"unknown sweep phase '{phase}' (expected initial or arms)"
+        raise ValueError(msg)
     baseline = data["delays"]["baseline"]
-    arms = data["delays"]["arms"]["values"]
-    joint = data["delays"]["joint"]["values"]
+    arms_spec = data["delays"]["arms"]
+    arms = arms_spec.get("initial", arms_spec["values"]) if phase == "initial" else arms_spec["values"]
+    joint = []
+    if phase == "arms":
+        joint = data["delays"].get("joint", {}).get("values", []) or []
     combinations = [f"{baseline[0]}_{baseline[1]}"]
     for delay in arms:
         combinations += [f"{delay}_0", f"0_{delay}"]
@@ -329,6 +360,22 @@ def _print_list(value: object, dotted: str) -> None:
         print(item)
 
 
+def _cmd_list_run_matrix(rest: list[str]) -> None:
+    """Print the run matrix of one sweep phase, one combination per line.
+
+    Args:
+        rest: the command line arguments after the "list" subcommand.
+
+    """
+    if len(rest) > 2:
+        _fail("usage: config.py list run-matrix [initial|arms]")
+    phase = rest[1] if len(rest) == 2 else "arms"
+    if phase not in SWEEP_PHASES:
+        _fail(f"unknown sweep phase '{phase}' (expected initial or arms)")
+    for combination in _run_matrix(_load(), phase):
+        print(combination)
+
+
 def main() -> int:
     """Dispatch the subcommand on the command line.
 
@@ -347,14 +394,13 @@ def main() -> int:
         return 0
     if command not in {"get", "list"}:
         _fail(f"unknown command '{command}' (expected get, list or check)")
-    if len(rest) != 1:
-        _fail(f"usage: config.py {command} <dotted.key>")
-    if rest[0] == "run-matrix":
+    if rest and rest[0] == "run-matrix":
         if command != "list":
             _fail("'run-matrix' is a list, not a scalar key")
-        for combination in _run_matrix(_load()):
-            print(combination)
+        _cmd_list_run_matrix(rest)
         return 0
+    if len(rest) != 1:
+        _fail(f"usage: config.py {command} <dotted.key>")
     value = _lookup(_load(), rest[0])
     if command == "get":
         _print_scalar(value, rest[0])

@@ -18,7 +18,8 @@ $ORCID) and the repository state, the dependency pins of
 `config.json`, the sha256 of the binary used, the build facts of the
 tree the binary was built from (read from its `CMakeCache.txt`, the
 same tree `make clean` removes with the binary), and a hardware
-snapshot (GPU, CPU, OS). The `setup` mode marks
+snapshot (GPU, its driver version,
+CPU, and the OS). The `setup` mode marks
 a session log (build or run launch); the analysis skips such files.
 Every single fact is best effort: an unavailable value is the string
 "unavailable", never an error, so a metadata problem can never block a
@@ -208,6 +209,7 @@ def _user() -> str:
         str: the login user ($USER), or the slurm job's submitter
             (SLURM_JOB_USER) when there is no login user, at the
             "unavailable" placeholder when neither is set.
+
     """
     for variable in ("USER", "SLURM_JOB_USER"):
         user = os.environ.get(variable)
@@ -225,6 +227,7 @@ def _orcid() -> str:
 
     Returns:
         str: $ORCID when set, else the "unavailable" placeholder.
+
     """
     orcid = os.environ.get("ORCID")
     return orcid if orcid else UNAVAILABLE

@@ -44,10 +44,13 @@ attributed to the empty hardware name; the main analysis drops exactly
 those rows and records the exclusion in the results file's attributes.
 
 The frozen parser must not change: `legacy_results.h5` is the
-reproducible record of the numbers computed before the cut, and
+reproducible record of the numbers computed before the redesign, and
 `make legacy-verify` will report a change to any input file. The
 constraint applies to the eleven historical columns (their order and
 values); the metrics and provenance columns appended after them are
 recorded for completeness and never feed the fits. A machine that froze
 its table before the metrics/provenance columns existed must re-run
-`make legacy-results` after a pull to pick up the extended schema.
+`make legacy-results` after a pull to pick up the extended schema. When
+the main analysis reads the frozen table, it defaults, at read time, the
+log-derived columns the table does not record to the empty value and
+marks the frozen rows `superseded = 0`.

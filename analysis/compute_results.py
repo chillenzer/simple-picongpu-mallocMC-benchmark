@@ -10,18 +10,21 @@ and the frozen legacy table `legacy/legacy_results.h5` (the pre-redesign
 logs of legacy/, with their machine and paper-figure hardware attribution
 applied at the freeze; the archived-but-excluded runs are marked by an
 empty hardware name and dropped here at the single exclusion choke
-point). Both are parsed into one runs table, grouped by the short
-hardware name (e.g. `A30`, `V100`) the comparison charts have always
-used, and computed from
+point). Superseded vintages (an append-only re-run of a stamped series)
+are not filtered out of the table: they stay in every table and every
+number, and the group statistics and the fits include them; a consumer
+that wants the current state selects `runs[runs["superseded"] == 0]`. The
+table is grouped by the short hardware name (e.g. `A30`, `V100`) the
+comparison charts have always used, and computed from
 
 - `group_stats`, `fits`, `baselines`: the group runtime descriptions,
-  the Amdahl fit (the per-fit parameter vector and covariance are stored
+  the allocation-model fit (the per-fit parameter vector and covariance are stored
   under `fits/cov/`) and the zero-delay runtime IQR of every group of the
   sweep machines,
 - `foil` / `foil_pvalue` / `khi`: the statistics behind the FoilLCT bar
   chart and the KelvinHelmholtz violin chart (distributions, Kruskal
-  p-values, relative runtimes), over the no-delay runs of the paper-figure
-  world, grouped by the short hardware name.
+  p-values, relative runtimes), over the zero-delay runs of both
+  sources, grouped by the short hardware name.
 
 Everything is written to `output/results.h5`; this script prints nothing.
 Print the tables with `summarize_results.py`, draw the figures with the
@@ -40,7 +43,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import amdahl
+import allocation_model
 import numpy as np
 import pandas as pd
 from results_io import (
@@ -70,7 +73,7 @@ PAPER_ALGORITHMS = ("FlatterScatter", "ScatterAlloc")
 LEGACY_H5 = Path(__file__).resolve().parent.parent / "legacy" / "legacy_results.h5"
 
 # Beyond the run's own numbers, every row carries the two timing metrics
-# the old record set dropped (`RUN_METRIC_COLUMNS`, after the runtime and
+# the pre-redesign record dropped (`RUN_METRIC_COLUMNS`, after the runtime and
 # before the repetition number), the provenance of the log file the run
 # came from (`RUN_SOURCE_COLUMNS`), the repetition number the run declared
 # (`RUN_NOMINAL_COLUMNS`), and the run's vintage state
@@ -281,12 +284,15 @@ def read_all_runs(sweep: dict[str, dict], legacy_frame: pd.DataFrame) -> tuple[p
         tuple: (the runs table, the sweep machine labels, in config order).
         A sweep machine label is kept when its log directory exists or its
         runs are in the frozen table. The runs carry `machine` (the sweep
-        machine's label, empty for the legacy paper-world runs) and
+        machine's label, empty for the legacy runs stored without one) and
         `hardware` (the short paper-figure name). `rep` numbers the
-        repetitions of each (machine, setup, algorithm, grid, delay) group
-        in file order, and `superseded` marks the runs an identity's run
-        stamp no longer lists (a newer vintage of the same combination and
-        repetition was written; the frozen legacy runs are all 0).
+        repetitions of each (machine, setup, algorithm, grid, delay)
+        group in file order (a re-run of one nominal repetition is a new
+        log in the same group, so `rep` is a position among all of the
+        group's logs; `nominal_rep` is the repetition the run declared),
+        and `superseded` marks the runs an identity's run stamp no longer
+        lists (a newer vintage of the same combination and repetition was
+        written; the frozen legacy runs are all 0).
 
     """
     frames = []
@@ -449,7 +455,7 @@ def _fit_cov(res: dict) -> tuple | None:
     """Extract the fitted parameter vector and its covariance for the bootstrap sleeves.
 
     Args:
-        res: the result of `amdahl.fit_1d` / `amdahl.fit_2d`.
+        res: the result of `allocation_model.fit_1d` / `allocation_model.fit_2d`.
 
     Returns:
         tuple | None: (fit_params, pcov) for the bootstrap sleeves, or None
@@ -476,7 +482,7 @@ def fit_one_group(m: pd.Series, f: pd.Series, runtimes: pd.Series, c_a: float | 
 
     """
     if m.nunique() >= 2 and f.nunique() >= 2:
-        res = amdahl.fit_2d(m, f, runtimes)
+        res = allocation_model.fit_2d(m, f, runtimes)
         return {
             "model": "2d",
             "W": res["W"],
@@ -501,7 +507,7 @@ def fit_one_group(m: pd.Series, f: pd.Series, runtimes: pd.Series, c_a: float | 
     if m.nunique() >= 2 or f.nunique() >= 2:
         varying = "malloc" if m.nunique() >= 2 else "free"
         delays = m if varying == "malloc" else f
-        res = amdahl.fit_1d(delays, runtimes, c_a=c_a)
+        res = allocation_model.fit_1d(delays, runtimes, c_a=c_a)
         row = {
             "model": f"1d-{varying}",
             "W": res["W"],
@@ -543,8 +549,8 @@ def fit_sweep(runs: pd.DataFrame, c_a: float | None = None) -> tuple[pd.DataFram
     """Fit every (machine, setup, algorithm, grid) group of a runs table.
 
     Groups whose runs span both the malloc and the free delay are fitted
-    with the two-operation model of `amdahl.fit_2d`; groups spanning only
-    one delay fall back to the 1-D model of `amdahl.fit_1d` on that delay.
+    with the two-operation model of `allocation_model.fit_2d`; groups spanning only
+    one delay fall back to the 1-D model of `allocation_model.fit_1d` on that delay.
 
     Args:
         runs: the parsed runs table.
@@ -670,8 +676,8 @@ def fit_sweep_combined(
             row = indexed.get((machine, a, scenario))
             if row is not None:
                 p0[a] = _shared_p0(row)
-        res = amdahl.fit_combined(
-            amdahl.CombinedSweep(grp[MALLOC_DELAY], grp[FREE_DELAY], grp[RUN_TIME], grp["algorithm"]),
+        res = allocation_model.fit_combined(
+            allocation_model.CombinedSweep(grp[MALLOC_DELAY], grp[FREE_DELAY], grp[RUN_TIME], grp["algorithm"]),
             order=order,
             p0=p0 or None,
         )
@@ -738,27 +744,27 @@ def baseline_stats(runs: pd.DataFrame) -> pd.DataFrame:
 
 
 def _no_delay(runs: pd.DataFrame) -> pd.DataFrame:
-    """Return the baseline (no-delay) subset of a runs table.
+    """Return the baseline (zero-delay) subset of a runs table.
 
     Args:
         runs: the parsed runs table.
 
     Returns:
-        pd.DataFrame: the no-delay rows.
+        pd.DataFrame: the zero-delay rows.
 
     """
     return runs[no_delay_mask(runs)]
 
 
 def foil_stats(runs: pd.DataFrame) -> pd.DataFrame:
-    """Compute the no-delay FoilLCT runtime distribution, per (hardware, algorithm).
+    """Compute the zero-delay FoilLCT runtime distribution, per (hardware, algorithm).
 
     Args:
         runs: the parsed runs table.
 
     Returns:
         pd.DataFrame: one row per (hardware, algorithm) with n, p25, p50,
-        p75 of the no-delay FoilLCT runtimes.
+        p75 of the zero-delay FoilLCT runtimes.
 
     """
     foil = _no_delay(runs)
@@ -797,7 +803,7 @@ def foil_pvalues(runs: pd.DataFrame) -> pd.DataFrame:
     """Compute the Kruskal significance of the FoilLCT bar chart, per hardware.
 
     The test compares the two paper algorithms (FlatterScatter vs.
-    ScatterAlloc) over all no-delay FoilLCT runs of a hardware.
+    ScatterAlloc) over all zero-delay FoilLCT runs of a hardware.
 
     Args:
         runs: the parsed runs table.
@@ -980,7 +986,7 @@ def main(output: Path, configuration: str | None = None) -> None:
             "runs": runs,
             # The group statistics, fits and zero-delay baselines cover the
             # sweep machines only; the paper-figure statistics (foil, khi)
-            # cover the no-delay runs of the whole paper world.
+            # cover the zero-delay runs of both sources.
             "group_stats": group_runtime_stats(analyzed),
             "baselines": baseline_stats(sweep_runs),
             "foil": foil_stats(runs),
