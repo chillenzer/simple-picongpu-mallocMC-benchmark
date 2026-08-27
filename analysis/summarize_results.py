@@ -5,7 +5,7 @@ SPDX-License-Identifier: MIT
 
 Reads `output/results.h5` (the output of `compute_results.py`) and prints
 the summary tables: per machine, the parsed runs (with `--raw`) and the
-group runtime statistics; the Amdahl fit tables, a comparison of the
+group runtime statistics; the allocation-model fit tables, a comparison of the
 shared-parameter (combined) fits against the individual fits, and the
 fraction summary; the no-delay runtimes; and the FoilLCT /
 KelvinHelmholtz figure metadata.
@@ -40,7 +40,7 @@ def print_table(name: str, text: str) -> None:
 
 
 def print_fraction_summary(fits: pd.DataFrame) -> None:
-    """Print the Amdahl fraction of every fit with a fraction in (0, 1).
+    """Print the fraction f = A/T0 of every fit with a fraction in (0, 1).
 
     Args:
         fits: the fits table of the results file.
@@ -51,7 +51,7 @@ def print_fraction_summary(fits: pd.DataFrame) -> None:
         # Name the algorithm only when more than one is present: single-policy
         # output stays exactly as before multi-algorithm sweeps.
         show_algorithm = fits["algorithm"].nunique() > 1
-        print("\nAmdahl fraction of runtime spent in the operation (f = A/T0):")
+        print("\nFraction of runtime spent in the operation (f = A/T0):")
         for _, r in fit.iterrows():
             fractions = []
             for name in ("f_malloc", "f_free"):
