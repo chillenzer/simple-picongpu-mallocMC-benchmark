@@ -106,7 +106,8 @@ The Makefile pins the dependency versions (the `dependencies` section of
 - `logmeta.py` — emits the self-describing `# metadata:` JSON line
   (schema 1) of the run and session logs; reads the dependency pins from
   `config.json`, the build facts from the binary's own `CMakeCache.txt`,
-  and the host hardware; every fact is best effort ("unavailable"
+  and the host hardware (the GPU names, the driver version, the CPU
+  model, the operating system); every fact is best effort ("unavailable"
   placeholders, never an error).
 - `log_{setup,run}_<machine>.sh` — per-machine launchers (hal, rosi,
   rosi-a100): log the environment, load the machine's modules (setup), and
@@ -129,9 +130,13 @@ The Makefile pins the dependency versions (the `dependencies` section of
   committed, the logs and the frozen table are git-ignored. See
   `legacy/README.md` and `make legacy-results` / `make legacy-verify`.
 - `analysis/run_logs.py` — shared parsing of the benchmark run logs: one
-  record per `bin/picongpu` run (example, algorithm, grid, imposed delays,
-  runtime) from the log's `# metadata:` JSON header and its `set -x`
-  trace; the basis of the analysis scripts below.
+  record per `bin/picongpu` run (example, algorithm, grid, imposed
+  delays, runtime, plus the run's full and initialisation runtimes and
+  its number of simulation steps) from the log's `# metadata:` JSON
+  header and its `set -x` trace, and the provenance of the log (start
+  datetime, commit, the binary's hash and build, the dependency pins,
+  the host hardware, the slurm job) copied from the header onto every
+  one of the log's runs; the basis of the analysis scripts below.
 - `analysis/results_io.py` — shared access to the results HDF5 file: the
   table read/write, the per-fit covariance groups, and the schema helpers
   (grid/scenario labels, the no-delay mask, the particle-memory model).
@@ -318,6 +323,19 @@ figures*, joined by the single HDF5 file `output/results.h5`:
   read grouped by their short hardware name). All runs are grouped by that
   short hardware name (`A30`, `V100`, ...; the FoilLCT / KelvinHelmholtz
   metadata covers the no-delay runs of both worlds). It prints nothing.
+  Beyond the run's own numbers, every row of the `runs` table carries the
+  two timing metrics the old record set dropped (`full_runtime_s`,
+  `init_time_s`, after the runtime and before the repetition number) and
+  the number of simulation steps the run carried, `sim_steps`, plus the
+  provenance of the log file the run came from (`started_utc`, `commit`,
+  `binary_sha256`, `picongpu`, `mallocmc`, `gpu`, `gpu_driver`,
+  `cuda_version`, `cpu`, `compiler`, `host`, `slurm_job`, at the end; per
+  log, repeated on all of its runs, empty where the log or its metadata
+  carries nothing). The new-format runs take the values from their
+  `# metadata:` line and their trace, the frozen legacy runs from
+  `legacy/legacy_results.h5`. The single source of truth for the column
+  names is `analysis/results_io.py` (`RUN_METRIC_COLUMNS`,
+  `RUN_SOURCE_COLUMNS`).
 - `summarize_results.py` prints the summary tables from
   `output/results.h5` (per machine: group statistics; the fits and the
   Amdahl fractions of runtime spent in allocations / frees; the combined

@@ -44,6 +44,8 @@ import numpy as np
 import pandas as pd
 from results_io import (
     RESULTS,
+    RUN_METRIC_COLUMNS,
+    RUN_SOURCE_COLUMNS,
     RUN_TIME,
     grid_label,
     load_results,
@@ -64,7 +66,23 @@ PAPER_ALGORITHMS = ("FlatterScatter", "ScatterAlloc")
 # source of the pre-redesign runs. Built once with `make legacy-results`.
 LEGACY_H5 = Path(__file__).resolve().parent.parent / "legacy" / "legacy_results.h5"
 
-RUNS_COLUMNS = ["machine", "hardware", *GROUP_KEYS, MALLOC_DELAY, FREE_DELAY, "configuration", RUN_TIME, "rep"]
+# Beyond the run's own numbers, every row carries the two timing metrics
+# the old record set dropped (`RUN_METRIC_COLUMNS`, after the runtime and
+# before the repetition number) and the provenance of the log file the run
+# came from (`RUN_SOURCE_COLUMNS`, at the end); the single source of truth
+# for both is analysis/results_io.py.
+RUNS_COLUMNS = [
+    "machine",
+    "hardware",
+    *GROUP_KEYS,
+    MALLOC_DELAY,
+    FREE_DELAY,
+    "configuration",
+    RUN_TIME,
+    *RUN_METRIC_COLUMNS,
+    "rep",
+    *RUN_SOURCE_COLUMNS,
+]
 GROUP_STATS_COLUMNS = [
     "machine",
     *GROUP_KEYS,
@@ -275,7 +293,17 @@ def _parse_dir(log_dir: Path) -> pd.DataFrame:
         raise LegacyLogError(message) from error
     if frame.empty:
         return frame
-    return frame.drop(columns=["name"]).rename(columns={"runtime in s": RUN_TIME})
+    frame = frame.drop(columns=["name"]).rename(columns={"runtime in s": RUN_TIME})
+    # The records carry the metrics and provenance the log (its metadata,
+    # its trace) holds; a column a log carries not at all (no `-s` on the
+    # flags line) is filled here so every frame matches the runs table.
+    for column in RUN_METRIC_COLUMNS:
+        if column not in frame:
+            frame[column] = np.nan
+    for column in RUN_SOURCE_COLUMNS:
+        if column not in frame:
+            frame[column] = ""
+    return frame
 
 
 def _describe_grouped(frame: pd.DataFrame, keys: list[str]) -> pd.DataFrame:

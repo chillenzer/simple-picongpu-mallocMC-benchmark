@@ -18,7 +18,17 @@ re-parsing historical log layouts.
 - `make_legacy_results.py` — parses the moved logs with a frozen copy of
   the historical parser and writes `legacy_results.h5`: the runs table
   (with machine/hardware attribution, in the historical file order) and
-  a per-file SHA-256 source manifest.
+  a per-file SHA-256 source manifest. Beyond the historical columns, the
+  table records the per-run metrics (the full and the initialisation
+  runtimes, the number of simulation steps) and, from `log_meta.py`, the
+  provenance of the log file each run came from (start datetime, commit,
+  the PIConGPU / mallocMC versions, the GPU and its driver, the CUDA
+  version, the CPU, the compiler, the host, the slurm job; the empty
+  string where a log generation carries nothing).
+- `log_meta.py` — the generation-aware provenance parser of the
+  historical log layouts (the "Logging environment" dumps, the slurm
+  build+run logs, the redesign-era header); used only by
+  `make_legacy_results.py`.
 - `make legacy-results` — builds `legacy_results.h5` from `logs/`.
 - `make legacy-verify` — reparses `logs/` and checks the file against it.
 
@@ -35,4 +45,9 @@ those rows and records the exclusion in the results file's attributes.
 
 The frozen parser must not change: `legacy_results.h5` is the
 reproducible record of the numbers computed before the cut, and
-`make legacy-verify` will report a change to any input file.
+`make legacy-verify` will report a change to any input file. The
+constraint applies to the eleven historical columns (their order and
+values); the metrics and provenance columns appended after them are
+recorded for completeness and never feed the fits. A machine that froze
+its table before the metrics/provenance columns existed must re-run
+`make legacy-results` after a pull to pick up the extended schema.

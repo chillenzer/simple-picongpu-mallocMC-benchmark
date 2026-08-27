@@ -3,15 +3,15 @@
 SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
 SPDX-License-Identifier: MIT
 
-`compute_results.py` stores, on every parsed run, the provenance of the log
-file the run came from: what was built, what was measured, and on what
+`make_legacy_results.py` stores, on every frozen run, the provenance of the
+log file the run came from: what was built, what was measured, and on what
 hardware. The parser is generation-aware and defensive -- every field comes
 out as the empty string when the log does not carry it:
 
-- the current layout of `run_stamp.sh` (a `# <key>: <value>` header that
-  carries the start datetime, the host, the GPU and its driver, the loaded
-  modules, the compiler, the checked-out dependency hashes (the `source`
-  line), the machine, the commit and the binary's sha256),
+- the redesign-era layout of `run_stamp.sh` (a `# <key>: <value>` header
+  that carries the start datetime, the host, the GPU and its driver, the
+  loaded modules, the compiler, the checked-out dependency hashes (the
+  `source` line), the machine, the commit and the binary's sha256),
 - the legacy "Logging environment" layout (a `git log -1` block, an
   `nvidia-smi` table, and -- on some machines -- an `hwinfo` dump and a
   full `env` dump),

@@ -148,6 +148,21 @@ def _gpu_names() -> list[str]:
     return [name.strip() for name in query.splitlines() if name.strip()]
 
 
+def _gpu_driver() -> str:
+    """Return the GPU driver version, the placeholder when unknown.
+
+    Returns:
+        str: the driver version of the first GPU (via `nvidia-smi`), at
+        its "unavailable" placeholder when the tool is missing or fails.
+
+    """
+    nvidia_smi = shutil.which("nvidia-smi")
+    if nvidia_smi is None:
+        return UNAVAILABLE
+    query = _probe([nvidia_smi, "--query-gpu=driver_version", "--format=csv,noheader"])
+    return _first_line(query) or UNAVAILABLE
+
+
 def _cpu_model() -> str:
     """Return the CPU model name, at its "unavailable" placeholder when unknown.
 
@@ -185,15 +200,16 @@ def _os_pretty_name() -> str:
 
 
 def _hardware() -> dict[str, object]:
-    """Return a snapshot of the host hardware (GPU, CPU, OS).
+    """Return a snapshot of the host hardware (GPU, GPU driver, CPU, OS).
 
     Returns:
-        dict: the GPU product names (a list, empty when unknown), the CPU
-            model name and the operating system, each at its
-            "unavailable" placeholder when unknown.
+        dict: the GPU product names (a list, empty when unknown), the
+        driver version of the first GPU, the CPU model name and the
+        operating system, each at its "unavailable" placeholder when
+        unknown.
 
     """
-    return {"gpu": _gpu_names(), "cpu": _cpu_model(), "os": _os_pretty_name()}
+    return {"gpu": _gpu_names(), "gpu_driver": _gpu_driver(), "cpu": _cpu_model(), "os": _os_pretty_name()}
 
 
 def _sha256(path: Path) -> str:

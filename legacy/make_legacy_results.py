@@ -34,11 +34,17 @@ Output: legacy/legacy_results.h5 with
 
 - runs: the parsed runs, in the same schema as the results file's runs
   table without rep (the main analysis numbers the repetitions in file
-  order over the merged table). The row order is part of the contract
-  (machine directories in config order, then the legacy directories in
-  LEGACY_DIRECTORIES order, then the excluded directories last): the
-  main analysis numbers rep in file order, so reordering rows would
-  renumber the repetitions and shift the group statistics.
+  order over the merged table). The first eleven columns are the
+  historical schema and their values must not change; beyond them the
+  freeze records the per-run metrics (the full and the initialisation
+  runtimes, the number of simulation steps) and the provenance of the
+  log file each run came from (parsed by log_meta.py from the
+  historical log layouts; the empty string where a layout carries
+  nothing). The row order is part of the contract (machine directories
+  in config order, then the legacy directories in LEGACY_DIRECTORIES
+  order, then the excluded directories last): the main analysis numbers
+  rep in file order, so reordering rows would renumber the repetitions
+  and shift the group statistics.
 - file attributes: created_utc, the source manifest (one SHA-256 per
   input file), excluded_sources (the excluded directories and why),
   and attribution (per directory: machine and hardware).
@@ -61,6 +67,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import h5py
+import log_meta
 import numpy as np
 import pandas as pd
 
@@ -81,12 +88,39 @@ LEGACY_MALLOC_DELAY_CMD = "MALLOCMC_SLEEP_TIME="
 VARIANT_CD_RE = re.compile(r"(?:^|/)build/(\w+)/(\w+)-sleep(\d+)$")
 BUILD_ALGO_CD_RE = re.compile(r"(?:^|/)build/(\w+)/(\w+)$")
 BUILD_CD_RE = re.compile(r"(?:^|/)build/(\w+)$")
+# The `-s` step count of one traced picongpu command (no other traced
+# line carries it).
+SIM_STEPS_RE = re.compile(r"(?:^|\s)-s (\d+)\b")
+# The trailing `= <value> sec` of an `initialization time:` /
+# `full simulation time:` line, in the shared format.
+TIME_VALUE_RE = re.compile(r"= ([\d.]+) sec")
 
 MALLOC_DELAY = "malloc_sleeptime"
 FREE_DELAY = "free_sleeptime"
 RUN_TIME = "runtime_s"
+# The per-run metrics and the log provenance recorded beyond the
+# historical schema: a frozen copy of the RUN_METRIC_COLUMNS and
+# RUN_SOURCE_COLUMNS of analysis/results_io.py (the names are the
+# contract; keep the two in sync).
+METRIC_COLUMNS = ["full_runtime_s", "init_time_s", "sim_steps"]
+SOURCE_COLUMNS = [
+    "started_utc",
+    "commit",
+    "binary_sha256",
+    "picongpu",
+    "mallocmc",
+    "gpu",
+    "gpu_driver",
+    "cuda_version",
+    "cpu",
+    "compiler",
+    "host",
+    "slurm_job",
+]
 # Same schema as the results file's runs table, without rep (which the
-# main analysis assigns in file order over the merged table).
+# main analysis assigns in file order over the merged table): the
+# historical columns in their historical order, then the metrics, then
+# the provenance.
 RUNS_COLUMNS = [
     "machine",
     "hardware",
@@ -99,6 +133,8 @@ RUNS_COLUMNS = [
     FREE_DELAY,
     "configuration",
     RUN_TIME,
+    *METRIC_COLUMNS,
+    *SOURCE_COLUMNS,
 ]
 
 # The legacy per-cluster output directories (directory name -> short
@@ -221,8 +257,98 @@ def _update_delays(line: str, malloc_delay: int | None, free_delay: int | None) 
     return malloc_delay, free_delay
 
 
+def _flush(pending: dict | None) -> dict | None:
+    """Return the pending record when it measured a runtime, else None.
+
+    Args:
+        pending: the run's record in progress, or None.
+
+    Returns:
+        dict | None: the record, or None when it is absent or the run
+        aborted before printing its calculation time.
+
+    """
+    if pending is not None and "runtime in s" in pending:
+        return pending
+    return None
+
+
+def _time_line(value: str, pending: dict) -> bool:
+    """Record one of the run's time lines on the pending record.
+
+    The rosi logs run the combinations on several GPUs at once, so the
+    time lines of the concurrent runs interleave; the first value of each
+    line keeps the value of the run that is recorded.
+
+    Args:
+        value: the stripped log line.
+        pending: the run's record in progress.
+
+    Returns:
+        bool: True when the line is the run's `full simulation time:`,
+        which ends the record.
+
+    """
+    if value.startswith("calculation") and "simulation time" in value and "runtime in s" not in pending:
+        pending.update(parse_simulation_time(value))
+    elif value.startswith("full simulation time"):
+        match = TIME_VALUE_RE.search(value)
+        if match is not None and "full_runtime_s" not in pending:
+            pending["full_runtime_s"] = float(match[1])
+        return True
+    elif value.startswith("initialization time") and "init_time_s" not in pending:
+        match = TIME_VALUE_RE.search(value)
+        if match is not None:
+            pending["init_time_s"] = float(match[1])
+    return False
+
+
+def _start_run(
+    line: str,
+    context: dict,
+    malloc_delay: int | None,
+    free_delay: int | None,
+) -> dict | None:
+    """Start a pending record at one traced `bin/picongpu` command line.
+
+    Args:
+        line: the stripped `set -x` trace line.
+        context: the run context of the current `build/...` directory.
+        malloc_delay: the remembered malloc delay, or None.
+        free_delay: the remembered free delay, or None.
+
+    Returns:
+        dict | None: the started record, or None when the line is no
+        `bin/picongpu` command of a known context.
+
+    """
+    if RUN_CMD not in line or "setup" not in context:
+        return None
+    # In the run-time layout the env vars override the variant sleeptime;
+    # in the per-variant layout they are absent.
+    pending = dict(context) | parse_grid(line)
+    steps = SIM_STEPS_RE.search(line)
+    if steps is not None:
+        pending["sim_steps"] = int(steps[1])
+    if malloc_delay is not None or free_delay is not None:
+        pending |= {
+            "malloc_sleeptime": (malloc_delay if malloc_delay is not None else 0),
+            "free_sleeptime": (free_delay if free_delay is not None else 0),
+            "configuration": "run-time",
+        }
+    return pending
+
+
 def parse_log(log_path: Path) -> Iterator[dict]:
     """Yield one record per picongpu run of a single legacy run log.
+
+    The record is yielded when the run's `full simulation time:` line is
+    seen (or, if a run ends without that line, at the next run context or
+    at the end of the log), so the full and the initialisation runtimes,
+    printed right after and long before the calculation time, belong to
+    the same record. A run that aborted before printing its calculation
+    time (a core-dump, an out-of-memory) carries no runtime and is not
+    yielded.
 
     Yields:
         dict: one record per picongpu run of the log.
@@ -235,24 +361,29 @@ def parse_log(log_path: Path) -> Iterator[dict]:
         free_delay = None
         for line in map(str.strip, file):
             if line.startswith(CD_CMD):
+                # A new run context invalidates the remembered delay values
+                # and, in case the run never printed its full time, ends
+                # the pending record.
                 setup = parse_setup(line)
                 if setup is not None:
+                    record = _flush(pending)
+                    if record is not None:
+                        yield record
+                    pending = None
                     context = setup
                     malloc_delay = None
                     free_delay = None
             elif line.startswith("+ "):
                 malloc_delay, free_delay = _update_delays(line, malloc_delay, free_delay)
-                if RUN_CMD in line and "setup" in context:
-                    pending = dict(context) | parse_grid(line)
-                    if malloc_delay is not None or free_delay is not None:
-                        pending |= {
-                            "malloc_sleeptime": (malloc_delay if malloc_delay is not None else 0),
-                            "free_sleeptime": (free_delay if free_delay is not None else 0),
-                            "configuration": "run-time",
-                        }
-            elif line.startswith("calculation") and "simulation time" in line and pending is not None:
-                yield {**pending, **parse_simulation_time(line)}
+                pending = _start_run(line, context, malloc_delay, free_delay) or pending
+            elif pending is not None and _time_line(line, pending):
+                record = _flush(pending)
+                if record is not None:
+                    yield record
                 pending = None
+        record = _flush(pending)
+        if record is not None:
+            yield record
 
 
 def _files(log_dir: Path) -> list[Path]:
@@ -268,7 +399,13 @@ def _files(log_dir: Path) -> list[Path]:
     return sorted(path for path in log_dir.glob("*") if path.is_file())
 
 
-def _parse_dir(log_dir: Path) -> pd.DataFrame:
+def _parse_dir(
+    log_dir: Path,
+    *,
+    picongpu_pin: str = "",
+    mallocmc_pin: str = "",
+    modules_hint: str = "",
+) -> pd.DataFrame:
     """Parse one output directory's run logs, in sorted file order.
 
     The per-file construction mirrors the historical `parse_logs` /
@@ -276,9 +413,17 @@ def _parse_dir(log_dir: Path) -> pd.DataFrame:
     still contributes its `name` column to the concatenation, which is what
     upcasts the integer grid columns to float64 in pandas. That upcast is
     part of the historical values of the results file, so it must be kept.
+    Beyond that, the provenance of each log (parsed by `log_meta.py`, its
+    `generation` tag dropped) is merged onto all the records of that file.
 
     Args:
         log_dir: the directory of run logs to parse.
+        picongpu_pin: the PIConGPU pin of `config.json`, the fallback
+            dependency version of a log that carries none of its own.
+        mallocmc_pin: the mallocMC pin of `config.json`, as for
+            `picongpu_pin`.
+        modules_hint: the machine's modules of `config.json` (" "-joined),
+            the last-resort compiler fallback for a log that traces none.
 
     Returns:
         pd.DataFrame: the parsed runs, or an empty frame.
@@ -287,7 +432,25 @@ def _parse_dir(log_dir: Path) -> pd.DataFrame:
     log_paths = _files(log_dir)
     if not log_paths:
         return pd.DataFrame()
-    tmp = pd.concat([pd.DataFrame(parse_log(path)).assign(name=str(path)) for path in log_paths])
+    frames = []
+    for path in log_paths:
+        frame = pd.DataFrame(parse_log(path)).assign(name=str(path))
+        meta = {
+            column: value
+            for column, value in log_meta.parse_log_metadata(
+                path,
+                picongpu_pin=picongpu_pin,
+                mallocmc_pin=mallocmc_pin,
+                modules_hint=modules_hint,
+            ).items()
+            if column != "generation"
+        }
+        frame = frame.assign(**meta)
+        for column in METRIC_COLUMNS:
+            if column not in frame:
+                frame[column] = np.nan
+        frames.append(frame)
+    tmp = pd.concat(frames)
     return tmp.assign(z=tmp.get("z", np.nan)).drop(columns=["name"]).rename(columns={"runtime in s": RUN_TIME})
 
 
@@ -380,6 +543,22 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _pins() -> tuple[str, str]:
+    """Return the dependency pins of `config.json` (the fallback versions).
+
+    Returns:
+        tuple: the (picongpu, mallocmc) pins, the empty string when the
+        config carries none.
+
+    """
+    dependencies = load_config().get("dependencies", {})
+    pins = []
+    for name in ("picongpu", "mallocmc"):
+        dependency = dependencies.get(name)
+        pins.append(dependency.get("hash", "") if isinstance(dependency, dict) else "")
+    return tuple(pins)
+
+
 def collect() -> tuple[pd.DataFrame, list[str], dict[str, str]]:
     """Parse every legacy log directory into the frozen runs table.
 
@@ -389,13 +568,16 @@ def collect() -> tuple[pd.DataFrame, list[str], dict[str, str]]:
         order), the excluded_sources map (directory -> reason)).
 
     """
+    config = load_config()
+    picongpu_pin, mallocmc_pin = _pins()
     frames: list[pd.DataFrame] = []
     manifest: list[str] = []
     excluded: dict[str, str] = {}
     for name, machine, hardware in _attributions():
         log_dir = LOGS_DIR / name
         manifest.extend(f"{name}/{path.name}:{_sha256(path)}" for path in _files(log_dir))
-        frame = _parse_dir(log_dir)
+        modules_hint = " ".join(config["machines"][machine].get("modules", [])) if machine else ""
+        frame = _parse_dir(log_dir, picongpu_pin=picongpu_pin, mallocmc_pin=mallocmc_pin, modules_hint=modules_hint)
         if frame.empty:
             continue
         frame["machine"] = machine

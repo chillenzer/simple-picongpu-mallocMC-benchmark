@@ -11,14 +11,24 @@ line,
 
 into the header of every log, followed by the run's `set -x` trace. The
 metadata carries the run context (`run.setup`, `run.algorithm`,
-`run.delays`), the host, the git commit, the dependency pins, the
-binary's hash and build, and the hardware it ran on; the trace
-contributes the per-run grid (`-g` dimensions) and the runtime
-(`calculation  simulation time:` line). One record is yielded per
+`run.delays`, the flags-file line the run came from), the host, the git
+commit, the dependency pins, the binary's hash and build, and the
+hardware it ran on; the trace contributes the per-run grid (`-g`
+dimensions) and the simulation times. One record is yielded per
 `bin/picongpu` run: the metadata's run context plus the parse_grid /
 parse_simulation_time values and the imposed
 `malloc_sleeptime` / `free_sleeptime` in nanoseconds
-(configuration "run-time").
+(configuration "run-time"), the run's number of simulation steps
+(`sim_steps`, from the flags-file line), the runtimes of the run's
+`initialization time:` and `full simulation time:` lines
+(`init_time_s`, `full_runtime_s`), and the provenance of the log (one
+column per fact of the metadata: `started_utc`, `commit`,
+`binary_sha256`, `picongpu`, `mallocmc`, `gpu`, `gpu_driver`,
+`cuda_version`, `cpu`, `compiler`, `host`, `slurm_job`; the empty
+string where the metadata carries nothing). The record is yielded when
+the run's `full simulation time:` line is seen (or, if a run ends
+without it, at the next run or the end of the log), so all three of the
+run's times belong to the same record.
 
 A log is new format if and only if it carries a `# metadata:` line whose
 JSON has `"schema": 1` (the cut rule); the logs of the pre-redesign eras
@@ -31,6 +41,7 @@ output directory without a valid metadata line raises `LegacyLogError`.
 from __future__ import annotations
 
 import json
+import re
 import warnings
 from collections.abc import Iterable, Iterator
 from pathlib import Path
@@ -43,6 +54,13 @@ SCHEMA = 1
 RUN_CMD = "bin/picongpu "
 MALLOC_DELAY_CMD = "MALLOCMC_MALLOC_DELAY="
 FREE_DELAY_CMD = "MALLOCMC_FREE_DELAY="
+# The `-s` step count of the flags-file line a run came from.
+SIM_STEPS_RE = re.compile(r"(?:^|\s)-s (\d+)\b")
+# The trailing `= <value> sec` of an `initialization time:` /
+# `full simulation time:` line.
+TIME_VALUE_RE = re.compile(r"= ([\d.]+) sec")
+# The placeholder `logmeta.py` writes for an unavailable fact.
+UNAVAILABLE = "unavailable"
 
 GROUP_KEYS = ("setup", "algorithm", "x", "y", "z")
 MALLOC_DELAY = "malloc_sleeptime"
@@ -116,14 +134,145 @@ def parse_simulation_time(line: str) -> dict[str, float]:
     return {"runtime in s": float(line.split("=")[1][: -len("sec")])}
 
 
+def _text(value: object) -> str:
+    """Return one metadata value as a stored text column.
+
+    Args:
+        value: the value from the metadata JSON.
+
+    Returns:
+        str: the value as a string, `""` for the "unavailable"
+        placeholder and for a missing value.
+
+    """
+    if isinstance(value, str) and value != UNAVAILABLE:
+        return value
+    return ""
+
+
+def _flush(pending: dict | None) -> dict | None:
+    """Return the pending record when it measured a runtime, else None.
+
+    Args:
+        pending: the run's record in progress, or None.
+
+    Returns:
+        dict | None: the record, or None when it is absent or the run
+        aborted before printing its calculation time.
+
+    """
+    if pending is not None and "runtime in s" in pending:
+        return pending
+    return None
+
+
+def _time_line(value: str, pending: dict) -> bool:
+    """Record one of the run's time lines on the pending record.
+
+    The first value of each line type is the recorded one, so a log that
+    carries stray time lines of other (concurrent) runs never overwrites
+    the values of this run.
+
+    Args:
+        value: the stripped log line.
+        pending: the run's record in progress.
+
+    Returns:
+        bool: True when the line is the run's `full simulation time:`,
+        which ends the record.
+
+    """
+    if value.startswith("calculation") and "simulation time" in value and "runtime in s" not in pending:
+        pending.update(parse_simulation_time(value))
+    elif value.startswith("full simulation time"):
+        match = TIME_VALUE_RE.search(value)
+        if match is not None and "full_runtime_s" not in pending:
+            pending["full_runtime_s"] = float(match[1])
+        return True
+    elif value.startswith("initialization time") and "init_time_s" not in pending:
+        match = TIME_VALUE_RE.search(value)
+        if match is not None:
+            pending["init_time_s"] = float(match[1])
+    return False
+
+
+def _start_run(line: str, context: dict) -> dict | None:
+    """Start a pending record at one traced `bin/picongpu` command line.
+
+    Args:
+        line: the stripped `set -x` trace line.
+        context: the run context of the log (from its metadata).
+
+    Returns:
+        dict | None: the started record, or None when the line is no
+        `bin/picongpu` command.
+
+    """
+    if RUN_CMD not in line:
+        return None
+    pending = dict(context) | parse_grid(line)
+    steps = SIM_STEPS_RE.search(line)
+    if steps is not None:
+        pending["sim_steps"] = int(steps[1])
+    return pending
+
+
+def _metadata_source(metadata: dict) -> dict:
+    """Return the provenance columns of one run log's metadata.
+
+    Args:
+        metadata: the metadata dict of the log (schema 1).
+
+    Returns:
+        dict: one value per provenance column (the empty string where the
+        metadata carries nothing or the "unavailable" placeholder).
+
+    """
+    pins = metadata.get("pins", {})
+    if not isinstance(pins, dict):
+        pins = {}
+    binary = metadata.get("binary", {})
+    if not isinstance(binary, dict):
+        binary = {}
+    hw = metadata.get("hw", {})
+    if not isinstance(hw, dict):
+        hw = {}
+    build = metadata.get("build", {})
+    if not isinstance(build, dict):
+        build = {}
+    gpus = hw.get("gpu")
+    commit = _text(metadata.get("commit"))
+    if commit and metadata.get("dirty") is True:
+        commit += " (dirty)"
+    return {
+        "started_utc": _text(metadata.get("ts")),
+        "commit": commit,
+        "binary_sha256": _text(binary.get("sha256")),
+        "picongpu": _text(pins.get("picongpu")),
+        "mallocmc": _text(pins.get("mallocmc")),
+        "gpu": ",".join(gpus) if isinstance(gpus, list) and gpus else "",
+        "gpu_driver": _text(hw.get("gpu_driver")),
+        "cuda_version": _text(build.get("cuda")),
+        "cpu": _text(hw.get("cpu")),
+        "compiler": _text(build.get("compiler")),
+        "host": _text(metadata.get("hostname")),
+        "slurm_job": _text(metadata.get("slurm_job")),
+    }
+
+
 def parse_log(log_path: Path) -> Iterator[dict]:
     """Yield one record per picongpu run of a single run log.
 
-    The run context (setup, algorithm, delays) comes from the metadata
-    line; the grid and the runtime come from the `set -x` trace. A delay
-    value traced on the picongpu line that disagrees with the metadata is
-    a warning, not an error (the metadata was written by the same script
-    that sets the environment). A `"kind": "setup"` log yields no records.
+    The run context (setup, algorithm, delays), the number of simulation
+    steps and the provenance come from the metadata line; the grid and
+    the simulation times come from the `set -x` trace. A delay value
+    traced on the picongpu line that disagrees with the metadata is a
+    warning, not an error (the metadata was written by the same script
+    that sets the environment). A record is yielded when its
+    `full simulation time:` line is seen (or, if the run ends without
+    it, at the next run or the end of the log), so the initialisation,
+    the calculation and the full runtimes belong to the same record. A
+    `"kind": "setup"` log yields no records.
 
     Yields:
         dict: one record per picongpu run of the log.
@@ -134,23 +283,30 @@ def parse_log(log_path: Path) -> Iterator[dict]:
         return
     run_ctx = metadata["run"]
     malloc_delay, free_delay = run_ctx["delays"]
+    steps = SIM_STEPS_RE.search(run_ctx.get("command", ""))
     context = {
         "setup": run_ctx["setup"],
         "algorithm": run_ctx["algorithm"],
         MALLOC_DELAY: malloc_delay,
         FREE_DELAY: free_delay,
         "configuration": "run-time",
-    }
+    } | _metadata_source(metadata)
+    if steps is not None:
+        context["sim_steps"] = int(steps[1])
     with log_path.open("r", encoding="utf-8", errors="replace") as file:
         pending = None
         for line in map(str.strip, file):
             if line.startswith("+ "):
                 _check_delays(line, malloc_delay, free_delay, log_path)
-                if RUN_CMD in line:
-                    pending = dict(context) | parse_grid(line)
-            elif line.startswith("calculation") and "simulation time" in line and pending is not None:
-                yield {**pending, **parse_simulation_time(line)}
+                pending = _start_run(line, context) or pending
+            elif pending is not None and _time_line(line, pending):
+                record = _flush(pending)
+                if record is not None:
+                    yield record
                 pending = None
+        record = _flush(pending)
+        if record is not None:
+            yield record
 
 
 def _check_delays(line: str, malloc_delay: int, free_delay: int, log_path: Path) -> None:
