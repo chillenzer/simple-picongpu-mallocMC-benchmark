@@ -147,7 +147,86 @@ Two related changes to how benchmark results are recorded and consumed:
 
 - [x] Baseline generated on `4c43718` (`/tmp/baseline_results.h5`,
   3512 runs; summary captured).
-- [ ] Commit 1: legacy isolation.
-- [ ] Commit 2: cut over.
-- [ ] Commit 3: metadata v1 + per-grid logs.
-- [ ] Closing status report (this file, updated + committed at the end).
+- [x] Commit 1: legacy isolation (`3eec6ae`).
+- [x] Commit 2: cut over (`e82fc09`).
+- [x] Commit 3: metadata v1 + per-grid logs (`762391a`).
+- [x] Closing status report (this file, updated + committed at the end).
+
+## Closing status report (2026-08-27)
+
+All three commits are on `picongpu-allocation-time` and pushed. Every
+commit left the full pre-commit suite green and `make` green; no data
+files were committed.
+
+### Validation evidence
+
+- **Commit 1** (`3eec6ae`): both input modes (transitional directory
+  parsing, frozen h5) produce all results tables identical to the
+  `4c43718` baseline (values and dtypes); `make legacy-verify` OK
+  (3702 runs frozen from 279 files, excluded: 1 directory); `make`
+  output differs only by the new "Archived, excluded runs: 190"
+  summary lines.
+- **Commit 2** (`e82fc09`): after the cut, all 8 data tables identical
+  to the baseline; a missing `legacy/legacy_results.h5` is a clear
+  error (exit 1, points at `make legacy-results`); a pre-redesign log
+  left in a sweep machine's output directory raises
+  `LegacyLogError` with the move-to-legacy hint; `sweep_machines` /
+  `machine_titles` still name `hal, rosi`.
+- **Commit 3** (`762391a`): fixture sandbox (stub `picongpu` emitting
+  a `calculation  simulation time:` line, stub `CMakeCache.txt`,
+  stub compiler/nvcc version binaries): `make runs` wrote one log per
+  flags-file line (36 of them), each with the two-line header and a
+  parseable schema-1 metadata line (40-hex commit + dirty, full pins,
+  binary sha256, compiler/CUDA/flags/build type from the binary's own
+  cache, GPU/CPU/OS snapshot, flags line + its 8-hex sha + command);
+  stale-log cleanup removed a planted old-naming log before the
+  re-run and only the unstamped (combination, repetition) re-ran; the
+  stamp carries one log path per line. Strict parser on that
+  directory: exactly 36 records; a `kind: "setup"` session log
+  contributes 0 records; a legacy-format file raises
+  `LegacyLogError`. End-to-end `compute_results.py` +
+  `summarize_results.py` on the fixture: runs table = 3548 rows
+  (3512 frozen legacy + 36 new), `sweep_machines` lists the fixture
+  machine with its title, excluded runs 190. In this checkout the
+  sweep output directories are empty, so `make legacy-verify` and the
+  full `make` are unchanged: every table identical to the baseline,
+  `make` output differing only by commit 1's excluded-runs lines.
+
+### Deviations from the plan above
+
+1. **`log_run_<machine>.sh` also gained the metadata line.** The plan
+   listed only the `log_setup_*` launchers, but the run launchers'
+   session logs also land in the machine's output directory, which
+   `compute_results.py` globs file-by-file; without a
+   `kind: "setup"` line the strict parser would reject them. (The
+   parser's docstring already anticipated "build or full-series
+   launch" session logs.)
+2. **`REUSE.toml` got an annotations block** (`legacy/logs/**`,
+   `legacy/legacy_results.h5`, MIT) instead of relying on
+   `.gitignore`: the reuse-tool 6.2.0 hook discovers ignored files via
+   `git ls-files ... --ignored --others --directory`, and git omits a
+   *nested* fully-ignored directory when its parent has untracked
+   non-ignored files, so the hook walked the frozen logs and failed.
+3. **Sweep labels** are kept when the log directory exists **or** the
+   frozen table has rows for the machine (so `hal`/`rosi` survive with
+   empty directories and the plotting drivers keep working).
+4. **Frozen parser quirks are intentional**: pandas 3.0 upcasts
+   int64→float64 when a 0-record file frame carries the per-file
+   `name` column, so `legacy/make_legacy_results.py` keeps the
+   historical per-file frame construction; and its `--check` mode
+   normalizes the text columns before comparing (an h5 round-trip
+   turns missing text into `""` while a fresh parse yields NaN).
+5. **Log naming**: the line hash is the first 8 hex of the sha256 of
+   the exact flags line (no trailing newline), and the stale-log
+   cleanup pattern matches the pre-redesign naming as well (it has no
+   line-hash component).
+
+### Machine-side onboarding (for whoever runs the next benchmarks)
+
+On a fresh checkout on a machine: `bash legacy/move_legacy_logs.sh`
+(if the relocation was not done there yet), then
+`make legacy-results`; `make legacy-verify` reports whether any
+frozen input file changed. New runs since the cut write one log per
+grid line as described above — old-format logs must not be dropped
+into a sweep machine's output directory (the analysis rejects them
+on purpose).
