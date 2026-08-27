@@ -208,6 +208,7 @@ def _user() -> str:
         str: the login user ($USER), or the slurm job's submitter
             (SLURM_JOB_USER) when there is no login user, at the
             "unavailable" placeholder when neither is set.
+
     """
     for variable in ("USER", "SLURM_JOB_USER"):
         user = os.environ.get(variable)

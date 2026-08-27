@@ -91,9 +91,13 @@ module docstring, which is the single source of truth for the model.
 100 ns to 1e8 ns so the large delays anchor the asymptote W + N*s —
 which matters most for free, whose native cost fades slowly — and they
 omit the zero-delay point, so the (0, 0) baseline runs are outside every
-fit and provide the T0 baselines and the paper figures instead. The 3x3
-joint grid couples both delays so the two-operation fit is constrained
-off the arms.
+fit and provide the T0 baselines and the paper figures instead. The arms
+are run in two phases (*Running the benchmark*): a log-dense first scan
+through the bend band plus both asymptote anchors — enough to check the
+interim fit early — and the full ladder as an incremental extension. An
+optional joint grid couples both delays so the two-operation fit is
+constrained off the arms; it is empty by default, because a sparse
+ladder plus a joint grid is near-degenerate for the fit.
 
 ## What is benchmarked
 
@@ -107,16 +111,20 @@ off the arms.
   (the `algorithms` list in `config.json` and
   `param/<Algorithm>/mallocMC.param`)
 - **Delay combinations** (nanoseconds, the `delays` section of
-  `config.json`; the Makefile run targets derive the full combination set
-  from it, `python3 config.py list run-matrix`): a `(0, 0)`
-  baseline, the malloc-delay sweep with free delay 0 and the free-delay
-  sweep with malloc delay 0 over the 12 log-spaced values
-  `100`…`100000000` (1/4-decade steps, skipping the intermediate steps
-  between `1e5` and `1e6`), plus a 3x3 joint grid over `10000`,
-  `1000000`, `10000000` (34 combinations per example and algorithm)
-- **Cost**: 2 examples x 3 algorithms x 34 combinations = 204 runs per
-  machine per repetition, plus one full PIConGPU build per (example,
-  algorithm) pair (slow the first time)
+  `config.json`; the Makefile run targets derive the combination set of
+  each sweep phase from it, `python3 config.py list run-matrix
+  [initial|arms]`): a `(0, 0)` baseline plus the arm ladders — the
+  malloc-delay sweep with free delay 0 and the free-delay sweep with
+  malloc delay 0 over the 12 log-spaced values `100`…`100000000`
+  (1/4-decade steps, skipping the intermediate steps between `1e5` and
+  `1e6`) — in the `arms` phase (25 combinations, the default; the
+  optional joint grid is empty by default), or the log-dense `initial`
+  subset of the ladders (17 combinations)
+- **Cost**: per machine per repetition, 2 examples x 3 algorithms x 17
+  initial-phase combinations = 102 runs, or x 25 arms-phase combinations
+  = 150 runs (the phases are incremental, *Running the benchmark*), plus
+  one full PIConGPU build per (example, algorithm) pair (slow the first
+  time; measured wall-clock estimates under *Running the benchmark*)
 - **Examples**: `KelvinHelmholtz` (3D, grid sizes 128^3, 256x128x128,
   256x128x256, 1500 steps) and `FoilLCT` (2D, 256x1280 cells, 2000 steps)
   (the `examples` list in `config.json` and `flags/*.flags`)
@@ -180,8 +188,9 @@ after resolving it, which is the way to sanity-check a change before a
 long build or benchmark:
 
 ```
-make check             # includes the derived run matrix
-python3 config.py list run-matrix
+make check                              # includes both sweep phases' matrices
+python3 config.py list run-matrix       # the arms phase (the default)
+python3 config.py list run-matrix initial
 ```
 
 The Makefile variables:
@@ -193,6 +202,7 @@ The Makefile variables:
 | `PARAM_DIR`     | the parameter overlay directory (default `param`)                  |
 | `REPEATS`       | full-sweep repetitions of `make runs` (default 1)                  |
 | `REP`           | restrict the invocation to one repetition (the slurm case)         |
+| `PHASE`         | `initial` (the fast first scan) or `arms` (the full ladder, the default); the run stamps make the phases incremental |
 
 1. Build all examples and algorithms (slow the first time: one full
    PIConGPU build per example and algorithm):
@@ -230,12 +240,28 @@ The Makefile variables:
 2. Run the benchmarks (the sweep, once per repetition):
 
    ```
-   make runs MACHINE=hal                    # REPEATS=1 (the default)
+   make runs MACHINE=hal                    # arms phase, REPEATS=1 (the defaults)
+   make runs MACHINE=hal PHASE=initial      # the fast first scan (17 combinations)
    make runs MACHINE=hal REPEATS=3          # three full-sweep repetitions
    make runs MACHINE=rosi REPEATS=3 REP=2   # only repetition 2 (one slurm job)
-   make full MACHINE=hal                    # build, then run
+   make full MACHINE=hal                    # build, then run (PHASE passes through)
    make clean-runs [MACHINE=hal]            # forget finished runs (re-runs add a vintage)
+   make sweep-status MACHINE=hal            # which runs are stamped (arms phase)
    ```
+
+   The sweep is two phases (`PHASE`, default `arms`), from the `delays`
+   section of `config.json`: `initial` runs the baseline plus the
+   `delays.arms.initial` arm subset (17 combinations: enough to anchor the
+   asymptote and the bend band of the fit without the near-degenerate joint
+   points), and `arms` runs the baseline plus the full arm ladder plus the
+   joint grid when one is configured (25 combinations, the joint grid
+   currently empty). The phases are incremental through the run stamps: run
+   `PHASE=initial` first, check the interim fit (*Analysis*), then run
+   `PHASE=arms` to extend the same series — it re-runs only the eight
+   combinations without an up-to-date stamp. Per machine, the initial phase
+   costs about 80 h (hal) or 41 h (rosi) per repetition, and the extension
+   about 67 h or 35 h, against 172 h / 89 h for the old 34-combination
+   design.
 
    On a slurm machine, the `log_run_<machine>.sh` launcher drives one slurm
    job per repetition: `sbatch log_run_rosi.sh 1` (with `REPEATS` in the
@@ -319,14 +345,22 @@ editing; `make check` / `python3 config.py list run-matrix` show what
 would be done).
 
 - **Delay combinations**: edit the `delays` section of `config.json`
-  (`baseline`, `arms.values`, `joint.values`; the grid values are listed
-  in *What is benchmarked*); the Makefile run targets derive the full
-  combination set from it: `baseline` is the `(0, 0)` reference run,
-  `arms` are the single-delay sweeps (one value at a time with the other
-  delay held at 0), and `joint` is a 3x3 grid coupling both delays (why
-  the grid is shaped like it is: *The method*). The delays are applied at
-  run time via `MALLOCMC_MALLOC_DELAY` / `MALLOCMC_FREE_DELAY`, so
-  changing the sweep requires no rebuild.
+  (`baseline`, `arms.values`, `arms.initial`, `joint.values`; the grid
+  values are listed in *What is benchmarked*); the Makefile run targets
+  derive the combination set of each sweep phase from it: `baseline` is
+  the `(0, 0)` reference run, `arms.values` is the arm ladder (the
+  single-delay sweeps, one value at a time with the other delay held at
+  0, on a log grid from `100` to `1e8` ns in 1/4-decade steps),
+  `arms.initial` is the phase-1 subset of the ladder (a log-dense ladder
+  through the bend band plus both asymptote anchors, so the fit is fully
+  anchored with fewer, cheaper runs), and `joint` is an optional grid
+  coupling both delays that constrains the two-operation fit off the arms
+  (empty by default: a sparse arm ladder plus a joint grid is
+  near-degenerate for the 7-parameter fit, so add joint values only with
+  the full ladder, and keep them on the ladder). The delays are applied
+  at run time via `MALLOCMC_MALLOC_DELAY` / `MALLOCMC_FREE_DELAY`, so
+  changing the sweep requires no rebuild (why the grid is shaped like it
+  is: *The method*).
 - **Grids / steps / other picongpu flags**: edit `flags/<Example>.flags`
   (one command line per run).
 - **Allocator configuration**: `param/<Algorithm>/mallocMC.param` defines
@@ -393,8 +427,9 @@ empty):
 - `log_{setup,run}_<machine>.sh` — per-machine launchers (hal, rosi,
   rosi-a100): log the environment, load the machine's modules (setup), and
   run `make build` / `make runs MACHINE=<machine>` with the machine's
-  profile from the `machines` table in `config.json` (see *Running the
-  benchmark*).
+  profile from the `machines` table in `config.json` (the sweep invocation
+  values `REPEATS`, `REP` and `PHASE` pass through as environment
+  variables; see *Running the benchmark*).
 - `profiles/` — HPC environment profiles (module/spack setup, `PIC_BACKEND`,
   `PICSRC`). One per machine.
 - `flags/` — one `picongpu` command line per benchmark run, per example.
@@ -677,8 +712,8 @@ repository as one research object:
 - **The harness as a workflow** (the RO-Crate *Workflows and scripts*
   conventions; the metadata requirements of the Workflow RO-Crate profile):
   the `Makefile` is the main workflow, the shell/python scripts its steps,
-  `MACHINE`/`PROFILE`/`PARAM_DIR`/`REPEATS`/`REP` its input parameters,
-  the run logs, `results.h5` and the figures its outputs.
+  `MACHINE`/`PROFILE`/`PARAM_DIR`/`REPEATS`/`REP`/`PHASE` its input
+  parameters, the run logs, `results.h5` and the figures its outputs.
 - **The runs as provenance** (the Process Run profile): one `CreateAction`
   per grid-run log, reading the log's self-describing metadata line —
   instrument the binary used (sha256, build facts, the PIConGPU/mallocMC
@@ -719,7 +754,9 @@ pre-commit run --all-files  # or just commit; the hooks check the staged files
   details.
 - The sweep tables (`group_stats`, `fits`, `baselines`) are empty: this
   checkout has no run logs — the data lives on the machines, *Where the
-  data lives*.
+  data lives*. Which combinations are already stamped (and therefore
+  which a `make runs` would still run): `make sweep-status
+  MACHINE=<machine>`.
 - The FoilLCT / KelvinHelmholtz figures are empty or missing hardware:
   the frozen legacy table was not built (`make legacy-results`, *Where the
   data lives*); a sweep machine contributes only if it ran its (0, 0)

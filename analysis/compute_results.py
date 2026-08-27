@@ -757,8 +757,7 @@ def _no_delay(runs: pd.DataFrame) -> pd.DataFrame:
 
 
 def foil_stats(runs: pd.DataFrame) -> pd.DataFrame:
-    """Compute the zero-delay FoilLCT runtime distribution, per
-    (hardware, algorithm).
+    """Compute the zero-delay FoilLCT runtime distribution, per (hardware, algorithm).
 
     Args:
         runs: the parsed runs table.

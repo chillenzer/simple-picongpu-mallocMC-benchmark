@@ -48,6 +48,11 @@ try:
 except ImportError:
     h5py = None
 
+try:
+    from rocrate.rocrate import ROCrate
+except ImportError:
+    ROCrate = None
+
 CRATE_URI = "https://w3id.org/ro/crate/1.3"
 CRATE_CONTEXT = "https://w3id.org/ro/crate/1.3/context"
 WORKFLOW_RUN_CONTEXT = "https://w3id.org/ro/terms/workflow-run"
@@ -59,6 +64,10 @@ RESULTS = "output/results.h5"
 LEGACY_H5 = "legacy/legacy_results.h5"
 STAMPS = "run-stamps"
 UNAVAILABLE = "unavailable"
+
+# The identity of one run, parsed from the run log's file name
+# (example, algorithm, malloc delay, free delay, repetition).
+type Identity = tuple[str, str, str, str, str]
 
 # The harness steps the main workflow (the Makefile) executes; each must
 # be a file of the repository (missing ones are skipped).
@@ -77,7 +86,7 @@ STEPS = [
     "analysis/compute_results.py",
     "analysis/run_logs.py",
     "analysis/results_io.py",
-    "analysis/amdahl.py",
+    "analysis/allocation_model.py",
     "analysis/summarize_results.py",
     "analysis/plot_sweeps.py",
     "analysis/plot_shared_fits.py",
@@ -96,6 +105,7 @@ PARAMS = [
     ("PARAM_DIR", "Text", False, "the parameter overlay directory (make build)"),
     ("REPEATS", "Integer", False, "the number of full-sweep repetitions (make runs)"),
     ("REP", "Integer", False, "one repetition only (make runs; the slurm case)"),
+    ("PHASE", "Text", False, "the sweep phase, initial or arms (make runs)"),
 ]
 
 
@@ -107,6 +117,7 @@ def ref(entity_id: str) -> dict:
 
     Returns:
         dict: the reference, `{"@id": entity_id}`.
+
     """
     return {"@id": entity_id}
 
@@ -119,6 +130,7 @@ def slug(text: str) -> str:
 
     Returns:
         str: the slugged text (`/` and whitespace replaced).
+
     """
     return re.sub(r"[^A-Za-z0-9._-]", "-", text)
 
@@ -133,6 +145,7 @@ def git_state() -> tuple[str, bool | None]:
         tuple: `commit` (the full 40-hex HEAD) and `dirty` (True/False),
             the commit at its "unavailable" placeholder when it cannot
             be determined.
+
     """
     commit, dirty = UNAVAILABLE, None
     git = shutil.which("git")
@@ -184,6 +197,7 @@ def first_description(path: Path) -> str | None:
 
     Returns:
         str | None: the first descriptive line, or `None`.
+
     """
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -194,7 +208,12 @@ def first_description(path: Path) -> str | None:
         if path.suffix == ".py":
             if stripped.startswith(("'''", '"""')):
                 docstring = stripped[3:]
-                return docstring if docstring else (next((l.strip() for l in lines[index + 1 :]), "") or None)
+                if docstring:
+                    return docstring
+                for next_line in lines[index + 1 :]:
+                    if next_line.strip():
+                        return next_line.strip()
+                return None
         elif stripped.startswith("#") and not stripped.startswith("#!") and "SPDX-" not in stripped:
             text = stripped.lstrip("#").strip()
             if text:
@@ -213,6 +232,7 @@ def log_header(path: Path) -> tuple[str, dict] | None:
             log (a `# run:` line plus a `# metadata:` JSON line of
             schema 1 and kind `run`), or `None` for any other file
             (session logs, pre-redesign logs, ...).
+
     """
     try:
         with path.open("r", encoding="utf-8", errors="replace") as handle:
@@ -231,7 +251,7 @@ def log_header(path: Path) -> tuple[str, dict] | None:
     return runline, metadata
 
 
-def identity(label: str, name: str) -> tuple[str, str, str, str, str] | None:
+def identity(label: str, name: str) -> Identity | None:
     """Split a run log's file name into its run identity.
 
     Mirrors `analysis/compute_results.py::_identity_stamp_path`, so the
@@ -244,8 +264,9 @@ def identity(label: str, name: str) -> tuple[str, str, str, str, str] | None:
             (`run_<label>_<Ex>_<Algo>_m<M>_f<F>_r<I>_<...>.txt`).
 
     Returns:
-        tuple | None: (example, algorithm, malloc delay, free delay,
-            repetition), or `None` when the name carries no identity.
+        Identity | None: (example, algorithm, malloc delay, free
+            delay, repetition), or `None` when the name carries no
+            identity.
 
     """
     pattern = rf"^run_{re.escape(label)}_(?P<rest>.+)_m(?P<m>\d+)_f(?P<f>\d+)_r(?P<rep>\d+)_.*$"
@@ -258,7 +279,23 @@ def identity(label: str, name: str) -> tuple[str, str, str, str, str] | None:
     return example, algorithm, match["m"], match["f"], match["rep"]
 
 
-def stamp_state(label: str, example: str, algorithm: str, malloc_ns: str, free_ns: str, rep: str, relpath: str) -> str:
+def run_stamp_path(label: str, identity: Identity) -> Path:
+    """Return the run stamp path of one run identity.
+
+    Args:
+        label: the sweep machine's label.
+        identity: the run's identity (example, algorithm, malloc
+            delay, free delay, repetition).
+
+    Returns:
+        Path: the stamp path (not necessarily existing).
+
+    """
+    example, algorithm, malloc_ns, free_ns, rep = identity
+    return Path(STAMPS) / label / example / algorithm / f"{malloc_ns}_{free_ns}" / f"rep-{rep}.stamp"
+
+
+def stamp_state(stamp: Path, relpath: str) -> str:
     """Return the vintage state of one run log, keyed on its run stamp.
 
     The identity's stamp lists the log paths of its current vintage
@@ -267,41 +304,31 @@ def stamp_state(label: str, example: str, algorithm: str, malloc_ns: str, free_n
     (fresh runs, or after `make clean-runs`) has no superseded vintages.
 
     Args:
-        label: the sweep machine's label.
-        example: the run's example.
-        algorithm: the run's algorithm.
-        malloc_ns: the run's malloc delay.
-        free_ns: the run's free delay.
-        rep: the run's repetition.
+        stamp: the run identity's stamp path.
         relpath: the log's path relative to the repository root.
 
     Returns:
         str: "current", "superseded" or "unstamped".
+
     """
-    stamp = Path(STAMPS) / label / example / algorithm / f"{malloc_ns}_{free_ns}" / f"rep-{rep}.stamp"
     if not stamp.is_file():
         return "unstamped"
     listed = {line.strip() for line in stamp.read_text(encoding="utf-8").splitlines() if line.strip()}
     return "current" if relpath in listed else "superseded"
 
 
-def vintage_text(state: str, label: str, example: str, algorithm: str, malloc_ns: str, free_ns: str, rep: str) -> str:
+def vintage_text(state: str, stamp: Path) -> str:
     """Return the vintage annotation for a run action's description.
 
     Args:
         state: the `stamp_state` result.
-        label: the sweep machine's label.
-        example: the run's example.
-        algorithm: the run's algorithm.
-        malloc_ns: the run's malloc delay.
-        free_ns: the run's free delay.
-        rep: the run's repetition.
+        stamp: the run identity's stamp path.
 
     Returns:
         str: the annotation, e.g.
             "current vintage (the run stamp run-stamps/... lists this log)".
+
     """
-    stamp = f"{STAMPS}/{label}/{example}/{algorithm}/{malloc_ns}_{free_ns}/rep-{rep}.stamp"
     if state == "current":
         return f"current vintage (the run stamp {stamp} lists this log)"
     if state == "superseded":
@@ -318,6 +345,7 @@ def mtime_iso(path: Path) -> str:
     Returns:
         str: the ISO 8601 string, the empty string when the file cannot
             be stat'ed.
+
     """
     try:
         return datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat(timespec="seconds")
@@ -341,6 +369,7 @@ class Crate:
 
         Returns:
             bool: whether the crate already carries the entity.
+
         """
         return entity_id in self._entities
 
@@ -367,11 +396,11 @@ class Crate:
         Returns:
             list: the entities in logical order (JSON-LD order is not
                 significant).
+
         """
         heads = [self._entities[entity_id] for entity_id in (metadata_name, "./") if entity_id in self._entities]
-        rest = [
-            entity for entity_id, entity in self._entities.items() if entity_id not in (metadata_name, "./")
-        ]
+        heads_ids = {metadata_name, "./"}
+        rest = [entity for entity_id, entity in self._entities.items() if entity_id not in heads_ids]
         return heads + rest
 
 
@@ -389,6 +418,7 @@ def add_file(
 
     Returns:
         bool: whether the entity was added.
+
     """
     file = Path(path)
     if not file.is_file():
@@ -409,6 +439,7 @@ def main() -> int:
 
     Returns:
         int: the process exit status.
+
     """
     parser = argparse.ArgumentParser(description="Generate and check the RO-Crate metadata of this repository.")
     subcommands = parser.add_subparsers(dest="command", required=True)
@@ -418,7 +449,10 @@ def main() -> int:
 
     check = subcommands.add_parser(
         "check",
-        help="validate a crate metadata file (built-in checks; the official rocrate package's load, when installed, as a warning)",
+        help=(
+            "validate a crate metadata file (built-in checks; the official rocrate package's load, "
+            "when installed, as a warning)"
+        ),
     )
     check.add_argument("metadata", nargs="?", default=METADATA_DEFAULT, help="the metadata file to check")
 
@@ -436,6 +470,7 @@ def create_main(out: str) -> int:
 
     Returns:
         int: the process exit status.
+
     """
     config = load_config()
     commit, dirty = git_state()
@@ -445,7 +480,7 @@ def create_main(out: str) -> int:
     metadata_name = Path(out).name
 
     _add_context(crate)
-    _add_harness(crate, commit, dirty)
+    _add_harness(crate, commit, dirty=dirty)
     run_action_count, superseded_count, machines_described = _add_machines(crate, config, notes, run_log_ids)
     _add_analysis(crate, run_log_ids, notes)
     _add_root(crate, config, metadata_name)
@@ -466,6 +501,7 @@ def _add_context(crate: Crate) -> None:
 
     Args:
         crate: the crate to add them to.
+
     """
     crate.add(
         {
@@ -493,7 +529,12 @@ def _add_context(crate: Crate) -> None:
         {"@id": "#bash", "@type": "ComputerLanguage", "name": "Bash", "url": "https://www.gnu.org/software/bash/"}
     )
     crate.add(
-        {"@id": "#gnu-make", "@type": "ComputerLanguage", "name": "GNU Make", "url": "https://www.gnu.org/software/make/"}
+        {
+            "@id": "#gnu-make",
+            "@type": "ComputerLanguage",
+            "name": "GNU Make",
+            "url": "https://www.gnu.org/software/make/",
+        }
     )
     crate.add(
         {
@@ -506,15 +547,18 @@ def _add_context(crate: Crate) -> None:
     crate.add({"@id": LICENSE, "@type": "CreativeWork", "name": "MIT License", "alternateName": "MIT"})
 
 
-def _add_harness(crate: Crate, commit: str, dirty: bool | None) -> None:
-    """Add the harness as a workflow: the Makefile, its steps, its parameters.
+def _makefile_entity(commit: str, *, dirty: bool | None) -> dict:
+    """Return the Makefile's workflow entity.
 
     Args:
-        crate: the crate to add them to.
         commit: the repository's HEAD commit (the harness's version).
         dirty: the repository's dirtiness at generation time.
+
+    Returns:
+        dict: the Makefile entity (its `hasPart` is filled in later).
+
     """
-    makefile = {
+    entity = {
         "@id": "Makefile",
         "@type": ["File", "SoftwareSourceCode", "ComputationalWorkflow"],
         "name": "PIConGPU/mallocMC benchmark harness",
@@ -531,21 +575,90 @@ def _add_harness(crate: Crate, commit: str, dirty: bool | None) -> None:
         "output": [ref("#param-run-logs"), ref("#param-results-h5"), ref("#param-figures")],
     }
     if commit != UNAVAILABLE:
-        makefile["version"] = commit
+        entity["version"] = commit
         if dirty is True:
-            makefile["description"] += " (the tree was dirty at crate generation time)"
+            entity["description"] += " (the tree was dirty at crate generation time)"
+    return entity
+
+
+def _add_harness_steps(crate: Crate) -> list[str]:
+    """Add each existing harness step as a source-code entity, and return them.
+
+    Args:
+        crate: the crate to add them to.
+
+    Returns:
+        list: the step paths, as the Makefile entity's `hasPart` targets.
+
+    """
     steps = []
     for step in STEPS:
         if not Path(step).is_file():
             continue
         language = "#python" if step.endswith(".py") else "#bash"
-        entity = {"@id": step, "@type": ["File", "SoftwareSourceCode"], "name": Path(step).name, "programmingLanguage": ref(language)}
+        entity = {
+            "@id": step,
+            "@type": ["File", "SoftwareSourceCode"],
+            "name": Path(step).name,
+            "programmingLanguage": ref(language),
+        }
         description = first_description(Path(step))
         if description:
             entity["description"] = description
         crate.add(entity)
         steps.append(step)
-    makefile["hasPart"] = [ref(step) for step in steps]
+    return steps
+
+
+def _add_harness_files(crate: Crate) -> None:
+    """Add the harness's configuration, document and environment files.
+
+    Args:
+        crate: the crate to add them to.
+
+    """
+    add_file(
+        crate,
+        "config.json",
+        encoding="application/json",
+        description="the single source of truth for what the harness builds and runs "
+        "(examples, algorithms, delay sweep, dependency pins, build flags, machines)",
+    )
+    add_file(crate, "README.md", encoding="text/markdown", about="./")
+    if Path("flags").is_dir():
+        for flags in sorted(Path("flags").glob("*.flags")):
+            add_file(
+                crate,
+                str(flags),
+                encoding="text/plain",
+                description=f"one picongpu command line per run (the {flags.stem} example)",
+            )
+    if Path("param").is_dir():
+        for param_file in sorted(Path("param").rglob("*.param")):
+            add_file(crate, str(param_file), description="parameter overlay for the build (mallocMC configuration)")
+    if Path("profiles").is_dir():
+        for profile in sorted(Path("profiles").glob("*")):
+            if profile.is_file():
+                add_file(
+                    crate,
+                    str(profile),
+                    description="HPC environment profile (modules, PIC_BACKEND, PICSRC) for one machine",
+                )
+    for env_file in ("environment.yml", "requirements.txt", "conda-lock.yml", "conda-linux-64.lock", "pyproject.toml"):
+        add_file(crate, env_file, description="the committed analysis environment, pins, or code style")
+
+
+def _add_harness(crate: Crate, commit: str, *, dirty: bool | None) -> None:
+    """Add the harness as a workflow: the Makefile, its steps, its parameters.
+
+    Args:
+        crate: the crate to add them to.
+        commit: the repository's HEAD commit (the harness's version).
+        dirty: the repository's dirtiness at generation time.
+
+    """
+    makefile = _makefile_entity(commit, dirty=dirty)
+    makefile["hasPart"] = [ref(step) for step in _add_harness_steps(crate)]
     crate.add(makefile)
     for name, parameter_type, value_required, description in PARAMS:
         crate.add(
@@ -585,35 +698,10 @@ def _add_harness(crate: Crate, commit: str, dirty: bool | None) -> None:
             "description": "the analysis figures (figures/)",
         }
     )
-    add_file(
-        crate,
-        "config.json",
-        encoding="application/json",
-        description="the single source of truth for what the harness builds and runs "
-        "(examples, algorithms, delay sweep, dependency pins, build flags, machines)",
-    )
-    add_file(crate, "README.md", encoding="text/markdown", about="./")
-    if Path("flags").is_dir():
-        for flags in sorted(Path("flags").glob("*.flags")):
-            add_file(
-                crate, str(flags), encoding="text/plain", description=f"one picongpu command line per run (the {flags.stem} example)"
-            )
-    if Path("param").is_dir():
-        for param_file in sorted(Path("param").rglob("*.param")):
-            add_file(crate, str(param_file), description="parameter overlay for the build (mallocMC configuration)")
-    if Path("profiles").is_dir():
-        for profile in sorted(Path("profiles").glob("*")):
-            if profile.is_file():
-                add_file(
-                    crate, str(profile), description="HPC environment profile (modules, PIC_BACKEND, PICSRC) for one machine"
-                )
-    for env_file in ("environment.yml", "requirements.txt", "conda-lock.yml", "conda-linux-64.lock", "pyproject.toml"):
-        add_file(crate, env_file, description="the committed analysis environment, pins, or code style")
+    _add_harness_files(crate)
 
 
-def _add_machines(
-    crate: Crate, config: dict, notes: list[str], run_log_ids: list[str]
-) -> tuple[int, int, list[str]]:
+def _add_machines(crate: Crate, config: dict, notes: list[str], run_log_ids: list[str]) -> tuple[int, int, list[str]]:
     """Add one dataset, log entities and run actions per sweep machine.
 
     Args:
@@ -626,6 +714,7 @@ def _add_machines(
     Returns:
         tuple: (run action count, superseded vintage count, described
             machine labels).
+
     """
     run_actions = 0
     superseded = 0
@@ -642,61 +731,78 @@ def _add_machines(
             notes.append(f"machine {label!r}: output directory {outdir} does not exist; no log described")
             continue
         machines_described.append(label)
-        hardware = machine.get("hardware", label)
-        file_ids: list[str] = []
-        run_actions_here = 0
-        superseded_here = 0
-        first_meta: dict | None = None
-        for file in sorted(outdir.iterdir()):
-            if not file.is_file():
-                continue
-            relpath = f"{outdir}/{file.name}"
-            file_ids.append(relpath)
-            header = log_header(file)
-            if header is None:
-                add_file(crate, relpath, encoding="text/plain")
-                continue
-            runline, metadata = header
-            add_file(crate, relpath, encoding="text/plain", description=runline[len("# run: ") :])
-            action, superseded_vintage = run_action(crate, label, metadata, relpath)
-            if action is not None:
-                crate.add(action)
-                run_log_ids.append(relpath)
-                run_actions_here += 1
-                superseded_here += superseded_vintage
-            if first_meta is None:
-                first_meta = metadata
-        sessions = outdir / "sessions"
-        if sessions.is_dir():
-            crate.add(
-                {
-                    "@id": f"{outdir}/sessions/",
-                    "@type": "Dataset",
-                    "name": "sessions",
-                    "description": "the launchers' session logs (a free-text backup of the launch "
-                    "environment; never parsed, never superseded)",
-                }
-            )
-            file_ids.append(f"{outdir}/sessions/")
-        crate.add(
-            {
-                "@id": f"{outdir}/",
-                "@type": "Dataset",
-                "name": f"{label} ({hardware}) run logs",
-                "description": (
-                    f"the {label} sweep machine's append-only grid-run logs (one self-describing log per "
-                    "grid run per (combination, repetition); a re-run adds a new vintage, nothing is "
-                    f"ever removed). {run_actions_here} run(s) described, {superseded_here} superseded "
-                    "vintage(s); a run's identity's run stamp lists its current vintage's logs."
-                ),
-                "hasPart": [ref(item) for item in file_ids],
-            }
-        )
-        if first_meta is not None:
-            _machine_entity(crate, label, hardware, first_meta)
-        run_actions += run_actions_here
+        actions_here, superseded_here = _machine_logs(crate, label, machine.get("hardware", label), outdir, run_log_ids)
+        run_actions += actions_here
         superseded += superseded_here
     return run_actions, superseded, machines_described
+
+
+def _machine_logs(crate: Crate, label: str, hardware: str, outdir: Path, run_log_ids: list[str]) -> tuple[int, int]:
+    """Describe one machine's run log directory, and add its dataset entity.
+
+    Args:
+        crate: the crate to add them to.
+        label: the sweep machine's label.
+        hardware: the machine's hardware title (config).
+        outdir: the machine's output directory.
+        run_log_ids: the run log entity ids (appended in place).
+
+    Returns:
+        tuple: (run action count, superseded vintage count) of this machine.
+
+    """
+    run_actions = 0
+    superseded = 0
+    file_ids: list[str] = []
+    first_meta: dict | None = None
+    for file in sorted(outdir.iterdir()):
+        if not file.is_file():
+            continue
+        relpath = f"{outdir}/{file.name}"
+        file_ids.append(relpath)
+        header = log_header(file)
+        if header is None:
+            add_file(crate, relpath, encoding="text/plain")
+            continue
+        runline, metadata = header
+        add_file(crate, relpath, encoding="text/plain", description=runline[len("# run: ") :])
+        action, superseded_vintage = run_action(crate, label, metadata, relpath)
+        if action is not None:
+            crate.add(action)
+            run_log_ids.append(relpath)
+            run_actions += 1
+            superseded += superseded_vintage
+        if first_meta is None:
+            first_meta = metadata
+    sessions = outdir / "sessions"
+    if sessions.is_dir():
+        crate.add(
+            {
+                "@id": f"{outdir}/sessions/",
+                "@type": "Dataset",
+                "name": "sessions",
+                "description": "the launchers' session logs (a free-text backup of the launch "
+                "environment; never parsed, never superseded)",
+            }
+        )
+        file_ids.append(f"{outdir}/sessions/")
+    crate.add(
+        {
+            "@id": f"{outdir}/",
+            "@type": "Dataset",
+            "name": f"{label} ({hardware}) run logs",
+            "description": (
+                f"the {label} sweep machine's append-only grid-run logs (one self-describing log per "
+                "grid run per (combination, repetition); a re-run adds a new vintage, nothing is "
+                f"ever removed). {run_actions} run(s) described, {superseded} superseded "
+                "vintage(s); a run's identity's run stamp lists its current vintage's logs."
+            ),
+            "hasPart": [ref(item) for item in file_ids],
+        }
+    )
+    if first_meta is not None:
+        _machine_entity(crate, label, hardware, first_meta)
+    return run_actions, superseded
 
 
 def _machine_entity(crate: Crate, label: str, hardware: str, metadata: dict) -> None:
@@ -708,6 +814,7 @@ def _machine_entity(crate: Crate, label: str, hardware: str, metadata: dict) -> 
         hardware: the machine's hardware title (config).
         metadata: one of the machine's run metadata (best-effort host
             facts).
+
     """
     hw = metadata.get("hw")
     if not isinstance(hw, dict):
@@ -732,60 +839,40 @@ def _machine_entity(crate: Crate, label: str, hardware: str, metadata: dict) -> 
     )
 
 
-def run_action(crate: Crate, label: str, metadata: dict, relpath: str) -> tuple[dict | None, int]:
-    """Build the CreateAction of one grid-run log (and its entities).
+def _command_line(run: dict, name: str) -> str:
+    """Return the run's command line, with its imposed delays prefixed.
 
     Args:
-        crate: the crate (the action's referents are added to it).
-        label: the sweep machine's label.
-        metadata: the log's `# metadata:` dict (schema 1, kind `run`).
-        relpath: the log's path relative to the repository root.
+        run: the metadata's run block.
+        name: the run log's file name (the command placeholder).
 
     Returns:
-        tuple: (the action, or `None` when the log's file name carries
-            no identity at all, 1 when the action is a superseded
-            vintage and 0 otherwise).
-    """
-    run = metadata.get("run")
-    if not isinstance(run, dict):
-        return None, 0
-    name = Path(relpath).name
-    match = identity(label, name)
-    if match is None:
-        return None, 0
-    example, algorithm, malloc_ns, free_ns, rep = match
-    state = stamp_state(label, example, algorithm, malloc_ns, free_ns, rep, relpath)
-    stem = name[: -len(".txt")]
-    action_id = f"#run-{slug(stem)}"
-    binary_id = _binary_entity(crate, metadata, run)
+        str: the command line, `MALLOCMC_MALLOC_DELAY=<m>
+            MALLOCMC_FREE_DELAY=<f> ` prefixed when the run block
+            carries both delays.
 
+    """
     command = str(run.get("command", name))
     delays = run.get("delays")
     if isinstance(delays, list) and len(delays) == 2 and all(isinstance(delay, int) for delay in delays):
         command = f"MALLOCMC_MALLOC_DELAY={delays[0]} MALLOCMC_FREE_DELAY={delays[1]} {command}"
+    return command
 
-    object_ids = [
-        item
-        for item in ("config.json", f"flags/{example}.flags", f"param/{algorithm}/mallocMC.param")
-        if Path(item).is_file()
-    ]
-    action = {
-        "@id": action_id,
-        "@type": "CreateAction",
-        "name": f"{example}/{algorithm} (run log {name})",
-        "description": f"{command}; vintage: {vintage_text(state, label, example, algorithm, malloc_ns, free_ns, rep)}",
-        "actionStatus": ref("https://schema.org/CompletedActionStatus"),
-        "instrument": ref(binary_id),
-        "object": [ref(item) for item in object_ids],
-        "result": ref(relpath),
-    }
-    start_time = metadata.get("ts")
-    if isinstance(start_time, str) and start_time:
-        action["startTime"] = start_time
-    end_time = mtime_iso(Path(relpath))
-    if end_time:
-        action["endTime"] = end_time
-    environment_ids = []
+
+def _environment_ids(crate: Crate, action_id: str, delays: object, slurm_job: object) -> list[str]:
+    """Add the action's PropertyValue environment entities; return their ids.
+
+    Args:
+        crate: the crate to add them to.
+        action_id: the action's id (the entities nest under it).
+        delays: the run's imposed delays (a two-element list, or absent).
+        slurm_job: the run's slurm job id (a string, or absent).
+
+    Returns:
+        list: the environment entity ids (empty when there is none).
+
+    """
+    environment_ids: list[str] = []
     for index, delay in enumerate(delays if isinstance(delays, list) else []):
         if not isinstance(delay, int):
             continue
@@ -799,11 +886,62 @@ def run_action(crate: Crate, label: str, metadata: dict, relpath: str) -> tuple[
             }
         )
         environment_ids.append(env_id)
-    slurm_job = metadata.get("slurm_job")
     if isinstance(slurm_job, str) and slurm_job:
         env_id = f"{action_id}#slurm-job"
         crate.add({"@id": env_id, "@type": "PropertyValue", "name": "SLURM_JOB_ID", "value": slurm_job})
         environment_ids.append(env_id)
+    return environment_ids
+
+
+def run_action(crate: Crate, label: str, metadata: dict, relpath: str) -> tuple[dict | None, int]:
+    """Build the CreateAction of one grid-run log (and its entities).
+
+    Args:
+        crate: the crate (the action's referents are added to it).
+        label: the sweep machine's label.
+        metadata: the log's `# metadata:` dict (schema 1, kind `run`).
+        relpath: the log's path relative to the repository root.
+
+    Returns:
+        tuple: (the action, or `None` when the log's file name carries
+            no identity at all, 1 when the action is a superseded
+            vintage and 0 otherwise).
+
+    """
+    run = metadata.get("run")
+    if not isinstance(run, dict):
+        return None, 0
+    name = Path(relpath).name
+    match = identity(label, name)
+    if match is None:
+        return None, 0
+    state = stamp_state(run_stamp_path(label, match), relpath)
+    example, algorithm = match[0], match[1]
+    stem = name[: -len(".txt")]
+    action_id = f"#run-{slug(stem)}"
+    binary_id = _binary_entity(crate, metadata, run)
+
+    action = {
+        "@id": action_id,
+        "@type": "CreateAction",
+        "name": f"{example}/{algorithm} (run log {name})",
+        "description": f"{_command_line(run, name)}; vintage: {vintage_text(state, run_stamp_path(label, match))}",
+        "actionStatus": ref("https://schema.org/CompletedActionStatus"),
+        "instrument": ref(binary_id),
+        "object": [
+            ref(item)
+            for item in ("config.json", f"flags/{example}.flags", f"param/{algorithm}/mallocMC.param")
+            if Path(item).is_file()
+        ],
+        "result": ref(relpath),
+    }
+    start_time = metadata.get("ts")
+    if isinstance(start_time, str) and start_time:
+        action["startTime"] = start_time
+    end_time = mtime_iso(Path(relpath))
+    if end_time:
+        action["endTime"] = end_time
+    environment_ids = _environment_ids(crate, action_id, run.get("delays"), metadata.get("slurm_job"))
     if environment_ids:
         action["environment"] = [ref(env_id) for env_id in environment_ids]
     user = metadata.get("user")
@@ -812,6 +950,60 @@ def run_action(crate: Crate, label: str, metadata: dict, relpath: str) -> tuple[
         crate.add({"@id": user_id, "@type": "Person", "name": user})
         action["agent"] = ref(user_id)
     return action, 1 if state == "superseded" else 0
+
+
+def _build_facts(build: object) -> list[str]:
+    """Return the human-readable build facts of a metadata build block.
+
+    Args:
+        build: the metadata's build dict (absent or partial allowed).
+
+    Returns:
+        list: the facts in display order (empty when there is none).
+
+    """
+    if not isinstance(build, dict):
+        return []
+    facts: list[str] = []
+    compiler = str(build.get("compiler", UNAVAILABLE))
+    if compiler != UNAVAILABLE:
+        facts.append(f"compiler {compiler.splitlines()[0]}")
+    for key, title in (
+        ("cuda", "CUDA"),
+        ("build_type", "build type"),
+        ("cxx_flags", "CXX flags"),
+        ("cuda_flags", "CUDA flags"),
+    ):
+        value = build.get(key)
+        if isinstance(value, str) and value != UNAVAILABLE:
+            facts.append(f"{title} {value}")
+    return facts
+
+
+def _dependency_entities(crate: Crate, pins: object) -> tuple[list[str], str | None]:
+    """Add the pinned dependencies' entities, and return their ids.
+
+    Args:
+        crate: the crate to add them to.
+        pins: the metadata's pins dict (absent allowed).
+
+    Returns:
+        tuple: (the dependency entity ids in pin order, the full
+            picongpu pin or `None` when absent).
+
+    """
+    if not isinstance(pins, dict):
+        return [], None
+    requirements: list[str] = []
+    picongpu_pin: str | None = None
+    for name in ("picongpu", "mallocmc"):
+        pin = pins.get(name)
+        if pin in {None, UNAVAILABLE}:
+            continue
+        requirements.append(_dependency_entity(crate, name, pin))
+        if name == "picongpu":
+            picongpu_pin = str(pin)
+    return requirements, picongpu_pin
 
 
 def _binary_entity(crate: Crate, metadata: dict, run: dict) -> str:
@@ -824,11 +1016,9 @@ def _binary_entity(crate: Crate, metadata: dict, run: dict) -> str:
 
     Returns:
         str: the binary's entity id.
+
     """
     binary = metadata.get("binary")
-    pins = metadata.get("pins")
-    if not isinstance(pins, dict):
-        pins = {}
     if not isinstance(binary, dict):
         binary = {}
     sha256 = binary.get("sha256")
@@ -837,36 +1027,18 @@ def _binary_entity(crate: Crate, metadata: dict, run: dict) -> str:
     crate_id = f"#binary-{sha256[:8]}"
     if crate.has(crate_id):
         return crate_id
-    build = metadata.get("build")
-    facts = []
-    if isinstance(build, dict):
-        compiler = str(build.get("compiler", UNAVAILABLE))
-        if compiler != UNAVAILABLE:
-            facts.append(f"compiler {compiler.splitlines()[0]}")
-        for key, title in (("cuda", "CUDA"), ("build_type", "build type")):
-            value = build.get(key)
-            if isinstance(value, str) and value != UNAVAILABLE:
-                facts.append(f"{title} {value}")
-        for key, title in (("cxx_flags", "CXX flags"), ("cuda_flags", "CUDA flags")):
-            value = build.get(key)
-            if isinstance(value, str) and value != UNAVAILABLE:
-                facts.append(f"{title} {value}")
     entity = {
         "@id": crate_id,
         "@type": "SoftwareApplication",
         "name": f"PIConGPU binary of {run.get('setup', '?')}/{run.get('algorithm', '?')} (sha256 {sha256[:12]})",
         "identifier": sha256,
     }
+    facts = _build_facts(metadata.get("build"))
     if facts:
         entity["description"] = "; ".join(facts)
-    requirements = []
-    if pins.get("picongpu") not in (None, UNAVAILABLE):
-        dep_id = _dependency_entity(crate, "picongpu", pins["picongpu"])
-        entity["softwareVersion"] = pins["picongpu"]
-        requirements.append(dep_id)
-    if pins.get("mallocmc") not in (None, UNAVAILABLE):
-        dep_id = _dependency_entity(crate, "mallocmc", pins["mallocmc"])
-        requirements.append(dep_id)
+    requirements, picongpu_pin = _dependency_entities(crate, metadata.get("pins"))
+    if picongpu_pin is not None:
+        entity["softwareVersion"] = picongpu_pin
     if requirements:
         entity["softwareRequirements"] = [ref(item) for item in requirements]
     crate.add(entity)
@@ -881,6 +1053,7 @@ def _unknown_binary(crate: Crate) -> str:
 
     Returns:
         str: the entity id.
+
     """
     crate_id = "#binary-unknown"
     if not crate.has(crate_id):
@@ -904,13 +1077,16 @@ def _dependency_entity(crate: Crate, name: str, pin: str) -> str:
 
     Returns:
         str: the entity id.
+
     """
     crate_id = f"#dep-{name}-{pin[:8]}"
     if crate.has(crate_id):
         return crate_id
     title = "PIConGPU" if name == "picongpu" else "mallocMC"
     source = (
-        "https://github.com/ComputationalRadiationPhysics/picongpu" if name == "picongpu" else "https://github.com/chillenzer/mallocMC"
+        "https://github.com/ComputationalRadiationPhysics/picongpu"
+        if name == "picongpu"
+        else "https://github.com/chillenzer/mallocMC"
     )
     crate.add({"@id": crate_id, "@type": "SoftwareApplication", "name": title, "url": source, "version": pin})
     return crate_id
@@ -923,6 +1099,7 @@ def _add_analysis(crate: Crate, run_log_ids: list[str], notes: list[str]) -> Non
         crate: the crate to add them to.
         run_log_ids: the run log entity ids (the results action's inputs).
         notes: the note lines to return to the caller (appended in place).
+
     """
     legacy_exists = add_file(
         crate,
@@ -937,38 +1114,64 @@ def _add_analysis(crate: Crate, run_log_ids: list[str], notes: list[str]) -> Non
         crate,
         RESULTS,
         encoding="application/x-hdf5",
-        description="the single results table of the analysis (runs, group statistics, fits, baselines, figure metadata)",
+        description=(
+            "the single results table of the analysis (runs, group statistics, fits, baselines, figure metadata)"
+        ),
     )
-    if results_exists:
-        created, git_commit, sources = _results_attrs(Path(RESULTS))
-        object_ids = [ref(item) for item in run_log_ids] + [ref("config.json")]
-        if legacy_exists:
-            object_ids.append(ref(LEGACY_H5))
-        action = {
-            "@id": "#analysis-results-h5",
-            "@type": "CreateAction",
-            "name": f"compute {RESULTS} from the run logs and the frozen legacy table",
-            "description": (
-                "parses the run logs (all vintages; superseded runs stay in every table and number — "
-                "the current state of the world is runs[superseded] == 0) and the frozen legacy table"
-            ),
-            "instrument": ref("analysis/compute_results.py"),
-            "object": object_ids,
-            "result": ref(RESULTS),
-        }
-        if created:
-            action["startTime"] = created
-        end_time = mtime_iso(Path(RESULTS))
-        if end_time:
-            action["endTime"] = end_time
-        if git_commit:
-            action["description"] += f"; git commit {git_commit[:12]}"
-        if sources:
-            action["description"] += f"; sources {sources}"
-        crate.add(action)
-    else:
+    if not results_exists:
         notes.append(f"{RESULTS} does not exist; the analysis action is not described (run `make results`)")
+        _add_figure_actions(crate, results_exists=False)
+        return
+    _results_action(crate, run_log_ids, legacy_exists=legacy_exists)
+    _add_figure_actions(crate, results_exists=True)
 
+
+def _results_action(crate: Crate, run_log_ids: list[str], *, legacy_exists: bool) -> None:
+    """Add the CreateAction that computes `output/results.h5`.
+
+    Args:
+        crate: the crate to add it to.
+        run_log_ids: the run log entity ids (the action's log inputs).
+        legacy_exists: whether the frozen legacy table is described.
+
+    """
+    created, git_commit, sources = _results_attrs(Path(RESULTS))
+    object_ids = [ref(item) for item in run_log_ids] + [ref("config.json")]
+    if legacy_exists:
+        object_ids.append(ref(LEGACY_H5))
+    action = {
+        "@id": "#analysis-results-h5",
+        "@type": "CreateAction",
+        "name": f"compute {RESULTS} from the run logs and the frozen legacy table",
+        "description": (
+            "parses the run logs (all vintages; superseded runs stay in every table and number — "
+            "the current state of the world is runs[superseded] == 0) and the frozen legacy table"
+        ),
+        "instrument": ref("analysis/compute_results.py"),
+        "object": object_ids,
+        "result": ref(RESULTS),
+    }
+    if created:
+        action["startTime"] = created
+    end_time = mtime_iso(Path(RESULTS))
+    if end_time:
+        action["endTime"] = end_time
+    if git_commit:
+        action["description"] += f"; git commit {git_commit[:12]}"
+    if sources:
+        action["description"] += f"; sources {sources}"
+    crate.add(action)
+
+
+def _add_figure_actions(crate: Crate, *, results_exists: bool) -> None:
+    """Add each figure's data entity, and its CreateAction when resolvable.
+
+    Args:
+        crate: the crate to add them to.
+        results_exists: whether `output/results.h5` is described (the
+            figures' actions read it).
+
+    """
     if not Path("figures").is_dir():
         return
     for figure in sorted(Path("figures").glob("*.pdf")):
@@ -979,9 +1182,7 @@ def _add_analysis(crate: Crate, run_log_ids: list[str], notes: list[str]) -> Non
             else "a historical analysis figure (not produced by the current harness scripts)"
         )
         add_file(crate, str(figure), encoding="application/pdf", description=description)
-        if not results_exists:
-            continue
-        if instrument is None or not Path(instrument).is_file():
+        if not results_exists or instrument is None or not Path(instrument).is_file():
             continue
         end_time = mtime_iso(figure)
         if not end_time:
@@ -1010,6 +1211,7 @@ def _results_attrs(path: Path) -> tuple[str, str, str]:
         tuple: (created_utc, git_commit, sources); the empty string for
             each fact that is unavailable (`h5py` not installed, the
             file unreadable, or the attribute absent).
+
     """
     if h5py is None:
         return "", "", ""
@@ -1030,6 +1232,7 @@ def _figure_instrument(name: str) -> str | None:
     Returns:
         str | None: the script path, or `None` for a figure the harness
             does not plot.
+
     """
     if not name.endswith(".pdf"):
         return None
@@ -1044,6 +1247,25 @@ def _figure_instrument(name: str) -> str | None:
     return None
 
 
+def _machine_output_refs(machines: object) -> list[dict]:
+    """Return references to the existing machine output directories.
+
+    Args:
+        machines: the config's machines table (absent or partial allowed).
+
+    Returns:
+        list: one `ref` per machine whose output directory exists.
+
+    """
+    if not isinstance(machines, dict):
+        return []
+    return [
+        ref(f"{machine['output']}/")
+        for machine in machines.values()
+        if isinstance(machine, dict) and isinstance(machine.get("output"), str) and Path(machine["output"]).is_dir()
+    ]
+
+
 def _add_root(crate: Crate, config: dict, metadata_name: str) -> None:
     """Add the root data entity and the metadata descriptor.
 
@@ -1051,23 +1273,17 @@ def _add_root(crate: Crate, config: dict, metadata_name: str) -> None:
         crate: the crate to add them to.
         config: the parsed `config.json` (the machine output directories).
         metadata_name: the metadata file's name (the descriptor's id).
+
     """
-    machines = config.get("machines")
     parts: list[dict] = [ref("Makefile")]
-    for path in ("README.md", "config.json"):
-        if Path(path).is_file():
-            parts.append(ref(path))
-    if isinstance(machines, dict):
-        for machine in machines.values():
-            if isinstance(machine, dict) and isinstance(machine.get("output"), str) and Path(machine["output"]).is_dir():
-                parts.append(ref(f"{machine['output']}/"))
+    parts.extend(ref(path) for path in ("README.md", "config.json") if Path(path).is_file())
+    parts.extend(_machine_output_refs(config.get("machines")))
     if Path(RESULTS).is_file():
         parts.append(ref(RESULTS))
     if Path(LEGACY_H5).is_file():
         parts.append(ref(LEGACY_H5))
     if Path("figures").is_dir():
-        for figure in sorted(Path("figures").glob("*.pdf")):
-            parts.append(ref(str(figure)))
+        parts.extend(ref(str(figure)) for figure in sorted(Path("figures").glob("*.pdf")))
     root = {
         "@id": "./",
         "@type": "Dataset",
@@ -1097,6 +1313,145 @@ def _add_root(crate: Crate, config: dict, metadata_name: str) -> None:
     )
 
 
+def _check_context(metadata: dict, errors: list[str]) -> None:
+    """Check the @context carries the RO-Crate context, appending problems.
+
+    Args:
+        metadata: the parsed metadata file.
+        errors: accumulates the problems found.
+
+    """
+    contexts = metadata.get("@context")
+    if isinstance(contexts, str):
+        contexts = [contexts]
+    if not isinstance(contexts, list) or CRATE_CONTEXT not in contexts:
+        errors.append(f"the @context does not carry the RO-Crate context {CRATE_CONTEXT}")
+
+
+def _index_graph(graph: list, errors: list[str]) -> dict[str, dict]:
+    """Index the @graph entities by their `@id`, appending problems.
+
+    Args:
+        graph: the metadata's @graph list.
+        errors: accumulates the problems found.
+
+    Returns:
+        dict: the entities, keyed by `@id` (duplicates kept last).
+
+    """
+    entities: dict[str, dict] = {}
+    for index, entity in enumerate(graph):
+        if not isinstance(entity, dict) or "@id" not in entity:
+            errors.append(f"graph element {index} is not an entity with an @id")
+            continue
+        entity_id = str(entity["@id"])
+        if entity_id in entities:
+            errors.append(f"duplicate @id {entity_id!r}")
+        entities[entity_id] = entity
+    return entities
+
+
+def _check_descriptor(errors: list[str], metadata_path: Path, entities: dict[str, dict]) -> None:
+    """Check the metadata descriptor entity, appending problems.
+
+    Args:
+        errors: accumulates the problems found.
+        metadata_path: the metadata file (the descriptor's `@id` name).
+        entities: the graph entities, keyed by `@id`.
+
+    """
+    descriptor = entities.get(metadata_path.name)
+    if descriptor is None:
+        errors.append(f"no metadata descriptor entity for {metadata_path.name!r}")
+        return
+    if "./" not in _refs(descriptor.get("about")):
+        errors.append("the metadata descriptor's about does not point to the root data entity ./")
+    if CRATE_URI not in _refs(descriptor.get("conformsTo")):
+        errors.append("the metadata descriptor does not conform to the RO-Crate specification")
+
+
+def _check_root_entity(errors: list[str], entities: dict[str, dict]) -> None:
+    """Check the root data entity, appending problems.
+
+    Args:
+        errors: accumulates the problems found.
+        entities: the graph entities, keyed by `@id`.
+
+    """
+    root_entity = entities.get("./")
+    if root_entity is None:
+        errors.append("no root data entity ./")
+        return
+    types = root_entity.get("@type")
+    if "Dataset" not in (types if isinstance(types, list) else [types]):
+        errors.append("the root data entity is not a Dataset")
+    main_entity = _refs(root_entity.get("mainEntity"))
+    if not main_entity or main_entity[0] not in entities:
+        errors.append("the root data entity has no resolvable mainEntity (the workflow profile requires one)")
+    errors.extend(
+        f"the root's conformsTo target {profile_id} has no contextual entity"
+        for profile_id in _refs(root_entity.get("conformsTo"))
+        if profile_id not in entities
+    )
+
+
+def _check_create_action(errors: list[str], entity_id: str, entity: dict, entities: dict[str, dict]) -> None:
+    """Check one CreateAction's fields, appending problems.
+
+    Args:
+        errors: accumulates the problems found.
+        entity_id: the action's `@id`.
+        entity: the action entity.
+        entities: the graph entities, keyed by `@id`.
+
+    """
+    errors.extend(
+        f"action {entity_id} has no {required}"
+        for required in ("instrument", "result")
+        if not _refs(entity.get(required))
+    )
+    for timestamp in ("startTime", "endTime"):
+        value = entity.get(timestamp)
+        if not isinstance(value, str):
+            continue
+        try:
+            datetime.fromisoformat(value)
+        except ValueError:
+            errors.append(f"action {entity_id}'s {timestamp} {value!r} is not ISO 8601")
+    for env_id in _refs(entity.get("environment")):
+        env_entity = entities.get(env_id)
+        if env_entity is not None and (not env_entity.get("name") or env_entity.get("value") is None):
+            errors.append(f"environment entity {env_id} has no name/value")
+
+
+def _check_entity(errors: list[str], root: Path, entity_id: str, entity: dict, entities: dict[str, dict]) -> None:
+    """Check one entity's references, fields and on-disk existence.
+
+    Args:
+        errors: accumulates the problems found.
+        root: the crate root directory (the data entities' base).
+        entity_id: the entity's `@id`.
+        entity: the entity.
+        entities: the graph entities, keyed by `@id`.
+
+    """
+    errors.extend(
+        f"entity {entity_id} references {target}, which is not in the crate"
+        for target in _referenced(entity)
+        # The core spec URI (the metadata descriptor's conformsTo) is a
+        # fixed identifier that carries no contextual entity; only the
+        # root's profile conformsTo targets must be described.
+        if target != CRATE_URI and target not in entities
+    )
+    if entity.get("@type") == "CreateAction":
+        _check_create_action(errors, entity_id, entity, entities)
+    if entity_id == "./" or entity_id.startswith("#") or "://" in entity_id:
+        return
+    if not (root / entity_id).exists():
+        kind = "directory" if entity_id.endswith("/") else "file"
+        errors.append(f"data entity {entity_id} is not an existing {kind} in the crate")
+
+
 def check_main(metadata_path: Path) -> int:
     """Validate one crate metadata file.
 
@@ -1106,8 +1461,8 @@ def check_main(metadata_path: Path) -> int:
 
     Returns:
         int: the process exit status (1 on any error).
+
     """
-    errors: list[str] = []
     root = metadata_path.parent
     try:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -1118,75 +1473,13 @@ def check_main(metadata_path: Path) -> int:
     if not isinstance(graph, list):
         print("error: the metadata has no @graph list")
         return 1
-    contexts = metadata.get("@context")
-    if isinstance(contexts, str):
-        contexts = [contexts]
-    if not isinstance(contexts, list) or CRATE_CONTEXT not in contexts:
-        errors.append(f"the @context does not carry the RO-Crate context {CRATE_CONTEXT}")
-
-    entities: dict[str, dict] = {}
-    for index, entity in enumerate(graph):
-        if not isinstance(entity, dict) or "@id" not in entity:
-            errors.append(f"graph element {index} is not an entity with an @id")
-            continue
-        entity_id = str(entity["@id"])
-        if entity_id in entities:
-            errors.append(f"duplicate @id {entity_id!r}")
-        entities[entity_id] = entity
-
-    descriptor = entities.get(metadata_path.name)
-    if descriptor is None:
-        errors.append(f"no metadata descriptor entity for {metadata_path.name!r}")
-    else:
-        if "./" not in _refs(descriptor.get("about")):
-            errors.append("the metadata descriptor's about does not point to the root data entity ./")
-        if CRATE_URI not in _refs(descriptor.get("conformsTo")):
-            errors.append("the metadata descriptor does not conform to the RO-Crate specification")
-
-    root_entity = entities.get("./")
-    if root_entity is None:
-        errors.append("no root data entity ./")
-    else:
-        types = root_entity.get("@type")
-        if "Dataset" not in (types if isinstance(types, list) else [types]):
-            errors.append("the root data entity is not a Dataset")
-        main_entity = _refs(root_entity.get("mainEntity"))
-        if not main_entity or main_entity[0] not in entities:
-            errors.append("the root data entity has no resolvable mainEntity (the workflow profile requires one)")
-        for profile_id in _refs(root_entity.get("conformsTo")):
-            if profile_id not in entities:
-                errors.append(f"the root's conformsTo target {profile_id} has no contextual entity")
-
+    errors: list[str] = []
+    _check_context(metadata, errors)
+    entities = _index_graph(graph, errors)
+    _check_descriptor(errors, metadata_path, entities)
+    _check_root_entity(errors, entities)
     for entity_id, entity in entities.items():
-        for target in _referenced(entity):
-            # The core spec URI (the metadata descriptor's conformsTo) is a
-            # fixed identifier that carries no contextual entity; only the
-            # root's profile conformsTo targets must be described.
-            if target == CRATE_URI:
-                continue
-            if target not in entities:
-                errors.append(f"entity {entity_id} references {target}, which is not in the crate")
-        if entity.get("@type") == "CreateAction":
-            for required in ("instrument", "result"):
-                if not _refs(entity.get(required)):
-                    errors.append(f"action {entity_id} has no {required}")
-            for timestamp in ("startTime", "endTime"):
-                value = entity.get(timestamp)
-                if isinstance(value, str):
-                    try:
-                        datetime.fromisoformat(value)
-                    except ValueError:
-                        errors.append(f"action {entity_id}'s {timestamp} {value!r} is not ISO 8601")
-            for env_id in _refs(entity.get("environment")):
-                env_entity = entities.get(env_id)
-                if env_entity is not None and (not env_entity.get("name") or env_entity.get("value") is None):
-                    errors.append(f"environment entity {env_id} has no name/value")
-        if entity_id == "./" or entity_id.startswith("#") or "://" in entity_id:
-            continue
-        if not (root / entity_id).exists():
-            kind = "directory" if entity_id.endswith("/") else "file"
-            errors.append(f"data entity {entity_id} is not an existing {kind} in the crate")
-
+        _check_entity(errors, root, entity_id, entity, entities)
     for error in errors:
         print(f"error: {error}")
     # The official package's load is advisory only: its newest release
@@ -1210,6 +1503,7 @@ def _refs(value: object) -> list:
 
     Returns:
         list: the @ids in it, in order (duplicates kept).
+
     """
     ids: list = []
     if isinstance(value, dict):
@@ -1229,6 +1523,7 @@ def _referenced(entity: dict) -> list:
 
     Returns:
         list: the referenced ids (duplicates removed, order kept).
+
     """
     seen: list = []
     for value in entity.values():
@@ -1252,16 +1547,15 @@ def _official_check(root: Path) -> list[str]:
     Returns:
         list: the package's error messages (empty when the package is
             not installed or the crate loads cleanly).
+
     """
-    try:
-        from rocrate.rocrate import ROCrate
-    except ImportError:
+    if ROCrate is None:
         return []
     try:
         ROCrate(str(root))
-        return []
     except Exception as exc:  # ruff: ignore[blind-except] (third-party API of unknown failure modes)
         return [f"the official rocrate package could not load the crate: {exc}"]
+    return []
 
 
 if __name__ == "__main__":
