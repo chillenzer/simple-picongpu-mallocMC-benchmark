@@ -36,15 +36,19 @@
 #    the sha256 of the binary used) followed by the run's full output.
 #
 # 3. The analysis driver: builds the benchmark numbers (output/results.h5)
-#    and the figures (figures/) from the run logs. The numbers are rebuilt
-#    from the run logs on every invocation: make deliberately does not list
-#    files of the output/ tree as prerequisites, because their names are
-#    machine-specific (run-all job names, timestamps) and not safe to parse
-#    as make dependencies. Every figure is independent: build any one of
-#    them by its file name, e.g. `make figures/foil_lct.pdf` or
-#    `make figures/sweeps-hal.pdf`, or all of them with `make` (the default
-#    goal, which also prints the summary tables). Rebuild only the numbers
-#    with `make results`.
+#    and the figures (figures/) from the run logs. The runs come from two
+#    sources: the sweep machines' output directories (config machines
+#    table, the new-format logs with the `# metadata:` JSON line) and the
+#    frozen legacy table legacy/legacy_results.h5, built once with
+#    `make legacy-results` from the legacy/ tree (see legacy/README.md).
+#    The numbers are rebuilt from both on every invocation: make
+#    deliberately does not list files of the output/ or legacy/ data as
+#    prerequisites, because their names are machine-specific (run names,
+#    timestamps) and not safe to parse as make dependencies. Every figure
+#    is independent: build any one of them by its file name, e.g.
+#    `make figures/foil_lct.pdf` or `make figures/sweeps-hal.pdf`, or all
+#    of them with `make` (the default goal, which also prints the summary
+#    tables). Rebuild only the numbers with `make results`.
 #
 # `make clean` removes everything generated (build/, figures/ and
 # output/results.h5); `make distclean` removes src/ as well. Neither touches
@@ -164,7 +168,7 @@ endif
 
 .PHONY: all build check clean distclean results summary figures \
 	figures-sweeps figures-shared picongpu-src mallocmc-src env-check env \
-	runs full clean-runs
+	runs full clean-runs legacy-results legacy-verify
 
 # --- per (example, algorithm) harness targets ------------------------------
 
@@ -401,6 +405,17 @@ else
 	@echo "           ENV_TOOL=micromamba / ENV_TOOL=conda."
 	@exit 1
 endif
+
+# Freeze the pre-redesign benchmark logs once into legacy/legacy_results.h5
+# (see legacy/README.md). The raw logs and the frozen table are git-ignored;
+# only the legacy/ scripts and docs are committed. Re-running is safe: the
+# table is rebuilt from legacy/logs/ every time, and `legacy-verify` reports
+# if any input file has changed since the freeze.
+legacy-results:
+	$(PY) legacy/make_legacy_results.py
+
+legacy-verify:
+	$(PY) legacy/make_legacy_results.py --check
 
 results:
 	$(PY) analysis/compute_results.py --output $(RESULTS)

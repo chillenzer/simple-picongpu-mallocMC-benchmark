@@ -1,0 +1,38 @@
+<!--
+SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
+SPDX-License-Identifier: MIT
+-->
+
+# Legacy benchmark data (frozen)
+
+This directory freezes the pre-redesign benchmark logs so the main
+analysis reads the legacy runs from one stable table instead of
+re-parsing historical log layouts.
+
+- `move_legacy_logs.sh` — one-time relocation: the historical
+  per-cluster output directories under `output/` are moved whole into
+  `logs/`, and the sweep machines' output directories are carved out
+  (legacy-era files only; the directories stay in place for the new
+  runs). New-format logs (those with a `# metadata:` JSON line) are
+  never touched.
+- `make_legacy_results.py` — parses the moved logs with a frozen copy of
+  the historical parser and writes `legacy_results.h5`: the runs table
+  (with machine/hardware attribution, in the historical file order) and
+  a per-file SHA-256 source manifest.
+- `make legacy-results` — builds `legacy_results.h5` from `logs/`.
+- `make legacy-verify` — reparses `logs/` and checks the file against it.
+
+Nothing in this directory that is data is committed: `logs/` and
+`legacy_results.h5` are git-ignored and live on the machines that hold
+the logs. On a fresh checkout, copy `legacy/logs/` from a machine that
+already has the historical `output/` tree (or run the move there), then
+`make legacy-results`.
+
+The archived-but-excluded runs (`hal-sleeptimes-nanosleep`, an
+experiment outside the benchmark matrix) are parsed into the file but
+attributed to the empty hardware name; the main analysis drops exactly
+those rows and records the exclusion in the results file's attributes.
+
+The frozen parser must not change: `legacy_results.h5` is the
+reproducible record of the numbers computed before the cut, and
+`make legacy-verify` will report a change to any input file.

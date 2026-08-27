@@ -110,6 +110,12 @@ The Makefile pins the dependency versions (the `dependencies` section of
   `mallocMC.param` per algorithm (`param/<Algorithm>/`, defining the
   creation policy), example-specific files (`param/FoilLCT/`), and optional
   per-(example, algorithm) overrides (`param/<Example>/<Algorithm>/`).
+- `legacy/` — the frozen pre-redesign benchmark data: the scripts
+  (`move_legacy_logs.sh` relocates the historical output directories,
+  `make_legacy_results.py` parses them with a frozen copy of the historical
+  parser into `legacy_results.h5`); only the scripts and docs are
+  committed, the logs and the frozen table are git-ignored. See
+  `legacy/README.md` and `make legacy-results` / `make legacy-verify`.
 - `analysis/run_logs.py` — shared parsing of the benchmark run logs: one
   record per `bin/picongpu` run (example, algorithm, grid, imposed delays,
   runtime) from the raw `set -x` trace of any of the historical log layouts;
@@ -124,8 +130,10 @@ The Makefile pins the dependency versions (the `dependencies` section of
   documented in the module docstring).
 - `analysis/compute_results.py` — the single "numbers" entry point: parses
   the sweep machines' run logs (the `machines` table of `config.json`) and
-  the legacy per-cluster `output/<cluster>/` directories (grouped by their
-  short hardware name), and computes the group runtime statistics, the
+  the legacy runs (from the frozen `legacy/legacy_results.h5`, or, until it
+  is built, the legacy per-cluster `output/<cluster>/` directories — both
+  grouped by their short hardware name), and computes the group runtime
+  statistics, the
   Amdahl fits of every (machine, example, algorithm, grid) sweep (with the
   parameter covariances), the combined (shared-parameter) fit of every
   (machine, example, grid) scenario spanned by at least two algorithms, the

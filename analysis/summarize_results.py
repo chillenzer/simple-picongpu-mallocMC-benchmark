@@ -14,6 +14,7 @@ KelvinHelmholtz figure metadata.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -180,9 +181,16 @@ def main(*, results: Path = RESULTS, raw: bool = False) -> int:
         foil = read_table(file, "foil")
         foil_pvalue = read_table(file, "foil_pvalue")
         khi = read_table(file, "khi")
+        excluded_sources = json.loads(file.attrs.get("excluded_sources", "{}"))
+        excluded_runs = file.attrs.get("excluded_runs")
     if runs.empty:
         print("no runs found in the results file")
         return 0
+    if excluded_sources:
+        print(f"Archived, excluded runs: {excluded_runs}")
+        for name, reason in sorted(excluded_sources.items()):
+            print(f"  {name}: {reason}")
+        print()
     for machine in runs["machine"].drop_duplicates():
         # The legacy paper-world runs carry no sweep machine (empty label);
         # they have no group statistics of their own.

@@ -24,3 +24,12 @@ SPDX-License-Identifier = "MIT"
 path = ["conda-linux-64.lock"]
 SPDX-FileCopyrightText = "2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf"
 SPDX-License-Identifier = "MIT"
+
+# legacy/logs/ (the raw pre-redesign benchmark logs) and
+# legacy/legacy_results.h5 (the frozen table built from them) are
+# machine-generated project data, git-ignored and not committed; their
+# attribution lives here (see legacy/README.md).
+[[annotations]]
+path = ["legacy/logs/**", "legacy/legacy_results.h5"]
+SPDX-FileCopyrightText = "2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf"
+SPDX-License-Identifier = "MIT"

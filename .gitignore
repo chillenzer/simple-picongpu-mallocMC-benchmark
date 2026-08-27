@@ -11,5 +11,10 @@ run-stamps/
 output/
 figures/
 
+# frozen legacy benchmark data (the raw logs and the frozen table stay
+# local; only the legacy/ scripts and docs are committed)
+legacy/logs/
+legacy/legacy_results.h5
+
 # local patch artifacts
 *.patch
