@@ -186,6 +186,8 @@ def main(*, results: Path = RESULTS, raw: bool = False) -> int:
     if runs.empty:
         print("no runs found in the results file")
         return 0
+    if "superseded" in runs:
+        print(f"Runs: {len(runs)} ({int(runs['superseded'].sum())} superseded)")
     if excluded_sources:
         print(f"Archived, excluded runs: {excluded_runs}")
         for name, reason in sorted(excluded_sources.items()):

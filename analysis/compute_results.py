@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 import subprocess  # ruff: ignore[suspicious-subprocess-import] -- used to read the git commit
 import sys
 from datetime import UTC, datetime
@@ -45,8 +46,10 @@ import pandas as pd
 from results_io import (
     RESULTS,
     RUN_METRIC_COLUMNS,
+    RUN_NOMINAL_COLUMNS,
     RUN_SOURCE_COLUMNS,
     RUN_TIME,
+    RUN_VINTAGE_COLUMNS,
     grid_label,
     load_results,
     no_delay_mask,
@@ -68,9 +71,11 @@ LEGACY_H5 = Path(__file__).resolve().parent.parent / "legacy" / "legacy_results.
 
 # Beyond the run's own numbers, every row carries the two timing metrics
 # the old record set dropped (`RUN_METRIC_COLUMNS`, after the runtime and
-# before the repetition number) and the provenance of the log file the run
-# came from (`RUN_SOURCE_COLUMNS`, at the end); the single source of truth
-# for both is analysis/results_io.py.
+# before the repetition number), the provenance of the log file the run
+# came from (`RUN_SOURCE_COLUMNS`), the repetition number the run declared
+# (`RUN_NOMINAL_COLUMNS`), and the run's vintage state
+# (`RUN_VINTAGE_COLUMNS`); the single source of truth for all of them is
+# analysis/results_io.py.
 RUNS_COLUMNS = [
     "machine",
     "hardware",
@@ -82,6 +87,8 @@ RUNS_COLUMNS = [
     *RUN_METRIC_COLUMNS,
     "rep",
     *RUN_SOURCE_COLUMNS,
+    *RUN_NOMINAL_COLUMNS,
+    *RUN_VINTAGE_COLUMNS,
 ]
 GROUP_STATS_COLUMNS = [
     "machine",
@@ -205,6 +212,62 @@ def load_machines(config: dict) -> dict[str, dict]:
     return sweep
 
 
+def _identity_stamp_path(label: str, name: str, stamps_root: Path) -> Path | None:
+    """Return the run stamp of one run log's identity, or None.
+
+    Args:
+        label: the sweep machine's label.
+        name: the run log's file name
+            (`run_<label>_<Ex>_<Algo>_m<M>_f<F>_r<I>_<line-sha8>_<time>.txt`).
+        stamps_root: the run-stamps directory (the repo root's).
+
+    Returns:
+        Path | None: the identity's stamp path (which may not exist), or
+        None when the name does not carry the identity.
+
+    """
+    match = re.match(rf"^run_{re.escape(label)}_(?P<rest>.+)_m(?P<m>\d+)_f(?P<f>\d+)_r(?P<rep>\d+)_", name)
+    if match is None:
+        return None
+    rest, m, f, rep = match["rest"], match["m"], match["f"], match["rep"]
+    if "_" not in rest:
+        return None
+    example, _, algorithm = rest.partition("_")
+    return stamps_root / label / example / algorithm / f"{m}_{f}" / f"rep-{rep}.stamp"
+
+
+def _superseded_flags(log_dir: Path, label: str, stamps_root: Path) -> dict[str, int]:
+    """Map one machine output directory's log names to their vintage state.
+
+    The run stamp of an identity lists the log paths of its current
+    vintage (run_stamp.sh rewrites it on every re-run), so a log not
+    carried by its identity's stamp is superseded. An identity without a
+    stamp (fresh data, or after `make clean-runs`) has no superseded
+    vintages. The frozen legacy runs live in no sweep directory and are
+    superseded by nothing.
+
+    Args:
+        log_dir: the sweep machine's log directory.
+        label: the sweep machine's label.
+        stamps_root: the run-stamps directory (the repo root's).
+
+    Returns:
+        dict: log file name -> 1 (superseded by a newer vintage) or 0.
+
+    """
+    flags: dict[str, int] = {}
+    for path in sorted(p for p in log_dir.glob("*") if p.is_file()):
+        stamp = _identity_stamp_path(label, path.name, stamps_root)
+        if stamp is None or not stamp.is_file():
+            flags[path.name] = 0
+            continue
+        listed = {
+            line.strip().rsplit("/", 1)[-1] for line in stamp.read_text(encoding="utf-8").splitlines() if line.strip()
+        }
+        flags[path.name] = 0 if path.name in listed else 1
+    return flags
+
+
 def read_all_runs(sweep: dict[str, dict], legacy_frame: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     """Parse the sweep machines' run logs and the frozen legacy runs.
 
@@ -221,16 +284,21 @@ def read_all_runs(sweep: dict[str, dict], legacy_frame: pd.DataFrame) -> tuple[p
         machine's label, empty for the legacy paper-world runs) and
         `hardware` (the short paper-figure name). `rep` numbers the
         repetitions of each (machine, setup, algorithm, grid, delay) group
-        in file order.
+        in file order, and `superseded` marks the runs an identity's run
+        stamp no longer lists (a newer vintage of the same combination and
+        repetition was written; the frozen legacy runs are all 0).
 
     """
     frames = []
+    stamps_root = repo_root() / "run-stamps"
     for label, machine in sweep.items():
         frame = _parse_dir(machine["dir"])
         if frame.empty:
             continue
         frame["machine"] = label
         frame["hardware"] = machine["hardware"]
+        flags = _superseded_flags(machine["dir"], label, stamps_root)
+        frame["superseded"] = frame["name"].map(lambda p: flags.get(Path(p).name, 0)).astype(int)
         frames.append(frame)
     if not legacy_frame.empty:
         frames.append(legacy_frame)
@@ -239,6 +307,19 @@ def read_all_runs(sweep: dict[str, dict], legacy_frame: pd.DataFrame) -> tuple[p
     if not frames:
         return pd.DataFrame(columns=RUNS_COLUMNS), sweep_labels
     runs = pd.concat(frames, ignore_index=True)
+    if "name" in runs:
+        runs = runs.drop(columns=["name"])
+    # A frozen legacy row carries none of the log-derived columns; fill the
+    # ones a sweep machine frame lacks (and the legacy frame carries none
+    # of) so every frame matches the runs table.
+    for column in (*RUN_SOURCE_COLUMNS,):
+        if column not in runs:
+            runs[column] = ""
+    for column in RUN_NOMINAL_COLUMNS:
+        if column not in runs:
+            runs[column] = np.nan
+    if "superseded" not in runs:
+        runs["superseded"] = 0
     # The single exclusion choke point: archived-but-excluded runs carry the
     # empty hardware name and are dropped here, before the rep numbering, so
     # they neither appear in any table nor shift the rep of an analyzed run.
@@ -293,16 +374,22 @@ def _parse_dir(log_dir: Path) -> pd.DataFrame:
         raise LegacyLogError(message) from error
     if frame.empty:
         return frame
-    frame = frame.drop(columns=["name"]).rename(columns={"runtime in s": RUN_TIME})
+    # `name` (the log's absolute path) is kept: the caller derives the
+    # run's vintage state from its file name and the run stamps.
+    frame = frame.rename(columns={"runtime in s": RUN_TIME})
     # The records carry the metrics and provenance the log (its metadata,
     # its trace) holds; a column a log carries not at all (no `-s` on the
-    # flags line) is filled here so every frame matches the runs table.
+    # flags line, no repetition number in the metadata) is filled here so
+    # every frame matches the runs table.
     for column in RUN_METRIC_COLUMNS:
         if column not in frame:
             frame[column] = np.nan
     for column in RUN_SOURCE_COLUMNS:
         if column not in frame:
             frame[column] = ""
+    for column in RUN_NOMINAL_COLUMNS:
+        if column not in frame:
+            frame[column] = np.nan
     return frame
 
 

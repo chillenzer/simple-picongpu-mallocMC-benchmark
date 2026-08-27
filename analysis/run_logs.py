@@ -18,14 +18,17 @@ dimensions) and the simulation times. One record is yielded per
 `bin/picongpu` run: the metadata's run context plus the parse_grid /
 parse_simulation_time values and the imposed
 `malloc_sleeptime` / `free_sleeptime` in nanoseconds
-(configuration "run-time"), the run's number of simulation steps
+(configuration "run-time"), the source log's file name (`log`), the
+run's declared repetition number (`nominal_rep`, from the metadata's
+`run.rep`), the run's number of simulation steps
 (`sim_steps`, from the flags-file line), the runtimes of the run's
 `initialization time:` and `full simulation time:` lines
 (`init_time_s`, `full_runtime_s`), and the provenance of the log (one
 column per fact of the metadata: `started_utc`, `commit`,
 `binary_sha256`, `picongpu`, `mallocmc`, `gpu`, `gpu_driver`,
-`cuda_version`, `cpu`, `compiler`, `host`, `slurm_job`; the empty
-string where the metadata carries nothing). The record is yielded when
+`cuda_version`, `cpu`, `compiler`, `host`, `slurm_job`, `flag_sha`,
+`hw_os`, `cxx_flags`, `cuda_flags`, `build_type`; the empty string
+where the metadata carries nothing). The record is yielded when
 the run's `full simulation time:` line is seen (or, if a run ends
 without it, at the next run or the end of the log), so all three of the
 run's times belong to the same record.
@@ -225,7 +228,9 @@ def _metadata_source(metadata: dict) -> dict:
 
     Returns:
         dict: one value per provenance column (the empty string where the
-        metadata carries nothing or the "unavailable" placeholder).
+        metadata carries nothing or the "unavailable" placeholder), plus
+        the run's declared repetition number `nominal_rep` (an int, absent
+        when the metadata carries none).
 
     """
     pins = metadata.get("pins", {})
@@ -240,11 +245,14 @@ def _metadata_source(metadata: dict) -> dict:
     build = metadata.get("build", {})
     if not isinstance(build, dict):
         build = {}
+    run = metadata.get("run", {})
+    if not isinstance(run, dict):
+        run = {}
     gpus = hw.get("gpu")
     commit = _text(metadata.get("commit"))
     if commit and metadata.get("dirty") is True:
         commit += " (dirty)"
-    return {
+    source = {
         "started_utc": _text(metadata.get("ts")),
         "commit": commit,
         "binary_sha256": _text(binary.get("sha256")),
@@ -257,7 +265,16 @@ def _metadata_source(metadata: dict) -> dict:
         "compiler": _text(build.get("compiler")),
         "host": _text(metadata.get("hostname")),
         "slurm_job": _text(metadata.get("slurm_job")),
+        "flag_sha": _text(run.get("flag_sha")),
+        "hw_os": _text(hw.get("os")),
+        "cxx_flags": _text(build.get("cxx_flags")),
+        "cuda_flags": _text(build.get("cuda_flags")),
+        "build_type": _text(build.get("build_type")),
     }
+    nominal_rep = run.get("rep")
+    if isinstance(nominal_rep, int) and not isinstance(nominal_rep, bool):
+        source["nominal_rep"] = nominal_rep
+    return source
 
 
 def parse_log(log_path: Path) -> Iterator[dict]:
@@ -290,6 +307,7 @@ def parse_log(log_path: Path) -> Iterator[dict]:
         MALLOC_DELAY: malloc_delay,
         FREE_DELAY: free_delay,
         "configuration": "run-time",
+        "log": log_path.name,
     } | _metadata_source(metadata)
     if steps is not None:
         context["sim_steps"] = int(steps[1])
