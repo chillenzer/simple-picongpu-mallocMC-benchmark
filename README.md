@@ -118,8 +118,8 @@ The Makefile pins the dependency versions (the `dependencies` section of
   `legacy/README.md` and `make legacy-results` / `make legacy-verify`.
 - `analysis/run_logs.py` — shared parsing of the benchmark run logs: one
   record per `bin/picongpu` run (example, algorithm, grid, imposed delays,
-  runtime) from the raw `set -x` trace of any of the historical log layouts;
-  the basis of the analysis scripts below.
+  runtime) from the log's `# metadata:` JSON header and its `set -x`
+  trace; the basis of the analysis scripts below.
 - `analysis/results_io.py` — shared access to the results HDF5 file: the
   table read/write, the per-fit covariance groups, and the schema helpers
   (grid/scenario labels, the no-delay mask, the particle-memory model).
@@ -130,10 +130,9 @@ The Makefile pins the dependency versions (the `dependencies` section of
   documented in the module docstring).
 - `analysis/compute_results.py` — the single "numbers" entry point: parses
   the sweep machines' run logs (the `machines` table of `config.json`) and
-  the legacy runs (from the frozen `legacy/legacy_results.h5`, or, until it
-  is built, the legacy per-cluster `output/<cluster>/` directories — both
-  grouped by their short hardware name), and computes the group runtime
-  statistics, the
+  the legacy runs (from the frozen `legacy/legacy_results.h5`, required —
+  build it with `make legacy-results`), all grouped by their short
+  hardware name, and computes the group runtime statistics, the
   Amdahl fits of every (machine, example, algorithm, grid) sweep (with the
   parameter covariances), the combined (shared-parameter) fit of every
   (machine, example, grid) scenario spanned by at least two algorithms, the
@@ -293,14 +292,14 @@ would be done).
 The analysis is split into *computing the numbers* and *drawing the
 figures*, joined by the single HDF5 file `output/results.h5`:
 
-- `compute_results.py` parses the raw run logs (all historical log layouts)
-  of the two worlds they live in: the sweep machines of the `machines`
-  table of `config.json` (the group statistics, the Amdahl fits and the
-  zero-delay baselines are computed for these) and the legacy per-cluster
-  `output/<cluster>/` directories, which the comparison charts read grouped
-  by their short hardware name (`A30`, `V100`, ...; the FoilLCT /
-  KelvinHelmholtz metadata covers the no-delay runs of both worlds). It
-  prints nothing.
+- `compute_results.py` parses the run logs of the two worlds they live in:
+  the sweep machines of the `machines` table of `config.json` (the new
+  format, one `# metadata:` JSON line per log; the group statistics, the
+  Amdahl fits and the zero-delay baselines are computed for these) and the
+  frozen legacy table `legacy/legacy_results.h5` (the pre-redesign logs,
+  read grouped by their short hardware name). All runs are grouped by that
+  short hardware name (`A30`, `V100`, ...; the FoilLCT / KelvinHelmholtz
+  metadata covers the no-delay runs of both worlds). It prints nothing.
 - `summarize_results.py` prints the summary tables from
   `output/results.h5` (per machine: group statistics; the fits and the
   Amdahl fractions of runtime spent in allocations / frees; the combined
@@ -400,11 +399,11 @@ Notes:
   `seaborn`, and `h5py`; see "Reproducing the analysis" for the declared
   and locked versions.
 - The comparison figures (`foil_lct.pdf`, `kelvin_helmholtz.pdf`) use the
-  no-delay runs of *every* hardware: the legacy per-cluster
-  `output/<cluster>/` directories plus the (0, 0) baseline runs of each
-  sweep machine's delay combination sweeps. Both are grouped by the short
-  hardware name (e.g. the `output/hal` directory and the `hal` sweep
-  machine's baselines are both plotted as `A30`).
+  no-delay runs of *every* hardware: the frozen legacy runs
+  (`legacy/legacy_results.h5`) plus the (0, 0) baseline runs of each sweep
+  machine's delay combination sweeps. Both are grouped by the short
+  hardware name (e.g. the legacy runs of the old `hal` cluster and the
+  `hal` sweep machine's baselines are both plotted as `A30`).
 - The figure row order is the `algorithms` list of `config.json` (recorded
   in the results file); the hardware display order of the comparison figures
   is fixed in `analysis/results_io.py`.

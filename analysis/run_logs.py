@@ -3,60 +3,46 @@
 SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
 SPDX-License-Identifier: MIT
 
-Shared by the analysis scripts: every one of them starts from the `set -x`
-trace of a `run_folder.sh` run (invoked by the Makefile run targets, or by
-the historical `run_all.sh`) and needs one record per
-`bin/picongpu` run. This module extracts those records, independent of which
-historical log layout produced the trace:
+Shared by the analysis scripts. The redesigned run logs are
+self-describing: `run_stamp.sh` writes one machine-readable metadata
+line,
 
-- the oldest per-variant layout (`cd build/<Example>/<Algorithm>-sleep<N>`,
-  the delay compiled into the binary),
-- the interim one-build-per-example layout (`cd .../build/<Example>`, which
-  always ran FlatterScatter),
-- the current one-build-per-(example, algorithm) layout
-  (`cd .../build/<Example>/<Algorithm>`, the creation policy compiled in, the
-  delays still injected at run time via the MALLOCMC_*_DELAY environment
-  variables; pre-rename logs used MALLOCMC_SLEEP_TIME for the malloc delay).
+    # metadata: {"schema": 1, ...}
 
-A record carries the run context (`setup`, `algorithm`, the `x`/`y`/`z`
-grid dimensions; a missing `z` of a 2-D run is filled with NaN by
-`runs_to_df`) plus, for run-time sweeps, the imposed `malloc_sleeptime` /
-`free_sleeptime` in nanoseconds and a `configuration` tag ("run-time" or
-"compile-time"), and the runtime in seconds from the run's
-`calculation  simulation time:` line. A log file without any parseable run
-(a build log) simply yields no records.
+into the header of every log, followed by the run's `set -x` trace. The
+metadata carries the run context (`run.setup`, `run.algorithm`,
+`run.delays`), the host, the git commit, the dependency pins, the
+binary's hash and build, and the hardware it ran on; the trace
+contributes the per-run grid (`-g` dimensions) and the runtime
+(`calculation  simulation time:` line). One record is yielded per
+`bin/picongpu` run: the metadata's run context plus the parse_grid /
+parse_simulation_time values and the imposed
+`malloc_sleeptime` / `free_sleeptime` in nanoseconds
+(configuration "run-time").
+
+A log is new format if and only if it carries a `# metadata:` line whose
+JSON has `"schema": 1` (the cut rule); the logs of the pre-redesign eras
+must be archived under legacy/ (make legacy-results) instead. A
+`"kind": "setup"` metadata line marks a session log (build or full-series
+launch); such a file yields no records. A file in a sweep machine's
+output directory without a valid metadata line raises `LegacyLogError`.
 """
 
 from __future__ import annotations
 
-import re
+import json
+import warnings
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-# The creation policy the interim one-build-per-example layout always ran.
-ALGORITHM = "FlatterScatter"
-CD_CMD = "+ cd "
+METADATA_PREFIX = "# metadata: "
+SCHEMA = 1
 RUN_CMD = "bin/picongpu "
 MALLOC_DELAY_CMD = "MALLOCMC_MALLOC_DELAY="
 FREE_DELAY_CMD = "MALLOCMC_FREE_DELAY="
-# Pre-rename logs: the malloc delay was then injected via MALLOCMC_SLEEP_TIME.
-LEGACY_MALLOC_DELAY_CMD = "MALLOCMC_SLEEP_TIME="
-# `cd` trace lines that carry run context: the oldest per-variant layout
-# (`cd build/<Example>/<Algorithm>-sleep<N>`, delays compiled in), the
-# current one-build-per-(example, algorithm) layout
-# (`cd .../build/<Example>/<Algorithm>`, delays still run-time), and the
-# interim one-build-per-example layout (`cd .../build/<Example>`, which
-# always ran FlatterScatter); every other `cd` (for example the `cd $WD`
-# return in run_folder.sh) is ignored. The three patterns are mutually
-# exclusive: `-sleep` breaks the trailing `\w+$` of the other two, and the
-# per-algorithm path has one word component too many for the per-example
-# one.
-VARIANT_CD_RE = re.compile(r"(?:^|/)build/(\w+)/(\w+)-sleep(\d+)$")
-BUILD_ALGO_CD_RE = re.compile(r"(?:^|/)build/(\w+)/(\w+)$")
-BUILD_CD_RE = re.compile(r"(?:^|/)build/(\w+)$")
 
 GROUP_KEYS = ("setup", "algorithm", "x", "y", "z")
 MALLOC_DELAY = "malloc_sleeptime"
@@ -64,35 +50,41 @@ FREE_DELAY = "free_sleeptime"
 DELAY_COLUMNS = (MALLOC_DELAY, FREE_DELAY)
 
 
-def parse_setup(line: str) -> dict | None:
-    """Parse the run context of a `cd` trace line; None if the line is unrelated.
+class LegacyLogError(Exception):
+    """A run log of a sweep machine's output directory is not in the new format.
+
+    The pre-redesign logs are archived under legacy/ instead (see
+    legacy/README.md); a remaining one belongs to legacy/logs/.
+    """
+
+
+def parse_metadata(log_path: Path) -> dict:
+    """Return the metadata dict of a run log's `# metadata:` line.
+
+    Args:
+        log_path: the log file.
 
     Returns:
-        dict | None: the parsed setup context, or None if the line is unrelated.
+        dict: the parsed metadata (schema 1).
+
+    Raises:
+        LegacyLogError: if the file carries no metadata line with
+            schema 1 (a pre-redesign log).
 
     """
-    path = line.rsplit(maxsplit=1)[-1]
-    m = VARIANT_CD_RE.search(path)
-    if m:
-        # One build per (example, algorithm, sleeptime): the delay was
-        # compiled into the binary (a malloc delay, no free delay).
-        return {
-            "setup": m[1],
-            "algorithm": m[2],
-            "malloc_sleeptime": int(m[3]),
-            "free_sleeptime": 0,
-            "configuration": "compile-time",
-        }
-    m = BUILD_ALGO_CD_RE.search(path)
-    if m:
-        # One build per (example, algorithm): the creation policy is
-        # compiled into the binary; the delays are still injected at run
-        # time via the MALLOCMC_*_DELAY environment variables.
-        return {"setup": m[1], "algorithm": m[2]}
-    m = BUILD_CD_RE.search(path)
-    if m:
-        return {"setup": m[1], "algorithm": ALGORITHM}
-    return None
+    with log_path.open("r", encoding="utf-8", errors="replace") as file:
+        for line in file:
+            if not line.startswith(METADATA_PREFIX):
+                continue
+            try:
+                metadata = json.loads(line[len(METADATA_PREFIX) :])
+            except json.JSONDecodeError:
+                metadata = {}
+            if isinstance(metadata, dict) and metadata.get("schema") == SCHEMA:
+                return metadata
+            break
+    msg = f"{log_path} has no '# metadata:' line with schema {SCHEMA}"
+    raise LegacyLogError(msg)
 
 
 def parse_grid(line: str) -> dict[str, int]:
@@ -124,89 +116,87 @@ def parse_simulation_time(line: str) -> dict[str, float]:
     return {"runtime in s": float(line.split("=")[1][: -len("sec")])}
 
 
-def _update_delays(line: str, malloc_delay: int | None, free_delay: int | None) -> tuple[int | None, int | None]:
-    """Update the remembered delay env values from a traced `set -x` line.
-
-    With `set -x`, the delay env prefixes are traced on their own line(s)
-    before the picongpu line; the new layout puts both on the same line.
-    Pre-rename logs only carry the malloc prefix, under the legacy name.
-
-    Returns:
-        tuple[int | None, int | None]: the updated (malloc_delay, free_delay).
-
-    """
-    if MALLOC_DELAY_CMD in line:
-        malloc_delay = int(line.split(MALLOC_DELAY_CMD, 1)[1].split(maxsplit=1)[0])
-    elif LEGACY_MALLOC_DELAY_CMD in line:
-        malloc_delay = int(line.split(LEGACY_MALLOC_DELAY_CMD, 1)[1].split(maxsplit=1)[0])
-    if FREE_DELAY_CMD in line:
-        free_delay = int(line.split(FREE_DELAY_CMD, 1)[1].split(maxsplit=1)[0])
-    return malloc_delay, free_delay
-
-
 def parse_log(log_path: Path) -> Iterator[dict]:
     """Yield one record per picongpu run of a single run log.
+
+    The run context (setup, algorithm, delays) comes from the metadata
+    line; the grid and the runtime come from the `set -x` trace. A delay
+    value traced on the picongpu line that disagrees with the metadata is
+    a warning, not an error (the metadata was written by the same script
+    that sets the environment). A `"kind": "setup"` log yields no records.
 
     Yields:
         dict: one record per picongpu run of the log.
 
     """
-    with log_path.open("r", encoding="utf-8") as file:
-        context = {}
+    metadata = parse_metadata(log_path)
+    if metadata.get("kind") == "setup":
+        return
+    run_ctx = metadata["run"]
+    malloc_delay, free_delay = run_ctx["delays"]
+    context = {
+        "setup": run_ctx["setup"],
+        "algorithm": run_ctx["algorithm"],
+        MALLOC_DELAY: malloc_delay,
+        FREE_DELAY: free_delay,
+        "configuration": "run-time",
+    }
+    with log_path.open("r", encoding="utf-8", errors="replace") as file:
         pending = None
-        malloc_delay = None
-        free_delay = None
         for line in map(str.strip, file):
-            if line.startswith(CD_CMD):
-                # A new run context invalidates the remembered delay values.
-                setup = parse_setup(line)
-                if setup is not None:
-                    context = setup
-                    malloc_delay = None
-                    free_delay = None
-            elif line.startswith("+ "):
-                malloc_delay, free_delay = _update_delays(line, malloc_delay, free_delay)
-                if RUN_CMD in line and "setup" in context:
-                    # In the run-time layout the env vars override the variant
-                    # sleeptime; in the per-variant layout they are absent.
+            if line.startswith("+ "):
+                _check_delays(line, malloc_delay, free_delay, log_path)
+                if RUN_CMD in line:
                     pending = dict(context) | parse_grid(line)
-                    if malloc_delay is not None or free_delay is not None:
-                        pending |= {
-                            "malloc_sleeptime": (malloc_delay if malloc_delay is not None else 0),
-                            "free_sleeptime": (free_delay if free_delay is not None else 0),
-                            "configuration": "run-time",
-                        }
             elif line.startswith("calculation") and "simulation time" in line and pending is not None:
                 yield {**pending, **parse_simulation_time(line)}
                 pending = None
 
 
-def run_to_df(run: dict) -> pd.DataFrame:
-    """Build a DataFrame from one run's records, tagged with its name.
+def _check_delays(line: str, malloc_delay: int, free_delay: int, log_path: Path) -> None:
+    """Warn when a traced delay value disagrees with the metadata's.
 
-    Returns:
-        pd.DataFrame: the run's records, tagged with the run's name.
+    Args:
+        line: the `set -x` trace line carrying the delay env prefixes.
+        malloc_delay: the metadata's malloc delay in nanoseconds.
+        free_delay: the metadata's free delay in nanoseconds.
+        log_path: the log the line came from (for the warning).
 
     """
-    return pd.DataFrame(run["runs"]).assign(name=run["name"])
+    for prefix, expected in ((MALLOC_DELAY_CMD, malloc_delay), (FREE_DELAY_CMD, free_delay)):
+        if prefix not in line:
+            continue
+        traced = int(line.split(prefix, 1)[1].split(maxsplit=1)[0])
+        if traced != expected:
+            warnings.warn(
+                f"{log_path}: traced delay {traced} ns differs from the metadata's {expected} ns",
+                stacklevel=2,
+            )
 
 
 def runs_to_df(runs: Iterable[dict]) -> pd.DataFrame:
     """Concatenate the per-run DataFrames, filling a missing z with NaN.
 
+    Args:
+        runs: the per-run dicts, each with a `name` and its `runs`.
+
     Returns:
         pd.DataFrame: the concatenated per-run frames, a missing z filled with NaN.
 
     """
-    tmp = pd.concat(map(run_to_df, runs))
+    tmp = pd.concat([pd.DataFrame(run["runs"]).assign(name=run["name"]) for run in runs])
     return tmp.assign(z=tmp.get("z", np.nan))
 
 
 def parse_logs(log_paths: Iterable[Path]) -> pd.DataFrame:
     """Parse every run log into a single DataFrame.
 
+    Args:
+        log_paths: the run log files.
+
     Returns:
         pd.DataFrame: every run log parsed into one frame.
 
     """
+    log_paths = list(log_paths)
     return runs_to_df({"name": p, "runs": parse_log(p)} for p in log_paths)

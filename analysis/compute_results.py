@@ -5,14 +5,14 @@ SPDX-License-Identifier: MIT
 
 The single "numbers" entry point. The runs live in two sources: the sweep
 machine output directories of the `machines` table of `config.json` (the
-new-format logs, one per grid run, each carrying a `# metadata:` JSON
-line) and the frozen legacy table `legacy/legacy_results.h5` (the
-pre-redesign logs of legacy/, with their machine and paper-figure
-hardware attribution applied at the freeze; the archived-but-excluded
-runs are marked by an empty hardware name and dropped here at the single
-exclusion choke point). Both are parsed into one runs table, grouped by
-the short hardware name (e.g. `A30`, `V100`) the comparison charts have
-always used, and computed from
+new-format logs, each carrying a `# metadata:` JSON line in its header)
+and the frozen legacy table `legacy/legacy_results.h5` (the pre-redesign
+logs of legacy/, with their machine and paper-figure hardware attribution
+applied at the freeze; the archived-but-excluded runs are marked by an
+empty hardware name and dropped here at the single exclusion choke
+point). Both are parsed into one runs table, grouped by the short
+hardware name (e.g. `A30`, `V100`) the comparison charts have always
+used, and computed from
 
 - `group_stats`, `fits`, `baselines`: the group runtime descriptions,
   the Amdahl fit (the per-fit parameter vector and covariance are stored
@@ -54,32 +54,14 @@ from results_io import (
     scenario_key,
     write_results,
 )
-from run_logs import FREE_DELAY, GROUP_KEYS, MALLOC_DELAY, parse_logs
+from run_logs import FREE_DELAY, GROUP_KEYS, MALLOC_DELAY, LegacyLogError, parse_logs
 from scipy.stats import kruskal
 
 REFERENCE_ALGORITHM = "ScatterAlloc"
 # The two algorithms the paper figures compare for their significance tests.
 PAPER_ALGORITHMS = ("FlatterScatter", "ScatterAlloc")
-# The paper-figure world: the output directories (by name under `output/`)
-# the comparison charts read, and the short hardware name each of them
-# plots under. A sweep machine's own output directory may appear in the
-# map (as `hal-sleeptimes` and `rosi-sleeptimes` do); its runs are then
-# grouped under that short name in the paper figures. Directories that are
-# neither mapped here nor a sweep machine's output directory (e.g. the
-# `hal-sleeptimes-nanosleep` runs) are left out, as before.
-LEGACY_HARDWARE = {
-    "hal": "A30",
-    "hemera": "A100",
-    "hemera-a100": "A100",
-    "hemera-v100": "V100",
-    "lumi": "MI250X (1 GCD)",
-    "jedi": "GH200",
-    "hal-sleeptimes": "A30",
-    "rosi-sleeptimes": "V100",
-}
-# The frozen legacy runs (the legacy cut; see legacy/README.md). When present
-# it is the single source of the pre-redesign runs; the legacy directories of
-# LEGACY_HARDWARE are parsed directly only as the transitional fallback.
+# The frozen legacy runs (the legacy cut; see legacy/README.md): the single
+# source of the pre-redesign runs. Built once with `make legacy-results`.
 LEGACY_H5 = Path(__file__).resolve().parent.parent / "legacy" / "legacy_results.h5"
 
 RUNS_COLUMNS = ["machine", "hardware", *GROUP_KEYS, MALLOC_DELAY, FREE_DELAY, "configuration", RUN_TIME, "rep"]
@@ -180,112 +162,71 @@ def load_config() -> dict:
         return json.load(handle)
 
 
-def _short_hardware(output_dir: str, title: str) -> str:
-    """Return the short paper-figure hardware name of a sweep machine's output directory.
-
-    Args:
-        output_dir: the machine's `output` entry of the config.
-        title: the machine's hardware title from the config.
-
-    Returns:
-        str: `LEGACY_HARDWARE[<directory name>]` when the directory is
-        mapped there, else the last word of the title.
-
-    """
-    return LEGACY_HARDWARE.get(Path(output_dir).name, title.rsplit(maxsplit=1)[-1])
-
-
-def load_machines(config: dict) -> tuple[dict[str, dict], dict[Path, str]]:
-    """Resolve the two worlds of run logs.
-
-    The sweep machines come from the `machines` table of `config.json`
-    (label: the table key, title: its hardware, short name: `LEGACY_HARDWARE`
-    of the output directory when mapped, else the last word of the title);
-    the legacy per-cluster output directories are the entries of
-    `LEGACY_HARDWARE` that are not a sweep machine's output directory. A
-    legacy directory that shares its name with a sweep machine's label (as
-    `output/hal` does with the `hal` machine) is nonetheless a separate
-    paper-world directory: it is not merged into the sweep machine.
+def load_machines(config: dict) -> dict[str, dict]:
+    """Resolve the sweep machines of the `machines` table of `config.json`.
 
     Args:
         config: the parsed `config.json`.
 
     Returns:
-        tuple: (`sweep_machines`, `legacy_dirs`): label ->
-        {"dirs": [Path], "hardware": short name, "title": config title}, in
-        config order; and Path -> short hardware name for the legacy
-        directories. Missing directories are dropped.
+        dict: sweep machine label -> {"dir": the machine's log directory,
+        "hardware": the short paper-figure hardware name (the last word of
+        the machine's hardware title), "title": the config title}, in
+        config order.
 
     """
     root = repo_root()
     sweep: dict[str, dict] = {}
-    sweep_output_dirs: set[Path] = set()
-    for key, machine in config["machines"].items():
-        out = root / machine["output"]
-        sweep_output_dirs.add(out)
-        title = machine["hardware"]
-        sweep[key] = {"dirs": [out], "hardware": _short_hardware(machine["output"], title), "title": title}
-    legacy: dict[Path, str] = {}
-    for dir_name, hardware in LEGACY_HARDWARE.items():
-        log_dir = root / "output" / dir_name
-        if log_dir not in sweep_output_dirs:
-            legacy[log_dir] = hardware
-    sweep = {label: m for label, m in sweep.items() if any(d.is_dir() for d in m["dirs"])}
-    legacy = {d: h for d, h in legacy.items() if d.is_dir()}
-    return sweep, legacy
+    for label, machine in config["machines"].items():
+        title = str(machine["hardware"])
+        sweep[label] = {
+            "dir": root / machine["output"],
+            "hardware": title.rsplit(maxsplit=1)[-1],
+            "title": title,
+        }
+    return sweep
 
 
-def read_all_runs(
-    sweep: dict[str, dict],
-    legacy: dict[Path, str],
-    legacy_frame: pd.DataFrame | None = None,
-) -> tuple[pd.DataFrame, list[str]]:
-    """Parse every run log of both worlds into one runs table.
+def read_all_runs(sweep: dict[str, dict], legacy_frame: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    """Parse the sweep machines' run logs and the frozen legacy runs.
 
     Args:
         sweep: as from `load_machines`.
-        legacy: as from `load_machines` (the legacy per-cluster directories
-            to parse directly; used only when `legacy_frame` is None).
         legacy_frame: the frozen legacy runs (from legacy/legacy_results.h5),
-            already tagged with `machine` and `hardware`; when given it
-            replaces the direct parsing of `legacy`.
+            already tagged with `machine` and `hardware`, in the frozen row
+            order.
 
     Returns:
         tuple: (the runs table, the sweep machine labels, in config order).
-        The runs carry `machine` (the sweep machine's label, empty for the
-        legacy paper-world runs) and `hardware` (the short paper-figure
-        name). `rep` numbers the repetitions of each
-        (machine, setup, algorithm, grid, delay) group in file order.
+        A sweep machine label is kept when its log directory exists or its
+        runs are in the frozen table. The runs carry `machine` (the sweep
+        machine's label, empty for the legacy paper-world runs) and
+        `hardware` (the short paper-figure name). `rep` numbers the
+        repetitions of each (machine, setup, algorithm, grid, delay) group
+        in file order.
 
     """
     frames = []
     for label, machine in sweep.items():
-        for log_dir in machine["dirs"]:
-            frame = _parse_dir(log_dir)
-            if frame.empty:
-                continue
-            frame["machine"] = label
-            frame["hardware"] = machine["hardware"]
-            frames.append(frame)
-    if legacy_frame is None:
-        for log_dir, hardware in legacy.items():
-            frame = _parse_dir(log_dir)
-            if frame.empty:
-                continue
-            frame["machine"] = ""
-            frame["hardware"] = hardware
-            frames.append(frame)
-    elif not legacy_frame.empty:
+        frame = _parse_dir(machine["dir"])
+        if frame.empty:
+            continue
+        frame["machine"] = label
+        frame["hardware"] = machine["hardware"]
+        frames.append(frame)
+    if not legacy_frame.empty:
         frames.append(legacy_frame)
+    h5_machines = set() if legacy_frame.empty else set(legacy_frame["machine"])
+    sweep_labels = [label for label, machine in sweep.items() if machine["dir"].is_dir() or label in h5_machines]
     if not frames:
-        return pd.DataFrame(columns=RUNS_COLUMNS), list(sweep)
+        return pd.DataFrame(columns=RUNS_COLUMNS), sweep_labels
     runs = pd.concat(frames, ignore_index=True)
     # The single exclusion choke point: archived-but-excluded runs carry the
     # empty hardware name and are dropped here, before the rep numbering, so
     # they neither appear in any table nor shift the rep of an analyzed run.
     runs = runs[runs["hardware"] != ""]
     runs["rep"] = runs.groupby(["machine", *GROUP_KEYS, MALLOC_DELAY, FREE_DELAY], dropna=False, sort=False).cumcount()
-    return runs[RUNS_COLUMNS], list(sweep)
+    return runs[RUNS_COLUMNS], sweep_labels
 
 
 def read_legacy_h5(path: Path) -> tuple[pd.DataFrame, dict[str, Any]]:
@@ -308,16 +249,30 @@ def _parse_dir(log_dir: Path) -> pd.DataFrame:
     """Parse one output directory's run logs.
 
     Args:
-        log_dir: the directory of `*.txt` run logs to parse.
+        log_dir: the directory of run logs to parse.
 
     Returns:
         pd.DataFrame: the parsed runs, or an empty frame.
+
+    Raises:
+        LegacyLogError: if a file is not a new-format log (pre-redesign
+            logs belong under legacy/logs/, frozen by
+            legacy/move_legacy_logs.sh).
 
     """
     log_paths = sorted(path for path in log_dir.glob("*") if path.is_file())
     if not log_paths:
         return pd.DataFrame()
-    frame = parse_logs(log_paths)
+    try:
+        frame = parse_logs(log_paths)
+    except LegacyLogError as error:
+        message = (
+            f"{error}\n"
+            "Pre-redesign logs are no longer parsed directly: move them to "
+            "legacy/logs/ (legacy/move_legacy_logs.sh) and freeze them with "
+            "`make legacy-results`."
+        )
+        raise LegacyLogError(message) from error
     if frame.empty:
         return frame
     return frame.drop(columns=["name"]).rename(columns={"runtime in s": RUN_TIME})
@@ -838,60 +793,38 @@ def _git_commit() -> str:
         return ""
 
 
-def _legacy_inputs(legacy: dict[Path, str]) -> dict[str, Any]:
-    """Read the legacy runs from the frozen table, or fall back to the legacy directories.
-
-    While the frozen table (legacy/legacy_results.h5) exists, it is the only
-    source of the pre-redesign runs; the legacy directories are parsed
-    directly only until it is built (transitional fallback, with a note on
-    stderr).
+def _legacy_inputs() -> dict[str, Any]:
+    """Read the pre-redesign runs from the frozen table (the single legacy source).
 
     Args:
-        legacy: the legacy directories of `load_machines`.
+        None.
 
     Returns:
-        dict: `frame` (the frozen runs, or None in the fallback),
-        `excluded_sources` (directory -> reason), `excluded_runs` (the
-        number of archived rows marked excluded), `source` (the source-list
-        label), `dirs` (the legacy directories to parse; empty when the
-        frozen table is used), and `warn_dirs` (legacy directories still
-        present under output/ that are not read).
+        dict: `frame` (the frozen runs, already tagged with `machine` and
+        `hardware`), `excluded_sources` (directory -> reason),
+        `excluded_runs` (the number of archived rows marked excluded), and
+        `source` (the source-list label).
+
+    Raises:
+        SystemExit: with an actionable message if the frozen table is missing.
 
     """
-    if LEGACY_H5.is_file():
-        frame, attrs = read_legacy_h5(LEGACY_H5)
-        excluded_runs = 0 if frame.empty else int(frame["hardware"].eq("").sum())
-        warn_dirs = list(legacy)
-        if warn_dirs:
-            names = ", ".join(path.name for path in warn_dirs)
-            print(
-                "note: using the frozen legacy table (legacy/legacy_results.h5); the "
-                f"legacy output directories still present under output/ ({names}) are not read",
-                file=sys.stderr,
-            )
-        return {
-            "frame": frame,
-            "excluded_sources": json.loads(attrs.get("excluded_sources", "{}")),
-            "excluded_runs": excluded_runs,
-            "source": f"frozen legacy: {LEGACY_H5}",
-            "dirs": {},
-            "warn_dirs": warn_dirs,
-        }
-    if legacy:
-        names = ", ".join(path.name for path in legacy)
+    if not LEGACY_H5.is_file():
         print(
-            "note: legacy/legacy_results.h5 not found; parsing the legacy output "
-            f"directories directly ({names}). Transitional fallback: build the "
-            "frozen table with `make legacy-results`",
+            "error: legacy/legacy_results.h5 not found. The analysis reads the "
+            "pre-redesign runs from this frozen table; build it from the "
+            "archived logs (under legacy/logs/, created by "
+            "legacy/move_legacy_logs.sh) with `make legacy-results`.",
             file=sys.stderr,
         )
+        raise SystemExit(1)
+    frame, attrs = read_legacy_h5(LEGACY_H5)
+    excluded_runs = 0 if frame.empty else int(frame["hardware"].eq("").sum())
     return {
-        "frame": None,
-        "excluded_sources": {},
-        "excluded_runs": 0,
-        "source": "legacy directories: " + (", ".join(path.name for path in legacy) if legacy else "none"),
-        "dirs": legacy,
-        "warn_dirs": [],
+        "frame": frame,
+        "excluded_sources": json.loads(attrs.get("excluded_sources", "{}")),
+        "excluded_runs": excluded_runs,
+        "source": f"frozen legacy: {LEGACY_H5}",
     }
 
 
@@ -909,9 +842,9 @@ def main(output: Path, configuration: str | None = None) -> None:
 
     """
     config = load_config()
-    sweep, legacy = load_machines(config)
-    legacy_input = _legacy_inputs(legacy)
-    runs, sweep_labels = read_all_runs(sweep, legacy_input["dirs"], legacy_input["frame"])
+    sweep = load_machines(config)
+    legacy_input = _legacy_inputs()
+    runs, sweep_labels = read_all_runs(sweep, legacy_input["frame"])
     sweep_runs = runs[runs["machine"].isin(sweep_labels)]
     fit_covs: list[tuple[tuple, tuple, tuple]] = []
     shared_covs: list[tuple[tuple, tuple, tuple]] = []
@@ -943,13 +876,8 @@ def main(output: Path, configuration: str | None = None) -> None:
         tables["shared_fits"], shared_covs = fit_sweep_combined(
             analyzed, tables["fits"], [str(algorithm) for algorithm in config.get("algorithms", [])]
         )
-    source_parts = [f"{label}: {d}" for label in sweep for d in sweep[label]["dirs"]]
-    if legacy_input["frame"] is None:
-        source_parts += [
-            f"{hardware} ({log_dir.name}): {log_dir}" for log_dir, hardware in legacy_input["dirs"].items()
-        ] or ["legacy: none"]
-    else:
-        source_parts.append(legacy_input["source"])
+    source_parts = [f"{label}: {sweep[label]['dir']}" for label in sweep if sweep[label]["dir"].is_dir()]
+    source_parts.append(legacy_input["source"])
     attrs = {
         "created_utc": datetime.now(UTC).isoformat(timespec="seconds"),
         "git_commit": _git_commit(),
