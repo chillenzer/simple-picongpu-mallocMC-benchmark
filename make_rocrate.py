@@ -40,8 +40,10 @@ import re
 import shutil
 import subprocess  # ruff: ignore[suspicious-subprocess-import] (probes git by absolute path only)
 import sys
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
+import zipfile
 
 try:
     import h5py
@@ -357,6 +359,24 @@ class Crate:
             if entity.get("@type") == "CreateAction":
                 self.action_ids.append(entity_id)
 
+    def data_paths(self, metadata_name: str) -> list[str]:
+        """Return the referenced data-entity paths, in order.
+
+        Args:
+            metadata_name: the metadata file's name (excluded; it is
+                the crate's own descriptor, not a data entity).
+
+        Returns:
+            list: the relative file and directory paths of the data
+                entities (the contextual `#` fragments and IRI ids are
+                not paths).
+        """
+        return [
+            entity_id
+            for entity_id in self._entities
+            if entity_id != metadata_name and entity_id != "./" and not entity_id.startswith("#") and "://" not in entity_id
+        ]
+
     def graph(self, metadata_name: str) -> list[dict]:
         """Return the `@graph` (metadata descriptor and root first).
 
@@ -422,10 +442,47 @@ def main() -> int:
     )
     check.add_argument("metadata", nargs="?", default=METADATA_DEFAULT, help="the metadata file to check")
 
+    zip_cmd = subcommands.add_parser("zip", help="pack the full crate into a verified .crate.zip archive")
+    zip_cmd.add_argument(
+        "--out", default="ro-crate.crate.zip", help="destination archive (default: %(default)s)"
+    )
+
     args = parser.parse_args()
     if args.command == "create":
         return create_main(args.out)
+    if args.command == "zip":
+        return zip_main(args.out)
     return check_main(Path(args.metadata))
+
+
+def _build_crate(config: dict, commit: str, dirty: bool | None, metadata_name: str) -> tuple[Crate, list[str], dict]:
+    """Run all the crate builders.
+
+    Args:
+        config: the parsed `config.json`.
+        commit: the repository's HEAD commit.
+        dirty: the repository's dirtiness at generation time.
+        metadata_name: the metadata file's name the metadata descriptor
+            should carry.
+
+    Returns:
+        tuple: (the crate with every entity, the note lines, the stats
+            (run action count, superseded count, described machines)).
+    """
+    crate = Crate()
+    notes: list[str] = []
+    run_log_ids: list[str] = []
+    people = config.get("people")
+    if not isinstance(people, dict):
+        people = {}
+
+    _add_context(crate)
+    _add_harness(crate, commit, dirty, people)
+    run_actions, superseded, machines_described = _add_machines(crate, config, notes, run_log_ids, people)
+    _add_analysis(crate, run_log_ids, notes)
+    _add_root(crate, config, metadata_name, people)
+    stats = {"run_actions": run_actions, "superseded": superseded, "machines": machines_described}
+    return crate, notes, stats
 
 
 def create_main(out: str) -> int:
@@ -439,28 +496,107 @@ def create_main(out: str) -> int:
     """
     config = load_config()
     commit, dirty = git_state()
-    crate = Crate()
-    notes: list[str] = []
-    run_log_ids: list[str] = []
     metadata_name = Path(out).name
-    people = config.get("people")
-    if not isinstance(people, dict):
-        people = {}
-
-    _add_context(crate)
-    _add_harness(crate, commit, dirty, people)
-    run_action_count, superseded_count, machines_described = _add_machines(crate, config, notes, run_log_ids, people)
-    _add_analysis(crate, run_log_ids, notes)
-    _add_root(crate, config, metadata_name, people)
+    crate, notes, stats = _build_crate(config, commit, dirty, metadata_name)
 
     metadata = {"@context": [CRATE_CONTEXT, WORKFLOW_RUN_CONTEXT], "@graph": crate.graph(metadata_name)}
     Path(out).write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
     print(
-        f"wrote {out}: {len(crate._entities)} entities, {run_action_count} run actions "
-        f"({superseded_count} superseded), {len(machines_described)} machine(s) described"
+        f"wrote {out}: {len(crate._entities)} entities, {stats['run_actions']} run actions "
+        f"({stats['superseded']} superseded), {len(stats['machines'])} machine(s) described"
     )
     for note in notes:
         print(f"note: {note}")
+    return 0
+
+
+def _human_size(size: float) -> str:
+    """Return a byte count in a human-readable form.
+
+    Args:
+        size: the size in bytes.
+
+    Returns:
+        str: e.g. "14.2 MB".
+    """
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024.0:
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024.0
+    return f"{size:.1f} PB"
+
+
+def zip_main(out: str) -> int:
+    """Pack the full crate into a verified `.crate.zip` archive.
+
+    The archive carries the crate's metadata (staged under the
+    conventional name) and every data file the crate references, so
+    unzipping it yields a valid crate root (the RO-Crate packaging
+    convention). Because the metadata and the files are regenerated and
+    staged together, the archive is then verified by unzipping it into
+    a scratch directory and re-running the checks on the result.
+
+    Args:
+        out: the destination archive path.
+
+    Returns:
+        int: the process exit status.
+    """
+    config = load_config()
+    commit, dirty = git_state()
+    crate, notes, _stats = _build_crate(config, commit, dirty, METADATA_DEFAULT)
+    for note in notes:
+        print(f"note: {note}")
+    paths = crate.data_paths(METADATA_DEFAULT)
+    missing = [path for path in paths if not Path(path).exists()]
+    if missing:
+        for path in missing:
+            print(f"error: the crate references {path}, which does not exist")
+        return 1
+
+    stage = Path(tempfile.mkdtemp(prefix="rocrate-stage-"))
+    verify_root = Path(tempfile.mkdtemp(prefix="rocrate-verify-"))
+    try:
+        for path in paths:
+            source = Path(path)
+            if source.is_dir():
+                shutil.copytree(source, stage / path, dirs_exist_ok=True)
+                continue
+            (stage / path).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, stage / path)
+        metadata = {"@context": [CRATE_CONTEXT, WORKFLOW_RUN_CONTEXT], "@graph": crate.graph(METADATA_DEFAULT)}
+        (stage / METADATA_DEFAULT).write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+
+        # A fixed entry timestamp keeps the archive byte-stable for a
+        # given crate (research artifacts should rebuild identically).
+        with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for file in sorted(stage.rglob("*")):
+                if not file.is_file():
+                    continue
+                info = zipfile.ZipInfo(file.relative_to(stage).as_posix(), date_time=(1980, 1, 1, 0, 0, 0))
+                info.compress_type = zipfile.ZIP_DEFLATED
+                info.external_attr = (file.stat().st_mode & 0o7777) << 16
+                with file.open("rb") as handle:
+                    archive.writestr(info, handle.read())
+
+        total_uncompressed = sum(file.stat().st_size for file in stage.rglob("*") if file.is_file())
+        with zipfile.ZipFile(out) as archive:
+            archive.extractall(verify_root)
+        status = check_main(verify_root / METADATA_DEFAULT)
+        total_compressed = Path(out).stat().st_size
+        files = sum(1 for _ in zipfile.ZipFile(out).infolist())
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+        shutil.rmtree(verify_root, ignore_errors=True)
+    if status != 0:
+        print(f"error: {out} failed verification on its own content; the archive is kept for inspection")
+        return 1
+    ratio = total_uncompressed / total_compressed if total_compressed else 1.0
+    print(
+        f"wrote {out}: {files} file(s); {_human_size(total_compressed)} "
+        f"(uncompressed {_human_size(total_uncompressed)}, {ratio:.0f}x); "
+        "verified: unzips to a valid crate"
+    )
     return 0
 
 

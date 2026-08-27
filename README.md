@@ -526,6 +526,20 @@ target; the check additionally loads the crate with the official `rocrate`
 package when it is installed (`pip install rocrate`) — reported as a
 warning only, since its newest release supports crate versions up to 1.2.
 
+**Packaging (`make crate-zip`).** The crate is also packaged as a
+portable, self-describing archive following the RO-Crate packaging
+convention: `ro-crate.crate.zip` (git-ignored, removed by `make clean`)
+carries the metadata — staged under the conventional
+`ro-crate-metadata.json` name — and every data file the crate references
+(the run logs, `results.h5`, the frozen legacy table, the figures, the
+harness), so unzipping the archive yields a valid crate root. The target
+proves this: it unzips the freshly written archive into a scratch
+directory and re-runs the checks on the result before declaring success.
+The run logs are mostly repetitive text and compress heavily (measured
+~15-20x), so the full archive of a long run series stays on the order of
+tens of MB; entry timestamps are fixed, so a given crate builds a
+byte-identical archive.
+
 ## Code style
 
 The Python analysis code is formatted and linted with ruff (line length

@@ -69,12 +69,14 @@
 #    artifact, rebuilt from the run logs, stamps, results.h5 and figures
 #    on every invocation, and validated in the same target:
 #
-#      make rocrate
+#      make rocrate       # generate and validate the metadata
+#      make crate-zip     # pack the full crate into a verified .crate.zip
 #
 # `make clean` removes everything generated (build/, figures/,
-# output/results.h5 and ro-crate-metadata.json); `make distclean` removes
-# src/ as well. Neither touches the run stamps (run-stamps/), which are
-# the record of finished runs; `make clean-runs` removes them.
+# output/results.h5, ro-crate-metadata.json and ro-crate.crate.zip);
+# `make distclean` removes src/ as well. Neither touches the run stamps
+# (run-stamps/), which are the record of finished runs; `make clean-runs`
+# removes them.
 #
 # From the repository root, with the machine's environment loaded (in
 # practice via the log_setup_<machine>.sh launchers) for the harness.
@@ -189,7 +191,7 @@ endif
 
 .PHONY: all build check clean distclean results summary figures \
 	figures-sweeps figures-shared picongpu-src mallocmc-src env-check env \
-	runs full clean-runs legacy-results legacy-verify rocrate
+	runs full clean-runs legacy-results legacy-verify rocrate crate-zip
 
 # --- per (example, algorithm) harness targets ------------------------------
 
@@ -478,9 +480,16 @@ rocrate:
 	$(PY) make_rocrate.py create --out ro-crate-metadata.json
 	$(PY) make_rocrate.py check ro-crate-metadata.json
 
+# The RO-Crate as a portable, self-describing archive (the RO-Crate
+# packaging convention): the full crate - the metadata and every data file
+# it references - zipped with a fixed entry time, then verified by
+# unzipping and re-running the checks on the result.
+crate-zip:
+	$(PY) make_rocrate.py zip --out ro-crate.crate.zip
+
 clean:
 	rm -rf $(FIGDIR) $(RESULTS) build
-	rm -f ro-crate-metadata.json
+	rm -f ro-crate-metadata.json ro-crate.crate.zip
 
 distclean: clean
 	rm -rf src
