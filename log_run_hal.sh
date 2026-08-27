@@ -9,8 +9,10 @@ set -e
 # The machine-specific values (output folder, profile) come from config.json.
 MACHINE=hal
 FOLDER=$(python3 config.py get "machines.$MACHINE.output")
-FILENAME="$FOLDER/run_$(date --rfc-3339=seconds | sed 's/ /_/g').txt"
-mkdir -p "$FOLDER"
+# The session log belongs to sessions/ (a free-text backup, never re-read
+# by the analysis).
+FILENAME="$FOLDER/sessions/run_$(date --rfc-3339=seconds | sed 's/ /_/g').txt"
+mkdir -p "$FOLDER/sessions"
 
 {
   # The machine-readable provenance line (schema 1, kind "setup"); the

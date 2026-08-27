@@ -16,13 +16,16 @@
 #
 # Each log carries a two-line header (a human one-liner `# run:` line and
 # the self-describing `# metadata:` JSON line, emitted by logmeta.py)
-# followed by that grid run's `set -x` trace. Before writing, the logs of
-# an earlier attempt of this (combination, repetition) are removed, so an
-# interrupted and resumed series never leaves duplicate records. Its
-# success is stamped in
+# followed by that grid run's `set -x` trace.
+#
+# Runs are append-only: re-running a (combination, repetition) writes a new
+# vintage of the logs next to the older ones, nothing is removed, and the
+# new logs' metadata (the commit, the binary's sha256, the flags line) is
+# what tells the vintages apart in the analysis. Its success is stamped in
 # run-stamps/<machine>/<example>/<algorithm>/<malloc>_<free>/rep-<rep>.stamp
-# (content: one log path per line). An existing stamp is what makes
-# `make runs` skip the run.
+# (content: one log path per line), which therefore also points to the
+# run's current vintage. An existing stamp is what makes `make runs` skip
+# the run.
 
 set -e
 
@@ -51,13 +54,6 @@ FLAGSFILE="flags/${EXAMPLE}.flags"
 mkdir -p "$OUTDIR"
 PREFIX="run_${MACHINE}_${EXAMPLE}_${ALGORITHM}_m${MALLOC_DELAY}_f${FREE_DELAY}_r${REP}_"
 
-# An earlier attempt of this (combination, repetition) leaves its logs
-# behind when it was interrupted, or the run is repeated after `make
-# clean-runs`; remove them so the series never carries duplicate records.
-# The pattern matches the pre-redesign naming as well (it has no
-# <line-sha8> component).
-rm -f "${OUTDIR}/${PREFIX}"*
-
 # One log per grid run (one line of the flags file); the line numbers
 # mirror run_folder.sh's loop over the same file.
 mapfile -t LINES <"$FLAGSFILE"
@@ -68,6 +64,15 @@ for i in "${!LINES[@]}"; do
   LINE_NO=$((i + 1))
   LINE_SHA=$(printf '%s' "${LINES[i]}" | sha256sum | awk '{print $1}' | cut -c1-8)
   LOG="$OUTDIR/${PREFIX}${LINE_SHA}_$(date --rfc-3339=seconds | sed 's/ /_/g').txt"
+  # A re-run that lands in the very same second as the previous vintage
+  # would reuse its log name; append a counter so no log is clobbered.
+  if [ -e "$LOG" ]; then
+    SUFFIX=1
+    while [ -e "${LOG%.txt}.${SUFFIX}.txt" ]; do
+      SUFFIX=$((SUFFIX + 1))
+    done
+    LOG="${LOG%.txt}.${SUFFIX}.txt"
+  fi
   LOGS+=("$LOG")
   echo "Running ${EXAMPLE}/${ALGORITHM} m=${MALLOC_DELAY} ns, f=${FREE_DELAY} ns, rep ${REP}/${REPEATS} line ${LINE_NO}/${TOTAL} [${MACHINE}]"
   echo "  log: $LOG"

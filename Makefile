@@ -37,10 +37,12 @@
 #    (machine, commit, the pinned dependency hashes, the slurm job when
 #    running under slurm, the sha256 of the binary used, the build facts
 #    of the binary's tree, the host hardware), and that grid run's full
-#    output. The logs of an earlier attempt of the same (combination,
-#    repetition) are removed before re-running, so a resumed series never
-#    carries duplicates, and the stamp content lists every log path of
-#    the run.
+#    output. Runs are append-only: re-running a (combination, repetition)
+#    writes a new vintage of the logs next to the older ones, nothing is
+#    ever removed, and the stamp content lists the log paths of the
+#    run's current vintage, which the analysis uses to flag the older
+#    vintages. The session logs of the log_*.sh launchers go to
+#    <output dir>/sessions/ (a free-text backup, never parsed).
 #
 # 3. The analysis driver: builds the benchmark numbers (output/results.h5)
 #    and the figures (figures/) from the run logs. The runs come from two
@@ -235,9 +237,9 @@ $(foreach p,$(PAIRS),$(eval $(call pair_rules,$(firstword $(subst /, ,$(p))),$(l
 # of `config.py list run-matrix`, so every repetition is a full sweep and
 # when REPEATS is finished, every build has finished it.
 #
-# The stamp is the record that the run happened (its content is the run's
-# log paths, one per line), and it is what makes an interrupted series
-# resumable. Its only
+# The stamp is the record that the run happened (its content is the
+# run's log paths, one per line, i.e. the paths of its current vintage),
+# and it is what makes an interrupted series resumable. Its only
 # prerequisite is the example's flags file: editing flags/<Ex>.flags
 # invalidates exactly that example's stamped runs, and nothing that
 # `make build` touches (pins, profile, toolchain, a rebuild) ever
@@ -309,7 +311,8 @@ full:
 	@$(MAKE) runs
 
 # Remove the run stamps (of all machines, or of one): the next `make runs`
-# then repeats those series, into new logs. The logs themselves are kept.
+# then repeats those series, as a new vintage next to the existing logs.
+# No log is ever removed by make.
 clean-runs:
 	@if [ -n "$(MACHINE)" ]; then
 	  python3 config.py get "machines.$(MACHINE).output" >/dev/null || { echo "make clean-runs: MACHINE=$(MACHINE) is not in the config machines table" >&2; exit 1; }

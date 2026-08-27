@@ -89,7 +89,11 @@ The Makefile pins the dependency versions (the `dependencies` section of
    line, the self-describing `# metadata:` JSON line (machine, commit, the
    pinned dependency hashes, the slurm job when running under slurm, the
    sha256 of the binary used, the build facts of the binary's tree, the
-   host hardware), and that grid run's full output. The analysis driver
+   host hardware), and that grid run's full output. Runs are append-only:
+   re-running a (combination, repetition) writes a new vintage of the logs
+   next to the older ones — nothing is ever removed — and the stamp
+   content names the log paths of the current vintage, which the analysis
+   uses to flag the older vintages as superseded. The analysis driver
    builds the numbers and
   figures: `make` (the default goal) makes all figures plus the summary
   tables, `make results` only rebuilds `output/results.h5` from the run
@@ -113,9 +117,9 @@ The Makefile pins the dependency versions (the `dependencies` section of
   rosi-a100): log the environment, load the machine's modules (setup), and
   run `make build` / `make runs MACHINE=<machine>` with the machine's
   profile from the `machines` table in `config.json`, writing the session
-  log to the machine's output directory (each such log opens with a
-  machine-readable `# metadata:` line, kind `setup`, that the analysis
-  skips).
+  log to `<output dir>/sessions/` (each such log opens with a
+  machine-readable `# metadata:` line, kind `setup`; the folder is a
+  free-text backup that the analysis never reads).
 - `profiles/` — HPC environment profiles (module/spack setup, `PIC_BACKEND`,
   `PICSRC`). One per machine.
 - `flags/` — one `picongpu` command line per benchmark run, per example.
@@ -233,7 +237,7 @@ python3 config.py list run-matrix
    make runs MACHINE=hal REPEATS=3          # three full-sweep repetitions
    make runs MACHINE=rosi REPEATS=3 REP=2   # only repetition 2 (one slurm job)
    make full MACHINE=hal                    # build, then run
-   make clean-runs [MACHINE=hal]            # forget finished runs (logs kept)
+   make clean-runs [MACHINE=hal]            # forget finished runs (re-runs add a vintage)
    ```
 
    One run is one (example, algorithm) build through one `(malloc delay,
@@ -249,13 +253,15 @@ python3 config.py list run-matrix
     dependencies, the slurm job id when running under slurm, the sha256 of
     the binary used, the build facts read from the binary's
     `CMakeCache.txt`, the host hardware), and that grid run's output
-    (including the `calculation ... simulation time:` line). The logs of an
-    earlier attempt of the same (combination, repetition) are removed
-    first, so an interrupted and resumed series never carries duplicates.
-    Each finished run stamps
+    (including the `calculation ... simulation time:` line). Runs are
+    append-only: an earlier attempt of the same (combination, repetition)
+    keeps its logs, the re-run writes a new vintage next to them, and no
+    log is ever removed by make (a re-run in the very same second merely
+    appends a counter to the file name). Each finished run stamps
     `run-stamps/<machine>/<Ex>/<Algo>/<M>_<F>/rep-<I>.stamp` (its content:
-    the run's log paths, one per line), so an interrupted series resumes
-    where it stopped, and a rebuild never invalidates finished runs. The
+    the run's log paths, one per line, i.e. its current vintage), so an
+    interrupted series resumes where it stopped, and a rebuild never
+    invalidates finished runs. The
     launchers
    `log_run_<machine>.sh` do this with a session log (environment block +
    progress) on top; the rosi ones take the repetition number as their
