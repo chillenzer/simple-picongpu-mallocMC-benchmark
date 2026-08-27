@@ -1,4 +1,4 @@
-"""The Amdahl allocation model and its constrained fits.
+"""The allocation model and its constrained fits.
 
 SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
 SPDX-License-Identifier: MIT
@@ -12,12 +12,12 @@ with W the runtime without any allocation cost. The native part is not needed
 for large sleeptimes (negligible against the imposed delay) but acts as a
 correction at small sleeptimes, so a sweep is fitted with
 
-    T(s) = W + N*s + A*s0/(s+s0)             (Amdahl model)
+    T(s) = W + N*s + A*s0/(s+s0)             (allocation model)
 
-which reduces to the Amdahl line W + N*s for s >> s0 and to W + A for
+which reduces to the large-delay asymptote W + N*s for s >> s0 and to W + A for
 s -> 0. The parameters are (W, N, A, s0): baseline runtime, allocation calls
 per run, native allocation time, and the sleeptime scale over which the
-native cost fades. The Amdahl fraction of the runtime spent in allocations is
+native cost fades. The fraction of runtime spent in allocations is
 
     f = A / (W + A)      (native allocation time / total time at zero delay)
 
@@ -32,13 +32,13 @@ f (and to W, N, A, s0) as standard errors.
 
 When a sweep imposes a delay on both operations (the (malloc_delay,
 free_delay) combination runs of the delay matrix), each operation gets its own
-Amdahl term, i.e. the native cost of an operation only fades while its own
+saturation term, i.e. the native cost of an operation only fades while its own
 imposed delay grows. Such a sweep is then fitted with the two-operation
 (separable, no cross-term) model
 
     T(m, f) = W + N_m*m + N_f*f + A_m*m0/(m+m0) + A_f*f0/(f+f0)
 
-and the Amdahl fractions of the runtime spent in allocations and frees are
+and the fractions of runtime spent in allocations and frees are
 reported separately: f_malloc = A_m/T0, f_free = A_f/T0, T0 = W + A_m + A_f.
 Groups whose runs vary only one of the two delays fall back to the 1-D model
 above, fitted on that delay.
@@ -67,14 +67,14 @@ import pandas as pd
 from scipy.optimize import OptimizeWarning, curve_fit
 
 _INF = float("inf")
-# Near-zero floor for second-based runtimes: the Amdahl fraction is
+# Near-zero floor for second-based runtimes: the fraction is
 # reported as 0 when the total runtime drops below it, and the fade
 # scales (s0, m0, f0) are bounded by it from below.
 EPS_S = 1e-12
 
 
 class Model1d(NamedTuple):
-    """Parameters of the 1-operation Amdahl model T(s) = W + N*s + A*s0/(s+s0).
+    """Parameters of the 1-operation allocation model T(s) = W + N*s + A*s0/(s+s0).
 
     The delay s is in seconds.
     """
@@ -86,7 +86,7 @@ class Model1d(NamedTuple):
 
 
 class Model2d(NamedTuple):
-    """Parameters of the 2-operation Amdahl model, the delays in seconds."""
+    """Parameters of the 2-operation allocation model, the delays in seconds."""
 
     W: float
     N_m: float
@@ -123,7 +123,7 @@ class ConstrainedFit(NamedTuple):
 
 
 def model_1d(s: np.ndarray, W: float, N: float, A: float, s0: float) -> np.ndarray:
-    """Evaluate the 1-operation Amdahl model T(s) = W + N*s + A*s0/(s+s0).
+    """Evaluate the 1-operation allocation model T(s) = W + N*s + A*s0/(s+s0).
 
     Args:
         s: the imposed delay in seconds.
@@ -140,7 +140,7 @@ def model_1d(s: np.ndarray, W: float, N: float, A: float, s0: float) -> np.ndarr
 
 
 def model_2d(m: np.ndarray, f: np.ndarray, p: Sequence[float]) -> np.ndarray:
-    """Evaluate the 2-operation Amdahl model, the delays m (malloc) and f (free) in seconds.
+    """Evaluate the 2-operation allocation model, the delays m (malloc) and f (free) in seconds.
 
     Args:
         m: the malloc delays in seconds.
@@ -187,7 +187,7 @@ def bootstrap_band(
 ) -> tuple[np.ndarray, np.ndarray] | None:
     """Percentile envelope of `fn(x_s, *p)` over p ~ N(params, pcov).
 
-    The parameters enter the model non-linearly (the Amdahl terms), so the
+    The parameters enter the model non-linearly (the saturation terms), so the
     sleeve is a resampling bootstrap rather than an analytic error
     propagation: draw `_BOOTSTRAP_N` parameter vectors from the multivariate
     normal of the fitted parameters and their covariance, evaluate the
@@ -244,7 +244,7 @@ def _fit_lsq(h: np.ndarray, s: np.ndarray, t: np.ndarray) -> tuple[float, float,
     """Least squares for t = W + N*s + A*h.
 
     Args:
-        h: the Amdahl correction term h = s0/(s+s0), one value per point.
+        h: the saturation factor h = s0/(s+s0), one value per point.
         s: the sleeptimes in seconds.
         t: the runtimes in seconds.
 
@@ -288,7 +288,7 @@ def _uncertainties(p: np.ndarray, pcov: np.ndarray | None, f_of_p: Callable[[np.
     Args:
         p: the fitted parameter vector.
         pcov: the parameter covariance matrix, or None.
-        f_of_p: the Amdahl fraction as a function of the parameter vector.
+        f_of_p: the fraction as a function of the parameter vector.
 
     Returns:
         list[float]: the standard errors of the fitted parameters, then that of f.
@@ -312,27 +312,27 @@ def _uncertainties(p: np.ndarray, pcov: np.ndarray | None, f_of_p: Callable[[np.
 
 
 def _f_of_p_free(p: np.ndarray) -> float:
-    """Compute the Amdahl fraction f = A/(W + A) of the 1-D parameters p.
+    """Compute the fraction f = A/(W + A) of runtime spent in allocations, from the 1-D parameters p.
 
     Args:
         p: the 1-D parameter vector (W, N, A, s0).
 
     Returns:
-        float: the Amdahl fraction of runtime spent in allocations.
+        float: the fraction of runtime spent in allocations.
 
     """
     return p[2] / (p[0] + p[2]) if p[0] + p[2] > EPS_S else 0.0
 
 
 def _f_of_p_ca(p: np.ndarray, c: float) -> float:
-    """Compute the Amdahl fraction of the A = N*c constrained 1-D parameters p.
+    """Compute the fraction of runtime spent in allocations, from the A = N*c constrained 1-D parameters p.
 
     Args:
         p: the constrained 1-D parameter vector (W, N, s0).
         c: the native per-call cost (s).
 
     Returns:
-        float: the Amdahl fraction of runtime spent in allocations.
+        float: the fraction of runtime spent in allocations.
 
     """
     return p[1] * c / (p[0] + p[1] * c) if p[0] + p[1] * c > EPS_S else 0.0
@@ -410,8 +410,8 @@ def _fit_notes_1d(model: Model1d, guess: tuple[float, float, float, float], boun
     # the comparison, i.e. create a genuine Yoda condition.
     if gA < -1e-6 * max(abs(gW), 1e-9) and A <= 1e-6 * max(abs(W), 1e-9):  # ruff: ignore[yoda-conditions]
         notes.append(
-            "unconstrained fit wanted A<0 (smallest-sleeptime runtime below the Amdahl "
-            "line); A constrained to 0 so f is floored at 0"
+            "unconstrained fit wanted A<0 (smallest-sleeptime runtime below the "
+            "large-delay asymptote); A constrained to 0 so f is floored at 0"
         )
     if model.s0 >= bounds[1] * 0.999:
         notes.append(
@@ -436,7 +436,7 @@ def _floored_guess_1d(guess: tuple[float, float, float, float]) -> tuple[float, 
 
 
 def _fit_3_points(s: np.ndarray, t: np.ndarray, finish: Callable[..., dict]) -> dict:
-    """Fit a 3-point sweep: Amdahl line through the two largest sleeptimes.
+    """Fit a 3-point sweep: the large-delay line through the two largest sleeptimes.
 
     Too few points to determine the correction shape, so A is the (floored)
     residual at the smallest sleeptime.
@@ -511,7 +511,7 @@ def _fit_constrained_1d(
 
 
 def fit_1d(sleeptimes: pd.Series, runtimes: pd.Series, c_a: float | None = None) -> dict:
-    """Fit one sleeptime sweep to the constrained Amdahl model.
+    """Fit one sleeptime sweep to the constrained allocation model.
 
     Args:
         sleeptimes: the imposed delays in nanoseconds.
@@ -568,7 +568,7 @@ def fit_1d(sleeptimes: pd.Series, runtimes: pd.Series, c_a: float | None = None)
             "A": A,  # native allocation time (s)
             "s0": s0,  # fade scale of the native correction (s)
             "T0": T0,  # total runtime at zero delay (s)
-            "f": f,  # Amdahl fraction of runtime spent in allocations
+            "f": f,  # fraction of runtime spent in allocations
             "W_err": W_e,
             "N_err": N_e,
             "A_err": A_e,
@@ -602,26 +602,26 @@ def fit_1d(sleeptimes: pd.Series, runtimes: pd.Series, c_a: float | None = None)
 
 
 def _f_of_m(p: np.ndarray) -> float:
-    """Compute the Amdahl fraction of the malloc operation of the 2-D parameters p.
+    """Compute the fraction of runtime spent in the malloc operation, from the 2-D parameters p.
 
     Args:
         p: the 2-D parameter vector (W, N_m, N_f, A_m, A_f, m0, f0).
 
     Returns:
-        float: the Amdahl fraction of runtime spent in allocations.
+        float: the fraction of runtime spent in allocations.
 
     """
     return p[3] / (p[0] + p[3] + p[4]) if p[0] + p[3] + p[4] > EPS_S else 0.0
 
 
 def _f_of_f(p: np.ndarray) -> float:
-    """Compute the Amdahl fraction of the free operation of the 2-D parameters p.
+    """Compute the fraction of runtime spent in the free operation, from the 2-D parameters p.
 
     Args:
         p: the 2-D parameter vector (W, N_m, N_f, A_m, A_f, m0, f0).
 
     Returns:
-        float: the Amdahl fraction of runtime spent in frees.
+        float: the fraction of runtime spent in frees.
 
     """
     return p[4] / (p[0] + p[3] + p[4]) if p[0] + p[3] + p[4] > EPS_S else 0.0
@@ -804,7 +804,7 @@ def _fit_constrained_2d(
 
 
 def fit_2d(m_delays: pd.Series, f_delays: pd.Series, runtimes: pd.Series) -> dict:
-    """Fit one (malloc, free) delay combination sweep to the two-operation Amdahl model.
+    """Fit one (malloc, free) delay combination sweep to the two-operation allocation model.
 
     The model is T(m, f) = W + N_m*m + N_f*f + A_m*m0/(m+m0) + A_f*f0/(f+f0).
 
@@ -862,8 +862,8 @@ def fit_2d(m_delays: pd.Series, f_delays: pd.Series, runtimes: pd.Series) -> dic
             "m0": float("nan") if math.isnan(model.m0) else float(model.m0),  # malloc fade scale (s)
             "f0": float("nan") if math.isnan(model.f0) else float(model.f0),  # free fade scale (s)
             "T0": T0,  # total runtime at zero delay (s)
-            "f_malloc": f_malloc,  # Amdahl fraction of runtime spent in allocations
-            "f_free": f_free,  # Amdahl fraction of runtime spent in frees
+            "f_malloc": f_malloc,  # fraction of runtime spent in allocations
+            "f_free": f_free,  # fraction of runtime spent in frees
             "W_err": W_e,
             "N_m_err": Nm_e,
             "N_f_err": Nf_e,
@@ -1234,7 +1234,7 @@ def _fit_residual_terms(
     p0: tuple[float, ...],
     bounds: tuple[float, ...],
 ) -> tuple[list[float] | None, str | None]:
-    """Fit one algorithm's Amdahl terms on the shared-parameter residuals.
+    """Fit one algorithm's saturation terms on the shared-parameter residuals.
 
     Args:
         kind: "2d", "1d-malloc", or "1d-free".
@@ -1301,7 +1301,7 @@ def _combined_stage2(
     """Refine the per-algorithm terms on the stage-1 pooled residuals.
 
     With the shared parameters subtracted, each algorithm's (A, s0)
-    Amdahl terms are fit on its own points, starting from the individual
+    saturation terms are fit on its own points, starting from the individual
     fit's costs and the pooled solution's fades.
 
     Args:
@@ -1347,7 +1347,8 @@ def _combined_stage2(
             if kind == "2d":
                 p[base + 1] = max(0.0, p[base + 1])
             notes.append(
-                f"{a}: the Amdahl terms did not converge on the pooled residuals ({err}); the pooled values are kept"
+                f"{a}: the saturation terms did not converge on the pooled "
+                f"residuals ({err}); the pooled values are kept"
             )
             continue
         if kind == "2d":
@@ -1652,8 +1653,8 @@ def _combined_per_algorithm(
         errors: the standard-error closures of the parameter vector.
 
     Returns:
-        dict: per algorithm, A_malloc/A_free (s), m0/f0 (s), the Amdahl
-        fractions, and their standard errors (NaN where inapplicable).
+        dict: per algorithm, A_malloc/A_free (s), m0/f0 (s), the fractions of runtime
+        spent in the operations, and their standard errors (NaN where inapplicable).
 
     """
     head, stride = _combined_layout(kind)
@@ -1747,10 +1748,10 @@ def fit_combined(
     call counts N_malloc and N_free -- are fit once on the pooled data of
     every pooled algorithm, while each algorithm keeps its own native
     costs (A_malloc, A_free) and fade scales (m0, f0): the two-operation
-    Amdahl model of `model_2d` with a per-algorithm (A, s0) pair, or the
+    allocation model of `model_2d` with a per-algorithm (A, s0) pair, or the
     1-D reduction when only one delay varies in the pooled data. The fit
     is staged -- a pooled least-squares solution for the shared
-    parameters, a per-algorithm fit of the Amdahl terms on the pooled
+    parameters, a per-algorithm fit of the saturation terms on the pooled
     residuals, and a final joint curve_fit started from those values --
     so the result does not depend on the initial guess.
 
@@ -1766,7 +1767,7 @@ def fit_combined(
         dict: the model kind, the pooled algorithms' order, the shared
         parameters (W, N_malloc, N_free) with their standard errors, the
         pooled r2, the per-algorithm native costs, fade scales, and
-        Amdahl fractions with their standard errors, the warnings, and
+        fractions of runtime spent in the operations with their standard errors, the warnings, and
         the joint (fit_params, pcov) pair.
 
     """

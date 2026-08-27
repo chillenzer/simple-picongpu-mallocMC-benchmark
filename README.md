@@ -23,13 +23,14 @@ and free latency on simulation runtime.
   (the `algorithms` list in `config.json` and
   `param/<Algorithm>/mallocMC.param`)
 - **Delay combinations** (nanoseconds, the `delays` section of `config.json`;
-  the Makefile run targets derive the full combination set from it,
-  `python3 config.py list run-matrix`): a `(0, 0)`
+  the Makefile run targets derive the combination set of each sweep phase
+  from it, `python3 config.py list run-matrix [initial|arms]`): a `(0, 0)`
   baseline, the malloc-delay sweep with free delay 0 and the free-delay sweep
   with malloc delay 0 over the 12 log-spaced values `100`…`100000000`
   (1/4-decade steps, skipping the intermediate steps between `1e5` and
-  `1e6`), plus a 3x3 joint grid over `10000`, `1000000`, `10000000` (34 runs
-  per example and algorithm)
+  `1e6`) — 25 combinations in the `arms` phase (the default; the joint grid
+  is empty) — and 17 combinations in the `initial` phase, which restricts
+  the ladder to its log-dense subset
 - **Examples**: `KelvinHelmholtz` (3D, grid sizes 128^3, 256x128x128,
   256x128x256, 1500 steps) and `FoilLCT` (2D, 256x1280 cells, 2000 steps)
   (the `examples` list in `config.json` and `flags/*.flags`)
@@ -83,24 +84,31 @@ The Makefile pins the dependency versions (the `dependencies` section of
   (`initial`, the fast first scan, or `arms`, the full ladder, the default):
   the run stamps make the phases incremental, so an `arms` sweep after an
   `initial` one re-runs only the new combinations. Every finished
-  (combination, repetition) writes a stamp under `run-stamps/`, so an
-  interrupted series resumes where it stopped.
-  The stamps depend only on the example's flags file: rebuilding the
-  binaries never invalidates finished runs, and `make clean` / `distclean`
-  do not touch `run-stamps/` (`make clean-runs [MACHINE=<m>]` does). Each
-   run gets one self-contained log per grid run (one line of the example's
-   flags file) in the machine's output directory: a human one-liner `# run:`
-   line, the self-describing `# metadata:` JSON line (machine, commit, the
-   pinned dependency hashes, the slurm job when running under slurm, the
-   sha256 of the binary used, the build facts of the binary's tree, the
-   host hardware), and that grid run's full output. The analysis driver
-   builds the numbers and
-  figures: `make` (the default goal) makes all figures plus the summary
-  tables, `make results` only rebuilds `output/results.h5` from the run
-  logs, `make summary` only prints the tables, and a single figure is built
-  by its file name, e.g. `make figures/foil_lct.pdf`. The numbers are
-  rebuilt from the run logs on every invocation; make does not list the log
-  files themselves as prerequisites (their names are machine-specific).
+  (combination, repetition) writes a stamp
+  under `run-stamps/`, so an interrupted run series resumes where it
+  stopped. The stamps depend only on the example's flags file: rebuilding
+  the binaries never invalidates finished runs, and `make clean` /
+  `distclean` do not touch `run-stamps/` (`make clean-runs [MACHINE=<m>]`
+  does). Each run gets one self-contained log per grid run (one line of
+  the example's flags file) in the machine's output directory: a human
+  one-liner `# run:` line, the self-describing `# metadata:` JSON line
+  (machine, commit, the pinned dependency hashes, the slurm job when
+  running under slurm, the sha256 of the binary used, the build facts of
+  the binary's tree, the host hardware and the user the run happens as),
+  and that grid run's full output.
+  Runs are append-only: re-running a (combination, repetition) writes a
+  new vintage of the logs next to the older ones (nothing is ever
+  removed), and the stamp names the current vintage (see *Usage*; the
+  analysis flags the older vintages as superseded). The analysis driver
+  builds the numbers and figures: `make` (the default goal) makes all
+  figures plus the summary tables, `make results` only rebuilds
+  `output/results.h5` from the run logs, `make summary` only prints the
+  tables, and a single figure is built by its file name, e.g. `make
+  figures/foil_lct.pdf`. The numbers are rebuilt from the run logs on
+  every invocation; make does not list the log files themselves as
+  prerequisites (their names are machine-specific).
+  `make rocrate` generates and validates the RO-Crate metadata of the
+  repository (see the *RO-Crate* section below).
 - `run_folder.sh` — runs one already-built example folder, once per flag
   line; takes optional fourth (malloc delay, default `0`) and fifth (free
   delay, default `0`) arguments in nanoseconds, passed via the
@@ -109,19 +117,23 @@ The Makefile pins the dependency versions (the `dependencies` section of
   (1-based), so a per-grid log records one grid run.
 - `logmeta.py` — emits the self-describing `# metadata:` JSON line
   (schema 1) of the run and session logs; reads the dependency pins from
-  `config.json`, the build facts from the binary's own `CMakeCache.txt`,
-  and the host hardware (the GPU names, the driver version, the CPU
-  model, the operating system); every fact is best effort ("unavailable"
-  placeholders, never an error).
+  `config.json`, the user the run happens as, the build facts from the
+  binary's own `CMakeCache.txt`, and the host hardware (the GPU names,
+  the driver version, the CPU model, the operating system); every fact is
+  best effort ("unavailable" placeholders, never an error).
+- `make_rocrate.py` — generates and checks the RO-Crate metadata of the
+  repository (`make rocrate`): the harness as a workflow, the benchmark
+  runs as provenance, the analysis as actions (what exactly is described,
+  see the *RO-Crate* section below).
 - `log_{setup,run}_<machine>.sh` — per-machine launchers (hal, rosi,
   rosi-a100): log the environment, load the machine's modules (setup), and
   run `make build` / `make runs MACHINE=<machine>` with the machine's
   profile from the `machines` table in `config.json` (the sweep invocation
   values `REPEATS`, `REP` and `PHASE` pass through as environment
-  variables), writing the session log to the machine's output directory
-  (each such log opens with a
-  machine-readable `# metadata:` line, kind `setup`, that the analysis
-  skips).
+  variables), writing the session
+  log to `<output dir>/sessions/` (each such log opens with a
+  machine-readable `# metadata:` line, kind `setup`; the folder is a
+  free-text backup that the analysis never reads).
 - `profiles/` — HPC environment profiles (module/spack setup, `PIC_BACKEND`,
   `PICSRC`). One per machine.
 - `flags/` — one `picongpu` command line per benchmark run, per example.
@@ -139,48 +151,53 @@ The Makefile pins the dependency versions (the `dependencies` section of
   record per `bin/picongpu` run (example, algorithm, grid, imposed
   delays, runtime, plus the run's full and initialisation runtimes and
   its number of simulation steps) from the log's `# metadata:` JSON
-  header and its `set -x` trace, and the provenance of the log (start
-  datetime, commit, the binary's hash and build, the dependency pins,
-  the host hardware, the slurm job) copied from the header onto every
-  one of the log's runs; the basis of the analysis scripts below.
+  header and its `set -x` trace, the source log's file name, the
+  repetition the run declared, and the flags-file line's sha, and the
+  provenance of the log (start datetime, commit, the binary's hash and
+  build, the dependency pins, the host hardware, the slurm job) copied
+  from the header onto every one of the log's runs; the basis of the
+  analysis scripts below.
 - `analysis/results_io.py` — shared access to the results HDF5 file: the
   table read/write, the per-fit covariance groups, and the schema helpers
   (grid/scenario labels, the no-delay mask, the particle-memory model).
-- `analysis/amdahl.py` — the Amdahl allocation model, its constrained
+- `analysis/allocation_model.py` — the allocation model, its constrained
   1-D/2-operation fits (plus the combined fit that shares W and the
   malloc/free call counts across a scenario's algorithms while each keeps
-  its own Amdahl terms), and the bootstrap sleeve (the full model is
+  its own saturation terms), and the bootstrap sleeve (the full model is
   documented in the module docstring).
 - `analysis/compute_results.py` — the single "numbers" entry point: parses
   the sweep machines' run logs (the `machines` table of `config.json`) and
   the legacy runs (from the frozen `legacy/legacy_results.h5`, required —
   build it with `make legacy-results`), all grouped by their short
   hardware name, and computes the group runtime statistics, the
-  Amdahl fits of every (machine, example, algorithm, grid) sweep (with the
+  allocation-model fits of every (machine, example, algorithm, grid) sweep (with the
   parameter covariances), the combined (shared-parameter) fit of every
   (machine, example, grid) scenario spanned by at least two algorithms, the
   zero-delay baselines (sweep machines), and the FoilLCT/KelvinHelmholtz
-  metadata (all no-delay runs, per short hardware name); writes everything
+  figure statistics (all zero-delay runs, per short hardware name);
+  writes everything
   to `output/results.h5` and prints nothing.
 - `analysis/summarize_results.py` — prints the summary tables from
   `output/results.h5` (group statistics, fits, the combined fit vs the
-  individual fits per scenario, Amdahl fractions, no-delay runtimes, figure
-  metadata; `--raw` adds the parsed runs).
+  individual fits per scenario, the fractions of runtime spent in
+  allocations / frees, the No-delay runtimes table, the figure
+  statistics; `--raw` adds the parsed runs).
 - `analysis/plot_sweeps.py` — one delay-sweep figure per sweep machine
   (`figures/sweeps-<machine>.pdf`: one row per algorithm, the malloc and
   free delay sweeps side by side, all axes sharing the x- and y-axes,
   fitted curve + bootstrap sleeve, and the scenario's combined fit as a
   heavy line where one exists).
- - `analysis/plot_shared_fits.py` — one forest figure per sweep machine
-   (`figures/sweeps-shared-<machine>.pdf`: one row per (scenario, algorithm),
-   the shared W / N_malloc / N_free values against each algorithm's
-   individual fit, and the individual vs combined A_malloc / A_free, each
-   A_* value annotated with its Amdahl fraction f, the share of the
-   zero-delay runtime W + A_malloc + A_free the native cost occupies).
-- `analysis/plot_foil_lct.py` — the FoilLCT bar chart of the no-delay runs
-  (`figures/foil_lct.pdf`).
+- `analysis/plot_shared_fits.py` — one forest figure per sweep machine
+  (`figures/sweeps-shared-<machine>.pdf`: one row per (scenario, algorithm),
+  the shared W / N_malloc / N_free values against each algorithm's
+  individual fit, and the individual vs combined A_malloc / A_free,
+  each A_* value annotated with its fraction f = A/T0, the share of the
+  zero-delay runtime T0 = W + A_malloc + A_free the operation's native
+  cost occupies).
+- `analysis/plot_foil_lct.py` — the FoilLCT bar chart of the zero-delay
+  runs (`figures/foil_lct.pdf`).
 - `analysis/plot_kelvin_helmholtz.py` — the KelvinHelmholtz violin chart of
-  the no-delay runs relative to the ScatterAlloc reference
+  the zero-delay runs relative to the ScatterAlloc reference
   (`figures/kelvin_helmholtz.pdf`).
 - `build/` — created by the Makefile; one CMake project per (example,
   algorithm).
@@ -241,7 +258,7 @@ python3 config.py list run-matrix initial
    make runs MACHINE=hal REPEATS=3          # three full-sweep repetitions
    make runs MACHINE=rosi REPEATS=3 REP=2   # only repetition 2 (one slurm job)
    make full MACHINE=hal                    # build, then run (PHASE passes through)
-   make clean-runs [MACHINE=hal]            # forget finished runs (logs kept)
+   make clean-runs [MACHINE=hal]            # forget finished runs (re-runs add a vintage)
    make sweep-status MACHINE=hal            # which runs are stamped (arms phase)
    ```
 
@@ -259,33 +276,38 @@ python3 config.py list run-matrix initial
    about 67 h or 35 h, against 172 h / 89 h for the old 34-combination
    design.
 
-   One run is one (example, algorithm) build through one `(malloc delay,
+   One run is one (example, algorithm, combination, repetition)
+   identity: one (example, algorithm) build through one `(malloc delay,
    free delay)` combination derived from the `delays` section of
-   `config.json`: every flag line of the example is run as
-   `MALLOCMC_MALLOC_DELAY=<M> MALLOCMC_FREE_DELAY=<F> bin/picongpu ...` from
-   `build/<Ex>/<Algo>/` (via `run_folder.sh`), in sweep order (example,
-    algorithm, repetition, then the delay combination). Each run writes one
-    self-contained log per grid run (one line of the example's flags
-    file), `run_<machine>_<Ex>_<Algo>_m<M>_f<F>_r<I>_<line-sha8>_<time>.txt`,
-    to the machine's output directory: a human one-liner `# run:` line, the
-    self-describing `# metadata:` JSON line (machine, commit, the pinned
-    dependencies, the slurm job id when running under slurm, the sha256 of
-    the binary used, the build facts read from the binary's
-    `CMakeCache.txt`, the host hardware), and that grid run's output
-    (including the `calculation ... simulation time:` line). The logs of an
-    earlier attempt of the same (combination, repetition) are removed
-    first, so an interrupted and resumed series never carries duplicates.
-    Each finished run stamps
-    `run-stamps/<machine>/<Ex>/<Algo>/<M>_<F>/rep-<I>.stamp` (its content:
-    the run's log paths, one per line), so an interrupted series resumes
-    where it stopped, and a rebuild never invalidates finished runs. The
-    launchers
-   `log_run_<machine>.sh` do this with a session log (environment block +
-   progress) on top; the rosi ones take the repetition number as their
-   first argument (`sbatch log_run_rosi.sh 1`, with `REPEATS` in the
-   environment) so each slurm job runs exactly one full-sweep repetition —
-   all slurm allocation options come from the `sbatch` line, the scripts
-   carry no `#SBATCH` directives.
+   `config.json`, once per repetition. Every flag line of the example is
+   run as `MALLOCMC_MALLOC_DELAY=<M> MALLOCMC_FREE_DELAY=<F> bin/picongpu
+   ...` from `build/<Ex>/<Algo>/` (via `run_folder.sh`), in sweep order
+   (example, algorithm, repetition, then the delay combination), and each
+   flag line of a run writes one self-contained log (one grid run: one
+   `picongpu` launch),
+   `run_<machine>_<Ex>_<Algo>_m<M>_f<F>_r<I>_<line-sha8>_<time>.txt`, to
+   the machine's output directory: a human one-liner `# run:` line, the
+   self-describing `# metadata:` JSON line (machine, commit, the pinned
+   dependencies, the slurm job id when running under slurm, the sha256 of
+   the binary used, the build facts read from the binary's
+    `CMakeCache.txt`, the host hardware and the user the run happens as),
+    and that grid run's output
+   (including the `calculation ... simulation time:` line). Runs are
+   append-only: an earlier attempt of the same (combination, repetition)
+   keeps its logs, the re-run writes a new vintage next to them, and no
+   log is ever removed by make (a re-run in the very same second merely
+   appends a counter to the file name). Each finished run stamps
+   `run-stamps/<machine>/<Ex>/<Algo>/<M>_<F>/rep-<I>.stamp` (its content:
+   the run's log paths, one per line, i.e. its current vintage), so an
+   interrupted run series resumes where it stopped, and a rebuild never
+   invalidates finished runs; a re-run adds new rows to the analysis
+   (the `superseded` column marks the older vintages — see *Analysis*),
+   and the `log_run_<machine>.sh` launchers do all of this with a session
+   log (environment block + progress) on top. The rosi ones take the
+   repetition number as their first argument (`sbatch log_run_rosi.sh 1`,
+   with `REPEATS` in the environment) so each slurm job runs exactly one
+   full-sweep repetition — all slurm allocation options come from the
+   `sbatch` line, the scripts carry no `#SBATCH` directives.
 
 Single run (one built folder, one combination, one flags file):
 
@@ -313,9 +335,10 @@ would be done).
   near-degenerate for the 7-parameter fit, so add joint values only with
   the full ladder, and keep them on the ladder). The delays are applied at
   run time via `MALLOCMC_MALLOC_DELAY` / `MALLOCMC_FREE_DELAY`, so changing
-  the sweep requires no rebuild. The large delays let each Amdahl term
-  `A*s0/(d+s0)` decay into its `1/d` tail so the asymptote `W + A + N*d`
-  gets anchored; this matters most for free, whose native cost fades slowly.
+  the sweep requires no rebuild. The large delays let each saturation term
+  `A*s0/(d+s0)` decay into its `1/d` tail so the large-delay asymptote
+  `W + N*d` gets anchored; this matters most for free, whose native cost
+  fades slowly.
 - **Grids / steps / other picongpu flags**: edit `flags/<Example>.flags`
   (one command line per run).
 - **Allocator configuration**: `param/<Algorithm>/mallocMC.param` defines
@@ -342,33 +365,54 @@ would be done).
 The analysis is split into *computing the numbers* and *drawing the
 figures*, joined by the single HDF5 file `output/results.h5`:
 
-- `compute_results.py` parses the run logs of the two worlds they live in:
-  the sweep machines of the `machines` table of `config.json` (the new
-  format, one `# metadata:` JSON line per log; the group statistics, the
-  Amdahl fits and the zero-delay baselines are computed for these) and the
-  frozen legacy table `legacy/legacy_results.h5` (the pre-redesign logs,
-  read grouped by their short hardware name). All runs are grouped by that
-  short hardware name (`A30`, `V100`, ...; the FoilLCT / KelvinHelmholtz
-  metadata covers the no-delay runs of both worlds). It prints nothing.
-  Beyond the run's own numbers, every row of the `runs` table carries the
-  two timing metrics the old record set dropped (`full_runtime_s`,
-  `init_time_s`, after the runtime and before the repetition number) and
-  the number of simulation steps the run carried, `sim_steps`, plus the
-  provenance of the log file the run came from (`started_utc`, `commit`,
-  `binary_sha256`, `picongpu`, `mallocmc`, `gpu`, `gpu_driver`,
-  `cuda_version`, `cpu`, `compiler`, `host`, `slurm_job`, at the end; per
-  log, repeated on all of its runs, empty where the log or its metadata
-  carries nothing). The new-format runs take the values from their
-  `# metadata:` line and their trace, the frozen legacy runs from
-  `legacy/legacy_results.h5`. The single source of truth for the column
-  names is `analysis/results_io.py` (`RUN_METRIC_COLUMNS`,
-  `RUN_SOURCE_COLUMNS`).
+- `compute_results.py` parses the run logs of the two sources they live
+  in: the sweep machines of the `machines` table of `config.json` (the
+  new format, one `# metadata:` JSON line per log; the group statistics,
+  the allocation-model fits and the zero-delay baselines are computed for
+  these) and the frozen legacy table `legacy/legacy_results.h5` (the
+  pre-redesign logs, read grouped by their short hardware name). All runs
+  are grouped by that short hardware name (`A30`, `V100`, ...; the
+  FoilLCT / KelvinHelmholtz figure statistics cover the zero-delay runs of
+  both sources). It prints nothing. Beyond the run's own numbers, every
+  row of the `runs` table carries the two timing metrics the pre-redesign
+  record dropped (`full_runtime_s`, `init_time_s`, after the runtime and
+  before the repetition number) and the number of simulation steps the
+  run carried, `sim_steps`, plus the provenance of the log file the run
+  came from (`started_utc`, `commit`, `binary_sha256`, `picongpu`,
+  `mallocmc`, `gpu`, `gpu_driver`, `cuda_version`, `cpu`, `compiler`,
+  `host`, `slurm_job`; per log, repeated on all of its runs, empty where
+  the log or its metadata carries nothing), the log's own file name
+  (`log`), the repetition number the run declared (`nominal_rep`), the
+  sha of the flags-file line the run came from (`flag_sha`, the filter
+  that separates a flags-edit re-run when binary and commit are
+  identical) and the build- and host-facts the metadata records
+  (`hw_os`, `cxx_flags`, `cuda_flags`, `build_type`). `rep` is a
+  positional index of a row among all logs of its (machine, setup,
+  algorithm, grid, delay) group in file order, so a re-run of one nominal
+  repetition shifts the later rows' `rep` — `nominal_rep` is what selects
+  the declared repetition. Runs are append-only (see the `make runs`
+  section): a row whose log comes from an older vintage of the same
+  identity (machine, example, algorithm, delay combination, repetition)
+  carries `superseded = 1`, derived from the run stamps (which name the
+  current vintage's logs), 0 otherwise — all frozen legacy runs are 0.
+  Nothing downstream filters those rows out: the superseded vintages stay
+  in every table and every number, and the group statistics and the fits
+  are computed over all rows; a consumer that wants the current state of
+  the world selects `runs[runs["superseded"] == 0]`. The new-format runs
+  take the values from their `# metadata:` line and their trace, the
+  frozen legacy runs from `legacy/legacy_results.h5`. The single source of
+  truth for the column names is `analysis/results_io.py`
+  (`RUN_METRIC_COLUMNS`, `RUN_SOURCE_COLUMNS`, `RUN_NOMINAL_COLUMNS`,
+  `RUN_VINTAGE_COLUMNS`).
 - `summarize_results.py` prints the summary tables from
-  `output/results.h5` (per machine: group statistics; the fits and the
-  Amdahl fractions of runtime spent in allocations / frees; the combined
+  `output/results.h5` (first the total run count with its superseded
+  share, `Runs: N (M superseded)`, and the excluded archived runs, when
+  any; then per machine: group statistics; the fits and the
+  fractions of runtime spent in allocations / frees; the combined
   (shared-parameter) fit of each multi-algorithm scenario compared
-  algorithm by algorithm against the individual fits; the no-delay
-  runtimes; the figure metadata). `--raw` also prints the parsed runs.
+  algorithm by algorithm against the individual fits; the No-delay
+  runtimes; the figure statistics). `--raw` also prints the parsed
+  runs.
 - one script per figure, each reading `output/results.h5` (all take
   `--show` to display the figure in a window): `plot_sweeps.py`
   (`figures/sweeps-<machine>.pdf`, `--machine` for one machine),
@@ -442,7 +486,7 @@ Notes:
   `T(s) = W + N*s + A*s0/(s+s0)` (sweep on one delay) or the two-operation
   model `T(m, f) = W + N_m*m + N_f*f + A_m*m0/(m+m0) + A_f*f0/(f+f0)`
   (combination sweep); the full model, the bounds, and the diagonalization
-  caveats of the bootstrap are documented in `analysis/amdahl.py`.
+  caveats of the bootstrap are documented in `analysis/allocation_model.py`.
 - The combined fit reuses the two-operation model but fits it once over all
   algorithms of a (machine, example, grid) scenario together: W, N_malloc
   and N_free are shared across the algorithms while each keeps its own
@@ -462,7 +506,7 @@ Notes:
   `seaborn`, and `h5py`; see "Reproducing the analysis" for the declared
   and locked versions.
 - The comparison figures (`foil_lct.pdf`, `kelvin_helmholtz.pdf`) use the
-  no-delay runs of *every* hardware: the frozen legacy runs
+  zero-delay runs of *every* hardware: the frozen legacy runs
   (`legacy/legacy_results.h5`) plus the (0, 0) baseline runs of each sweep
   machine's delay combination sweeps. Both are grouped by the short
   hardware name (e.g. the legacy runs of the old `hal` cluster and the
@@ -470,6 +514,41 @@ Notes:
 - The figure row order is the `algorithms` list of `config.json` (recorded
   in the results file); the hardware display order of the comparison figures
   is fixed in `analysis/results_io.py`.
+
+## RO-Crate
+
+The benchmark is also an [RO-Crate](https://www.researchobject.org/ro-crate/):
+`make rocrate` (via `make_rocrate.py`) generates the metadata file
+`ro-crate-metadata.json` (git-ignored, removed by `make clean`) at the
+repository root and validates it. The metadata is a derived artifact: it is
+rebuilt from the ground truth on every invocation, exactly like
+`results.h5`, and never written during a run. The crate describes the
+repository as one research object:
+
+- **The harness as a workflow** (the RO-Crate *Workflows and scripts*
+  conventions; the metadata requirements of the Workflow RO-Crate profile):
+  the `Makefile` is the main workflow, the shell/python scripts its steps,
+  `MACHINE`/`PROFILE`/`PARAM_DIR`/`REPEATS`/`REP`/`PHASE` its input parameters,
+  the run logs, `results.h5` and the figures its outputs.
+- **The runs as provenance** (the Process Run profile): one `CreateAction`
+  per grid-run log, reading the log's self-describing metadata line —
+  instrument the binary used (sha256, build facts, the PIConGPU/mallocMC
+  pins), object the flags/config/parameter/profile files, `environment`
+  the imposed delay and the slurm job, agent the run's user, result the
+  log. Runs are append-only, so every vintage is described: a log whose
+  identity's run stamp does not list it is annotated as superseded, on the
+  same keys the analysis uses.
+- **The analysis as actions**: one `CreateAction` for `results.h5` (from
+  the run logs and the frozen legacy table, all vintages) and one per
+  figure.
+
+The declared conformance is RO-Crate 1.3 plus the two profile statements
+on the root data entity. The crate is deliberately *not* packaged for
+WorkflowHub ingestion: the pipeline is a Makefile, not one of the workflow
+languages WorkflowHub supports. The built-in validation runs with the
+target; the check additionally loads the crate with the official `rocrate`
+package when it is installed (`pip install rocrate`) — reported as a
+warning only, since its newest release supports crate versions up to 1.2.
 
 ## Code style
 

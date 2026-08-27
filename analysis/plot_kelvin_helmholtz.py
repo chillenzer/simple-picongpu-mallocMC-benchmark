@@ -5,11 +5,11 @@ SPDX-License-Identifier: MIT
 
 Reads `output/results.h5` (the output of `compute_results.py`) and draws
 the paper violin chart of the original three-algorithm comparison: the
-no-delay KelvinHelmholtz runs of every hardware, the runtime relative to
-the ScatterAlloc reference runtime (per (hardware, memory) group, from the
-results file's `khi` table), one violin per allocator, one column per
-estimated particle memory. The chart's metadata (reference runtime,
-outlier count, Kruskal p-value, FlatterScatter median) is in the `khi`
+zero-delay KelvinHelmholtz runs of every hardware, the runtime relative to
+the ScatterAlloc reference runtime (per (hardware, memory) group, from
+the results file's `khi` table), one violin per allocator, one column per
+estimated particle memory. The chart's statistics (reference runtime,
+outlier count, Kruskal p-value, FlatterScatter median) are stored in that
 table; `summarize_results.py` prints it. Saved to
 `figures/kelvin_helmholtz.pdf`.
 """
@@ -108,7 +108,7 @@ def main(*, show: bool = False, results: Path = RESULTS) -> int:
         algorithms = algorithm_order(file)
     khi_runs = runs[no_delay_mask(runs)]
     if not len(khi_runs[khi_runs["setup"] == "KelvinHelmholtz"]):
-        print("no no-delay KelvinHelmholtz runs in the results file", file=sys.stderr)
+        print("no zero-delay KelvinHelmholtz runs in the results file", file=sys.stderr)
         return 1
     FIGURES.mkdir(exist_ok=True)
     fig = make_figure(runs, khi, algorithms)
@@ -121,7 +121,7 @@ def main(*, show: bool = False, results: Path = RESULTS) -> int:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="The KelvinHelmholtz violin chart of the no-delay runs from output/results.h5 "
+        description="The KelvinHelmholtz violin chart of the zero-delay runs from output/results.h5 "
         "(figures/kelvin_helmholtz.pdf)."
     )
     parser.add_argument(

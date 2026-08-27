@@ -54,7 +54,21 @@ RUN_SOURCE_COLUMNS = (
     "compiler",
     "host",
     "slurm_job",
+    "log",
+    "flag_sha",
+    "hw_os",
+    "cxx_flags",
+    "cuda_flags",
+    "build_type",
 )
+# The repetition number a run declared (`run.rep` of the metadata); a
+# re-run of the same nominal repetition keeps its vintages apart from the
+# true repetition numbers this way.
+RUN_NOMINAL_COLUMNS = ("nominal_rep",)
+# The vintage state of a run, derived from the run stamps (which list the
+# log paths of the identity's current vintage): 1 where the identity's
+# stamp exists but does not list the run's log, 0 otherwise.
+RUN_VINTAGE_COLUMNS = ("superseded",)
 # Hardware display order of the comparison figures (GPU generation, the
 # newest last).
 HARDWARE_ORDER = ("V100", "A100", "A30", "GH200", "MI250X (1 GCD)")

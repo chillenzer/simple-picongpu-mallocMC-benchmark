@@ -3,7 +3,7 @@
 # SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
 # SPDX-License-Identifier: MIT
 #
-# Three purposes, one Makefile:
+# Four purposes, one Makefile:
 #
 # 1. The benchmark build harness (rewritten from setup.sh): clones the
 #    pinned PIConGPU and mallocMC into src/, prepares one input directory
@@ -32,7 +32,8 @@
 #    plus the joint grid when one is configured). The phases are incremental:
 #    an `arms` sweep after an `initial` one re-runs only the new combinations.
 #    Each finished (example, algorithm, combination, repetition) writes a
-#    stamp under run-stamps/, which makes an interrupted series resumable.
+#    stamp under run-stamps/, which makes an interrupted run series (one
+#    `make runs` invocation) resumable.
 #    The stamps depend only on the example's flags file, so rebuilding the
 #    binaries never invalidates finished runs (and `make clean` /
 #    `distclean` do not touch run-stamps/). Every run gets one
@@ -42,11 +43,14 @@
 #    the self-describing `# metadata:` JSON line emitted by logmeta.py
 #    (machine, commit, the pinned dependency hashes, the slurm job when
 #    running under slurm, the sha256 of the binary used, the build facts
-#    of the binary's tree, the host hardware), and that grid run's full
-#    output. The logs of an earlier attempt of the same (combination,
-#    repetition) are removed before re-running, so a resumed series never
-#    carries duplicates, and the stamp content lists every log path of
-#    the run.
+#    of the binary's tree, the host hardware and the user the run happens
+#    as), and that grid run's full output. Runs are append-only:
+#    re-running a (combination, repetition)
+#    writes a new vintage of the logs next to the older ones, nothing is
+#    ever removed, and the stamp content lists the log paths of the
+#    run's current vintage, which the analysis uses to flag the older
+#    vintages. The session logs of the log_*.sh launchers go to
+#    <output dir>/sessions/ (a free-text backup, never parsed).
 #
 # 3. The analysis driver: builds the benchmark numbers (output/results.h5)
 #    and the figures (figures/) from the run logs. The runs come from two
@@ -63,10 +67,20 @@
 #    of them with `make` (the default goal, which also prints the summary
 #    tables). Rebuild only the numbers with `make results`.
 #
-# `make clean` removes everything generated (build/, figures/ and
-# output/results.h5); `make distclean` removes src/ as well. Neither touches
-# the run stamps (run-stamps/), which are the record of finished runs;
-# `make clean-runs` removes them.
+# 4. The RO-Crate generator: describes the benchmark and its data as one
+#    research object (ro-crate-metadata.json at the repository root,
+#    git-ignored): the harness as a workflow, the benchmark runs as
+#    provenance (one CreateAction per grid-run log, superseded vintages
+#    included) and the analysis as actions. The metadata is a derived
+#    artifact, rebuilt from the run logs, stamps, results.h5 and figures
+#    on every invocation, and validated in the same target:
+#
+#      make rocrate
+#
+# `make clean` removes everything generated (build/, figures/,
+# output/results.h5 and ro-crate-metadata.json); `make distclean` removes
+# src/ as well. Neither touches the run stamps (run-stamps/), which are
+# the record of finished runs; `make clean-runs` removes them.
 #
 # From the repository root, with the machine's environment loaded (in
 # practice via the log_setup_<machine>.sh launchers) for the harness.
@@ -197,7 +211,7 @@ endif
 
 .PHONY: all build check clean distclean results summary figures \
 	figures-sweeps figures-shared picongpu-src mallocmc-src env-check env \
-	runs full clean-runs legacy-results legacy-verify
+	runs full clean-runs legacy-results legacy-verify rocrate sweep-status
 
 # --- per (example, algorithm) harness targets ------------------------------
 
@@ -257,9 +271,9 @@ $(foreach p,$(PAIRS),$(eval $(call pair_rules,$(firstword $(subst /, ,$(p))),$(l
 # of `config.py list run-matrix`, so every repetition is a full sweep and
 # when REPEATS is finished, every build has finished it.
 #
-# The stamp is the record that the run happened (its content is the run's
-# log paths, one per line), and it is what makes an interrupted series
-# resumable. Its only
+# The stamp is the record that the run happened (its content is the
+# run's log paths, one per line, i.e. the paths of its current vintage),
+# and it is what makes an interrupted series resumable. Its only
 # prerequisite is the example's flags file: editing flags/<Ex>.flags
 # invalidates exactly that example's stamped runs, and nothing that
 # `make build` touches (pins, profile, toolchain, a rebuild) ever
@@ -331,7 +345,8 @@ full:
 	@$(MAKE) runs
 
 # Remove the run stamps (of all machines, or of one): the next `make runs`
-# then repeats those series, into new logs. The logs themselves are kept.
+# then repeats those series, as a new vintage next to the existing logs.
+# No log is ever removed by make.
 clean-runs:
 	@if [ -n "$(MACHINE)" ]; then
 	  python3 config.py get "machines.$(MACHINE).output" >/dev/null || { echo "make clean-runs: MACHINE=$(MACHINE) is not in the config machines table" >&2; exit 1; }
@@ -498,8 +513,16 @@ $(FIGDIR)/sweeps-%.pdf: results
 $(FIGDIR)/sweeps-shared-%.pdf: results
 	$(PY) analysis/plot_shared_fits.py --results $(RESULTS) --machine $*
 
+# The RO-Crate metadata (see the header): generate it and run make_rocrate.py's
+# checks on the result (built-in validation, plus the official rocrate
+# package's crate loading when it is installed, reported as a warning).
+rocrate:
+	$(PY) make_rocrate.py create --out ro-crate-metadata.json
+	$(PY) make_rocrate.py check ro-crate-metadata.json
+
 clean:
 	rm -rf $(FIGDIR) $(RESULTS) build
+	rm -f ro-crate-metadata.json
 
 distclean: clean
 	rm -rf src

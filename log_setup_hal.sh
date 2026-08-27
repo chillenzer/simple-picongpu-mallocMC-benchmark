@@ -11,12 +11,15 @@ set -e
 MACHINE=hal
 FOLDER=$(python3 config.py get "machines.$MACHINE.output")
 PROFILE=$(python3 config.py get "machines.$MACHINE.profile")
-FILENAME="$FOLDER/setup_$(date --rfc-3339=seconds | sed 's/ /_/g').txt"
+# Session logs live in a folder of their own: they are a free-text backup
+# of the launch environment, never re-read by the analysis (which parses
+# the top-level run logs only), and never superseded.
+FILENAME="$FOLDER/sessions/setup_$(date --rfc-3339=seconds | sed 's/ /_/g').txt"
 
 # make reuses an existing src/ and build/ and only re-runs the parts that are
 # not up to date any more; `make clean` / `make distclean` remove them for a
 # fully clean run.
-mkdir -p "$FOLDER"
+mkdir -p "$FOLDER/sessions"
 
 # The machine-readable provenance line (schema 1, kind "setup"); the
 # analysis skips session logs.

@@ -37,7 +37,7 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import NamedTuple
 
-import amdahl
+import allocation_model
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
@@ -81,7 +81,7 @@ _X_LOG_PAD_FRAC = 0.05
 
 
 class Fit1d(NamedTuple):
-    """1-D Amdahl fit on a single delay; `direction` names that delay.
+    """1-D allocation-model fit on a single delay; `direction` names that delay.
 
     `cov` is the `(fit_params, pcov)` pair used for the bootstrap sleeves,
     or None when the covariance is unavailable.
@@ -96,7 +96,7 @@ class Fit1d(NamedTuple):
 
 
 class Fit2d(NamedTuple):
-    """2-D Amdahl fit (both delays vary); the delays are in seconds.
+    """2-D allocation-model fit (both delays vary); the delays are in seconds.
 
     `cov` is the `(fit_params, pcov)` pair used for the bootstrap sleeves,
     or None when the covariance is unavailable. `block` is the fit's
@@ -420,19 +420,23 @@ def draw_shared_fit(
         params.m0,
         params.f0,
     )
-    model = amdahl.model_2d(x_s, held_arr, p7) if cluster.short == "malloc" else amdahl.model_2d(held_arr, x_s, p7)
+    model = (
+        allocation_model.model_2d(x_s, held_arr, p7)
+        if cluster.short == "malloc"
+        else allocation_model.model_2d(held_arr, x_s, p7)
+    )
     if params.cov is not None:
         fp, pcov = params.cov
 
         def fn(p: np.ndarray) -> np.ndarray:
             block = (p[0], p[1], p[2], p[3 + 4 * k], p[4 + 4 * k], p[5 + 4 * k], p[6 + 4 * k])
             if cluster.short == "malloc":
-                return amdahl.model_2d(x_s, held_arr, block)
-            return amdahl.model_2d(held_arr, x_s, block)
+                return allocation_model.model_2d(x_s, held_arr, block)
+            return allocation_model.model_2d(held_arr, x_s, block)
 
         n_blocks = (len(fp) - 3) // 4
-        lower = [0.0, 0.0, 0.0] + [0.0, 0.0, amdahl.EPS_S, amdahl.EPS_S] * n_blocks
-        band = amdahl.bootstrap_band(x_s, fn, fp, pcov, lower=lower)
+        lower = [0.0, 0.0, 0.0] + [0.0, 0.0, allocation_model.EPS_S, allocation_model.EPS_S] * n_blocks
+        band = allocation_model.bootstrap_band(x_s, fn, fp, pcov, lower=lower)
         if band is not None:
             cluster.ax.fill_between(x_ns, band[0], band[1], color=cluster.series_colors[key], alpha=0.15)
     cluster.ax.plot(x_ns, model, color=cluster.series_colors[key], linewidth=2.4, alpha=0.9, label="shared fit")
@@ -445,8 +449,8 @@ def draw_fit_2d(
     """Draw the 2-D fit of one curve and its two A/f gap markers.
 
     The solid line is the full model, the dashed line the linear
-    extrapolation (both Amdahl terms at 0) and the dotted line the fit
-    with only the plotted operation's Amdahl term at 0. The gap
+    extrapolation (both saturation terms at 0) and the dotted line the fit
+    with only the plotted operation's saturation term at 0. The gap
     markers split at the dotted line: the upper part is the native
     cost of the plotted operation, the lower part the one of the held
     operation.
@@ -459,9 +463,9 @@ def draw_fit_2d(
     x_s, held_s = curve.x_s, curve.held_s
     params = curve.params
     held_arr = np.full_like(x_s, held_s)
-    lower = (0.0, 0.0, 0.0, 0.0, 0.0, amdahl.EPS_S, amdahl.EPS_S)
+    lower = (0.0, 0.0, 0.0, 0.0, 0.0, allocation_model.EPS_S, allocation_model.EPS_S)
     if curve.short == "malloc":
-        model = amdahl.model_2d(
+        model = allocation_model.model_2d(
             x_s,
             held_arr,
             (params.W, params.n_malloc, params.n_free, params.a_malloc, params.a_free, params.m0, params.f0),
@@ -470,7 +474,7 @@ def draw_fit_2d(
         dotted = linear + params.a_free * params.f0 / (held_s + params.f0)
 
         def fn_curve(p: np.ndarray) -> np.ndarray:
-            return amdahl.model_2d(x_s, held_arr, p)
+            return allocation_model.model_2d(x_s, held_arr, p)
 
         def fn_dash(p: np.ndarray) -> np.ndarray:
             return p[0] + p[1] * x_s + p[2] * held_s
@@ -478,7 +482,7 @@ def draw_fit_2d(
         def fn_dot(p: np.ndarray) -> np.ndarray:
             return p[0] + p[1] * x_s + p[2] * held_s + p[4] * p[6] / (held_s + p[6])
     else:
-        model = amdahl.model_2d(
+        model = allocation_model.model_2d(
             held_arr,
             x_s,
             (params.W, params.n_malloc, params.n_free, params.a_malloc, params.a_free, params.m0, params.f0),
@@ -487,7 +491,7 @@ def draw_fit_2d(
         dotted = linear + params.a_malloc * params.m0 / (held_s + params.m0)
 
         def fn_curve(p: np.ndarray) -> np.ndarray:
-            return amdahl.model_2d(held_arr, x_s, p)
+            return allocation_model.model_2d(held_arr, x_s, p)
 
         def fn_dash(p: np.ndarray) -> np.ndarray:
             return p[0] + p[2] * x_s + p[1] * held_s
@@ -527,12 +531,12 @@ def draw_fit_1d(
     """
     x_s, x_ns = curve.x_s, curve.x_ns
     x0, params, color = curve.x0, curve.params, curve.color
-    lower = (0.0, 0.0, 0.0, amdahl.EPS_S)
-    model = amdahl.model_1d(x_s, params.W, params.N, params.A, params.s0)
+    lower = (0.0, 0.0, 0.0, allocation_model.EPS_S)
+    model = allocation_model.model_1d(x_s, params.W, params.N, params.A, params.s0)
     linear = params.W + params.N * x_s
 
     def fn_curve(p: np.ndarray) -> np.ndarray:
-        return amdahl.model_1d(x_s, p[0], p[1], p[2], p[3])
+        return allocation_model.model_1d(x_s, p[0], p[1], p[2], p[3])
 
     def fn_dash(p: np.ndarray) -> np.ndarray:
         return p[0] + p[1] * x_s
@@ -568,7 +572,7 @@ def draw_fit_curves(curve: Curve) -> bool:
         # the data's error bars. No covariance -> no sleeve.
         if curve.params.cov is None:
             return
-        band = amdahl.bootstrap_band(curve.x_s, fn, curve.params.cov[0], curve.params.cov[1], lower=lower)
+        band = allocation_model.bootstrap_band(curve.x_s, fn, curve.params.cov[0], curve.params.cov[1], lower=lower)
         if band is not None:
             curve.ax.fill_between(curve.x_ns, band[0], band[1], color=curve.color, alpha=0.3)
 
@@ -655,7 +659,7 @@ def draw_series(cluster: Cluster, result: pd.DataFrame, name: tuple) -> bool:
     if params is not None:
         has_2d = draw_model_lines(cluster, x, cluster.series_colors[key], params, float(name[5]) * 1e-9)
     # The combined fit of the scenario (shared W and call counts, this
-    # algorithm's Amdahl terms) is drawn over the same x range.
+    # algorithm's saturation terms) is drawn over the same x range.
     shared = cluster.shared_fits.get(_group_key(name[:5]))
     if shared is not None:
         draw_shared_fit(cluster, x, key, shared)

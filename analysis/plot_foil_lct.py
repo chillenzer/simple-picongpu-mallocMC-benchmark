@@ -5,9 +5,9 @@ SPDX-License-Identifier: MIT
 
 Reads `output/results.h5` (the output of `compute_results.py`) and draws
 the paper bar chart of the original three-algorithm comparison: the
-no-delay FoilLCT runs of every hardware, median with IQR error bar, one
+zero-delay FoilLCT runs of every hardware, median with IQR error bar, one
 bar per allocator (in the file's `algorithm_order`). The chart's
-significance metadata (Kruskal p-value) is in the results file's `foil`
+significance test (Kruskal p-value) is stored in the results file's `foil`
 and `foil_pvalue` tables; `summarize_results.py` prints it. Saved to
 `figures/foil_lct.pdf`.
 """
@@ -87,7 +87,7 @@ def main(*, show: bool = False, results: Path = RESULTS) -> int:
         algorithms = algorithm_order(file)
     foil = runs[no_delay_mask(runs)]
     if not len(foil[foil["setup"] == "FoilLCT"]):
-        print("no no-delay FoilLCT runs in the results file", file=sys.stderr)
+        print("no zero-delay FoilLCT runs in the results file", file=sys.stderr)
         return 1
     FIGURES.mkdir(exist_ok=True)
     fig = make_figure(runs, algorithms)
@@ -100,7 +100,7 @@ def main(*, show: bool = False, results: Path = RESULTS) -> int:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="The FoilLCT bar chart of the no-delay runs from output/results.h5 (figures/foil_lct.pdf)."
+        description="The FoilLCT bar chart of the zero-delay runs from output/results.h5 (figures/foil_lct.pdf)."
     )
     parser.add_argument(
         "--show",
