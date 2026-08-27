@@ -13,6 +13,9 @@ FILENAME="$FOLDER/run_$(date --rfc-3339=seconds | sed 's/ /_/g').txt"
 mkdir -p "$FOLDER"
 
 {
+  # The machine-readable provenance line (schema 1, kind "setup"); the
+  # analysis skips session logs.
+  python3 logmeta.py setup --machine "$MACHINE"
   echo "========================"
   echo "Logging environment"
   echo "========================"

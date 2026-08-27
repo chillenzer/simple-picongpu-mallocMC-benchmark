@@ -30,10 +30,17 @@
 #    The stamps depend only on the example's flags file, so rebuilding the
 #    binaries never invalidates finished runs (and `make clean` /
 #    `distclean` do not touch run-stamps/). Every run gets one
-#    self-contained log (run_<machine>_<Ex>_<Algo>_m<M>_f<F>_r<I>_<time>.txt)
-#    in the machine's output directory: a metadata header (machine, commit,
-#    the pinned dependency hashes, the slurm job when running under slurm,
-#    the sha256 of the binary used) followed by the run's full output.
+#    self-contained log per grid run (one line of the example's flags
+#    file), run_<machine>_<Ex>_<Algo>_m<M>_f<F>_r<I>_<line-sha8>_<time>.txt
+#    in the machine's output directory: a human one-liner `# run:` line,
+#    the self-describing `# metadata:` JSON line emitted by logmeta.py
+#    (machine, commit, the pinned dependency hashes, the slurm job when
+#    running under slurm, the sha256 of the binary used, the build facts
+#    of the binary's tree, the host hardware), and that grid run's full
+#    output. The logs of an earlier attempt of the same (combination,
+#    repetition) are removed before re-running, so a resumed series never
+#    carries duplicates, and the stamp content lists every log path of
+#    the run.
 #
 # 3. The analysis driver: builds the benchmark numbers (output/results.h5)
 #    and the figures (figures/) from the run logs. The runs come from two
@@ -229,7 +236,8 @@ $(foreach p,$(PAIRS),$(eval $(call pair_rules,$(firstword $(subst /, ,$(p))),$(l
 # when REPEATS is finished, every build has finished it.
 #
 # The stamp is the record that the run happened (its content is the run's
-# log), and it is what makes an interrupted series resumable. Its only
+# log paths, one per line), and it is what makes an interrupted series
+# resumable. Its only
 # prerequisite is the example's flags file: editing flags/<Ex>.flags
 # invalidates exactly that example's stamped runs, and nothing that
 # `make build` touches (pins, profile, toolchain, a rebuild) ever

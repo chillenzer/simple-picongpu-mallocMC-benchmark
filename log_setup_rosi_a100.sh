@@ -18,6 +18,10 @@ FILENAME="$FOLDER/setup_$(date --rfc-3339=seconds | sed 's/ /_/g').txt"
 # fully clean run.
 mkdir -p "$FOLDER"
 
+# The machine-readable provenance line (schema 1, kind "setup"); the
+# analysis skips session logs.
+python3 logmeta.py setup --machine "$MACHINE" >>"$FILENAME"
+
 echo "========================" | tee -a "$FILENAME"
 echo "Loading environment" | tee -a "$FILENAME"
 echo "========================" | tee -a "$FILENAME"

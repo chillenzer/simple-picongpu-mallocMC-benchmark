@@ -84,10 +84,13 @@ The Makefile pins the dependency versions (the `dependencies` section of
   The stamps depend only on the example's flags file: rebuilding the
   binaries never invalidates finished runs, and `make clean` / `distclean`
   do not touch `run-stamps/` (`make clean-runs [MACHINE=<m>]` does). Each
-  run gets one self-contained log in the machine's output directory (a
-  metadata header — machine, commit, the pinned dependency hashes, the
-  slurm job when running under slurm, and the sha256 of the binary used —
-  plus the run's full output). The analysis driver builds the numbers and
+   run gets one self-contained log per grid run (one line of the example's
+   flags file) in the machine's output directory: a human one-liner `# run:`
+   line, the self-describing `# metadata:` JSON line (machine, commit, the
+   pinned dependency hashes, the slurm job when running under slurm, the
+   sha256 of the binary used, the build facts of the binary's tree, the
+   host hardware), and that grid run's full output. The analysis driver
+   builds the numbers and
   figures: `make` (the default goal) makes all figures plus the summary
   tables, `make results` only rebuilds `output/results.h5` from the run
   logs, `make summary` only prints the tables, and a single figure is built
@@ -97,12 +100,21 @@ The Makefile pins the dependency versions (the `dependencies` section of
 - `run_folder.sh` — runs one already-built example folder, once per flag
   line; takes optional fourth (malloc delay, default `0`) and fifth (free
   delay, default `0`) arguments in nanoseconds, passed via the
-  `MALLOCMC_MALLOC_DELAY` / `MALLOCMC_FREE_DELAY` environment variables.
+  `MALLOCMC_MALLOC_DELAY` / `MALLOCMC_FREE_DELAY` environment variables,
+  and an optional sixth argument that selects one flags-file line
+  (1-based), so a per-grid log records one grid run.
+- `logmeta.py` — emits the self-describing `# metadata:` JSON line
+  (schema 1) of the run and session logs; reads the dependency pins from
+  `config.json`, the build facts from the binary's own `CMakeCache.txt`,
+  and the host hardware; every fact is best effort ("unavailable"
+  placeholders, never an error).
 - `log_{setup,run}_<machine>.sh` — per-machine launchers (hal, rosi,
   rosi-a100): log the environment, load the machine's modules (setup), and
   run `make build` / `make runs MACHINE=<machine>` with the machine's
   profile from the `machines` table in `config.json`, writing the session
-  log to the machine's output directory.
+  log to the machine's output directory (each such log opens with a
+  machine-readable `# metadata:` line, kind `setup`, that the analysis
+  skips).
 - `profiles/` — HPC environment profiles (module/spack setup, `PIC_BACKEND`,
   `PICSRC`). One per machine.
 - `flags/` — one `picongpu` command line per benchmark run, per example.
@@ -224,16 +236,22 @@ python3 config.py list run-matrix
    `config.json`: every flag line of the example is run as
    `MALLOCMC_MALLOC_DELAY=<M> MALLOCMC_FREE_DELAY=<F> bin/picongpu ...` from
    `build/<Ex>/<Algo>/` (via `run_folder.sh`), in sweep order (example,
-   algorithm, repetition, then the delay combination). Each run writes one
-   self-contained
-   log `run_<machine>_<Ex>_<Algo>_m<M>_f<F>_r<I>_<time>.txt` to the machine's
-   output directory (metadata header: machine, commit, the pinned
-   dependencies, the slurm job id when running under slurm, and the sha256
-   of the binary used; then the run's full output, including the
-   `calculation ... simulation time:` line). Each finished run stamps
-   `run-stamps/<machine>/<Ex>/<Algo>/<M>_<F>/rep-<I>.stamp` (its content:
-   the log path), so an interrupted series resumes where it stopped, and a
-   rebuild never invalidates finished runs. The launchers
+    algorithm, repetition, then the delay combination). Each run writes one
+    self-contained log per grid run (one line of the example's flags
+    file), `run_<machine>_<Ex>_<Algo>_m<M>_f<F>_r<I>_<line-sha8>_<time>.txt`,
+    to the machine's output directory: a human one-liner `# run:` line, the
+    self-describing `# metadata:` JSON line (machine, commit, the pinned
+    dependencies, the slurm job id when running under slurm, the sha256 of
+    the binary used, the build facts read from the binary's
+    `CMakeCache.txt`, the host hardware), and that grid run's output
+    (including the `calculation ... simulation time:` line). The logs of an
+    earlier attempt of the same (combination, repetition) are removed
+    first, so an interrupted and resumed series never carries duplicates.
+    Each finished run stamps
+    `run-stamps/<machine>/<Ex>/<Algo>/<M>_<F>/rep-<I>.stamp` (its content:
+    the run's log paths, one per line), so an interrupted series resumes
+    where it stopped, and a rebuild never invalidates finished runs. The
+    launchers
    `log_run_<machine>.sh` do this with a session log (environment block +
    progress) on top; the rosi ones take the repetition number as their
    first argument (`sbatch log_run_rosi.sh 1`, with `REPEATS` in the
