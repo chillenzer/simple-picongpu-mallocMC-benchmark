@@ -89,7 +89,8 @@ The Makefile pins the dependency versions (the `dependencies` section of
    line, the self-describing `# metadata:` JSON line (machine, commit, the
    pinned dependency hashes, the slurm job when running under slurm, the
    sha256 of the binary used, the build facts of the binary's tree, the
-   host hardware), and that grid run's full output. Runs are append-only:
+   host hardware and the user the run happens as), and that grid run's
+   full output. Runs are append-only:
    re-running a (combination, repetition) writes a new vintage of the logs
    next to the older ones — nothing is ever removed — and the stamp
    content names the log paths of the current vintage, which the analysis
@@ -109,10 +110,10 @@ The Makefile pins the dependency versions (the `dependencies` section of
   (1-based), so a per-grid log records one grid run.
 - `logmeta.py` — emits the self-describing `# metadata:` JSON line
   (schema 1) of the run and session logs; reads the dependency pins from
-  `config.json`, the build facts from the binary's own `CMakeCache.txt`,
-  and the host hardware (the GPU names, the driver version, the CPU
-  model, the operating system); every fact is best effort ("unavailable"
-  placeholders, never an error).
+  `config.json`, the user the run happens as, the build facts from the
+  binary's own `CMakeCache.txt`, and the host hardware (the GPU names,
+  the driver version, the CPU model, the operating system); every fact is
+  best effort ("unavailable" placeholders, never an error).
 - `log_{setup,run}_<machine>.sh` — per-machine launchers (hal, rosi,
   rosi-a100): log the environment, load the machine's modules (setup), and
   run `make build` / `make runs MACHINE=<machine>` with the machine's
@@ -252,7 +253,8 @@ python3 config.py list run-matrix
     self-describing `# metadata:` JSON line (machine, commit, the pinned
     dependencies, the slurm job id when running under slurm, the sha256 of
     the binary used, the build facts read from the binary's
-    `CMakeCache.txt`, the host hardware), and that grid run's output
+    `CMakeCache.txt`, the host hardware and the user the run happens as),
+    and that grid run's output
     (including the `calculation ... simulation time:` line). Runs are
     append-only: an earlier attempt of the same (combination, repetition)
     keeps its logs, the re-run writes a new vintage next to them, and no
