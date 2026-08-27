@@ -26,7 +26,8 @@
 #      make clean-runs [MACHINE=hal]                  # forget finished runs
 #
 #    Each finished (example, algorithm, combination, repetition) writes a
-#    stamp under run-stamps/, which makes an interrupted series resumable.
+#    stamp under run-stamps/, which makes an interrupted run series (one
+#    `make runs` invocation) resumable.
 #    The stamps depend only on the example's flags file, so rebuilding the
 #    binaries never invalidates finished runs (and `make clean` /
 #    `distclean` do not touch run-stamps/). Every run gets one

@@ -16,7 +16,8 @@ flags-file line and a short hash of it), the host and the repository
 state, the dependency pins of `config.json`, the sha256 of the binary
 used, the build facts of the tree the binary was built from (read from
 its `CMakeCache.txt`, the same tree `make clean` removes with the
-binary), and a hardware snapshot (GPU, CPU, OS). The `setup` mode marks
+binary), and a hardware snapshot (GPU, its driver version, CPU, and the
+OS). The `setup` mode marks
 a session log (build or run launch); the analysis skips such files.
 Every single fact is best effort: an unavailable value is the string
 "unavailable", never an error, so a metadata problem can never block a

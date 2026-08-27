@@ -3,12 +3,14 @@
 SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
 SPDX-License-Identifier: MIT
 
-Reads `output/results.h5` (the output of `compute_results.py`) and prints
-the summary tables: per machine, the parsed runs (with `--raw`) and the
-group runtime statistics; the allocation-model fit tables, a comparison of the
-shared-parameter (combined) fits against the individual fits, and the
-fraction summary; the no-delay runtimes; and the FoilLCT /
-KelvinHelmholtz figure metadata.
+Reads `output/results.h5` (the output of `compute_results.py`) and
+prints the total run count with its superseded share
+(`Runs: N (M superseded)`) and, when any, the excluded archived runs;
+then the summary tables: per machine, the parsed runs (with `--raw`) and
+the group runtime statistics; the allocation-model fit tables, a
+comparison of the shared-parameter (combined) fits against the individual
+fits, and the fraction summary; the No-delay runtimes; and the FoilLCT /
+KelvinHelmholtz figure statistics.
 """
 
 from __future__ import annotations
