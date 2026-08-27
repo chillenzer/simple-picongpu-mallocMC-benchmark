@@ -30,25 +30,32 @@
 #    The stamps depend only on the example's flags file, so rebuilding the
 #    binaries never invalidates finished runs (and `make clean` /
 #    `distclean` do not touch run-stamps/). Every run gets one
-#    self-contained log (run_<machine>_<Ex>_<Algo>_m<M>_f<F>_r<I>_<time>.txt)
-#    in the machine's output directory: a metadata header (machine, the
-#    start datetime, the commit, the pinned and the checked-out dependency
-#    hashes, the sha256 of the binary used, the host, the slurm job and
-#    node list when running under slurm, the GPU and its driver, the loaded
-#    modules, the compiler) followed by the run's full output. The
-#    checked-out hashes come from build/<Ex>/<Algo>/.source-stamp, which
-#    the build writes whenever it (re)builds the binary.
+#    self-contained log per grid run (one line of the example's flags
+#    file), run_<machine>_<Ex>_<Algo>_m<M>_f<F>_r<I>_<line-sha8>_<time>.txt
+#    in the machine's output directory: a human one-liner `# run:` line,
+#    the self-describing `# metadata:` JSON line emitted by logmeta.py
+#    (machine, commit, the pinned dependency hashes, the slurm job when
+#    running under slurm, the sha256 of the binary used, the build facts
+#    of the binary's tree, the host hardware), and that grid run's full
+#    output. The logs of an earlier attempt of the same (combination,
+#    repetition) are removed before re-running, so a resumed series never
+#    carries duplicates, and the stamp content lists every log path of
+#    the run.
 #
 # 3. The analysis driver: builds the benchmark numbers (output/results.h5)
-#    and the figures (figures/) from the run logs. The numbers are rebuilt
-#    from the run logs on every invocation: make deliberately does not list
-#    files of the output/ tree as prerequisites, because their names are
-#    machine-specific (run-all job names, timestamps) and not safe to parse
-#    as make dependencies. Every figure is independent: build any one of
-#    them by its file name, e.g. `make figures/foil_lct.pdf` or
-#    `make figures/sweeps-hal.pdf`, or all of them with `make` (the default
-#    goal, which also prints the summary tables). Rebuild only the numbers
-#    with `make results`.
+#    and the figures (figures/) from the run logs. The runs come from two
+#    sources: the sweep machines' output directories (config machines
+#    table, the new-format logs with the `# metadata:` JSON line) and the
+#    frozen legacy table legacy/legacy_results.h5, built once with
+#    `make legacy-results` from the legacy/ tree (see legacy/README.md).
+#    The numbers are rebuilt from both on every invocation: make
+#    deliberately does not list files of the output/ or legacy/ data as
+#    prerequisites, because their names are machine-specific (run names,
+#    timestamps) and not safe to parse as make dependencies. Every figure
+#    is independent: build any one of them by its file name, e.g.
+#    `make figures/foil_lct.pdf` or `make figures/sweeps-hal.pdf`, or all
+#    of them with `make` (the default goal, which also prints the summary
+#    tables). Rebuild only the numbers with `make results`.
 #
 # `make clean` removes everything generated (build/, figures/ and
 # output/results.h5); `make distclean` removes src/ as well. Neither touches
@@ -168,7 +175,7 @@ endif
 
 .PHONY: all build check clean distclean results summary figures \
 	figures-sweeps figures-shared picongpu-src mallocmc-src env-check env \
-	runs full clean-runs
+	runs full clean-runs legacy-results legacy-verify
 
 # --- per (example, algorithm) harness targets ------------------------------
 
@@ -215,13 +222,6 @@ build/$(3)/bin/picongpu: build/$(3)/.input-stamp $(MALLOCMC_STAMP) $(PROFILE_ENV
 	cd "build/$(3)"
 	export CMAKE_PREFIX_PATH="$(MALLOCMC_ABS):$${CMAKE_PREFIX_PATH:-}"
 	pic-build -c "$(FLAGS)"
-	# The actually checked-out source hashes of the (just) built binary:
-	# run_stamp.sh records them in the log header (the `# source:` line).
-	# (The rule body lives in a define/eval, so the shell's dollars need
-	# four of them to survive both make expansions.)
-	@printf 'picongpu %s\nmallocmc %s\n' \
-	  "$$$$(git -C "$(PICONGPU_ABS)" rev-parse HEAD)" \
-	  "$$$$(git -C "$(MALLOCMC_ABS)" rev-parse HEAD)" >".source-stamp"
 endef
 
 $(foreach p,$(PAIRS),$(eval $(call pair_rules,$(firstword $(subst /, ,$(p))),$(lastword $(subst /, ,$(p))),$(p))))
@@ -236,7 +236,8 @@ $(foreach p,$(PAIRS),$(eval $(call pair_rules,$(firstword $(subst /, ,$(p))),$(l
 # when REPEATS is finished, every build has finished it.
 #
 # The stamp is the record that the run happened (its content is the run's
-# log), and it is what makes an interrupted series resumable. Its only
+# log paths, one per line), and it is what makes an interrupted series
+# resumable. Its only
 # prerequisite is the example's flags file: editing flags/<Ex>.flags
 # invalidates exactly that example's stamped runs, and nothing that
 # `make build` touches (pins, profile, toolchain, a rebuild) ever
@@ -412,6 +413,17 @@ else
 	@echo "           ENV_TOOL=micromamba / ENV_TOOL=conda."
 	@exit 1
 endif
+
+# Freeze the pre-redesign benchmark logs once into legacy/legacy_results.h5
+# (see legacy/README.md). The raw logs and the frozen table are git-ignored;
+# only the legacy/ scripts and docs are committed. Re-running is safe: the
+# table is rebuilt from legacy/logs/ every time, and `legacy-verify` reports
+# if any input file has changed since the freeze.
+legacy-results:
+	$(PY) legacy/make_legacy_results.py
+
+legacy-verify:
+	$(PY) legacy/make_legacy_results.py --check
 
 results:
 	$(PY) analysis/compute_results.py --output $(RESULTS)

@@ -12,6 +12,10 @@ FOLDER=$(python3 config.py get "machines.$MACHINE.output")
 FILENAME="$FOLDER/run_$(date --rfc-3339=seconds | sed 's/ /_/g')_${SLURM_JOB_ID:-local}.txt"
 mkdir -p "$FOLDER"
 
+# The machine-readable provenance line (schema 1, kind "setup"); the
+# analysis skips session logs.
+python3 logmeta.py setup --machine "$MACHINE" >>"$FILENAME"
+
 echo "========================" | tee -a "$FILENAME"
 echo "Logging environment" | tee -a "$FILENAME"
 echo "========================" | tee -a "$FILENAME"

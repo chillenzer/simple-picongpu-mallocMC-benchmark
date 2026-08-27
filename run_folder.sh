@@ -19,6 +19,9 @@ esac
 PROFILE=$3
 MALLOC_DELAY=${4:-0}
 FREE_DELAY=${5:-0}
+# An optional 6th argument selects one line of the flags file (1-based):
+# the per-grid logs of run_stamp.sh each record one grid run only.
+LINE=${6:-}
 declare -a FLAGS
 
 # The profile path is a command-line argument, so shellcheck cannot follow it.
@@ -35,7 +38,12 @@ while IFS="" read -r line || [ -n "$line" ]; do
   FLAGS+=("$line")
 done <"$FLAGSFILE"
 
-for FLAG in "${FLAGS[@]}"; do
+for INDEX in "${!FLAGS[@]}"; do
+  LINE_NO=$((INDEX + 1))
+  if [ -n "$LINE" ] && [ "$LINE_NO" -ne "$LINE" ]; then
+    continue
+  fi
+  FLAG=${FLAGS[INDEX]}
   # Each flags-file line is one full command line and must be word-split
   # into picongpu's arguments, so the unquoted expansion is intentional.
   # shellcheck disable=SC2086

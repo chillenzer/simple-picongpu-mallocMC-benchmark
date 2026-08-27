@@ -9,15 +9,20 @@
 #
 #   run_stamp.sh <machine> <repeats> <example> <algorithm> <malloc-ns> <free-ns> <rep>
 #
-# The run is recorded in one self-contained log in the machine's output
-# directory (a metadata header - machine, the start datetime, the commit,
-# the pinned and the checked-out dependency hashes, the sha256 of the
-# binary used, the host, the slurm job and node list when running under
-# slurm, the GPU and its driver, the loaded modules and the compiler -
-# followed by the run's full output), and its success is stamped in
+# The run is recorded in one self-contained log per grid run (one line of
+# the flags file) in the machine's output directory:
+#
+#   <outdir>/run_<machine>_<Ex>_<Algo>_m<M>_f<F>_r<rep>_<line-sha8>_<time>.txt
+#
+# Each log carries a two-line header (a human one-liner `# run:` line and
+# the self-describing `# metadata:` JSON line, emitted by logmeta.py)
+# followed by that grid run's `set -x` trace. Before writing, the logs of
+# an earlier attempt of this (combination, repetition) are removed, so an
+# interrupted and resumed series never leaves duplicate records. Its
+# success is stamped in
 # run-stamps/<machine>/<example>/<algorithm>/<malloc>_<free>/rep-<rep>.stamp
-# (content: the log path). An existing stamp is what makes `make runs`
-# skip the run.
+# (content: one log path per line). An existing stamp is what makes
+# `make runs` skip the run.
 
 set -e
 
@@ -41,57 +46,42 @@ fi
 
 PROFILE=$(python3 config.py get "machines.${MACHINE}.profile")
 OUTDIR=$(python3 config.py get "machines.${MACHINE}.output")
-# The pins of config.json, not the checkout: they are what the binary was
-# built from (the `# source:` line of the header, when the build wrote one,
-# records the actually checked-out hashes instead).
-PIC_PIN=$(python3 config.py get dependencies.picongpu.hash)
-MC_PIN=$(python3 config.py get dependencies.mallocmc.hash)
-SOURCE_STAMP="build/${EXAMPLE}/${ALGORITHM}/.source-stamp"
-
-# The machine's toolchain (modules, spack packages) is loaded once here, so
-# the header records the compiler and modules the run will use; the
-# re-source by run_folder.sh then only re-affirms the same environment.
-# shellcheck disable=SC1090
-source "$PROFILE"
-if command -v "${CXX:-cc}" >/dev/null 2>&1; then
-  CXX_FIRST="$(${CXX:-cc} --version 2>/dev/null | head -n 1 || true)"
-else
-  CXX_FIRST=unavailable
-fi
-GPU_INFO="$(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null | tr '\n' ', ' | sed 's/, $//')"
+FLAGSFILE="flags/${EXAMPLE}.flags"
 
 mkdir -p "$OUTDIR"
-LOG="$OUTDIR/run_${MACHINE}_${EXAMPLE}_${ALGORITHM}_m${MALLOC_DELAY}_f${FREE_DELAY}_r${REP}_$(date --rfc-3339=seconds | sed 's/ /_/g').txt"
+PREFIX="run_${MACHINE}_${EXAMPLE}_${ALGORITHM}_m${MALLOC_DELAY}_f${FREE_DELAY}_r${REP}_"
 
-echo "Running ${EXAMPLE}/${ALGORITHM} m=${MALLOC_DELAY} ns, f=${FREE_DELAY} ns, rep ${REP}/${REPEATS} [${MACHINE}]"
-echo "  log: $LOG"
+# An earlier attempt of this (combination, repetition) leaves its logs
+# behind when it was interrupted, or the run is repeated after `make
+# clean-runs`; remove them so the series never carries duplicate records.
+# The pattern matches the pre-redesign naming as well (it has no
+# <line-sha8> component).
+rm -f "${OUTDIR}/${PREFIX}"*
 
-{
-  echo "# run: ${EXAMPLE}/${ALGORITHM}, malloc delay ${MALLOC_DELAY} ns, free delay ${FREE_DELAY} ns, rep ${REP}/${REPEATS} [${MACHINE}]"
-  echo "# machine: ${MACHINE}"
-  echo "# started: $(date --rfc-3339=seconds)"
-  echo "# commit: $(git rev-parse HEAD 2>/dev/null || echo unavailable)"
-  echo "# picongpu: ${PIC_PIN:0:8} (pinned)"
-  echo "# mallocmc: ${MC_PIN:0:8} (pinned)"
-  if [ -f "$SOURCE_STAMP" ]; then
-    echo "# source: $(tr '\n' ' ' <"$SOURCE_STAMP")"
-  fi
-  echo "# binary: $(sha256sum "$BIN" | awk '{print $1}')  $BIN"
-  echo "# host: $(hostname 2>/dev/null || echo unavailable)"
-  if [ -n "${SLURM_JOB_ID:-}" ]; then
-    echo "# slurm_job: ${SLURM_JOB_ID}"
-    if [ -n "${SLURM_JOB_NODELIST:-}" ]; then
-      echo "# slurm_nodes: ${SLURM_JOB_NODELIST}"
-    fi
-  fi
-  echo "# gpu: ${GPU_INFO:-unavailable}"
-  echo "# modules: ${LOADEDMODULES:-unavailable}"
-  echo "# cxx: ${CXX_FIRST}"
-  echo
-} >"$LOG"
+# One log per grid run (one line of the flags file); the line numbers
+# mirror run_folder.sh's loop over the same file.
+mapfile -t LINES <"$FLAGSFILE"
+TOTAL=${#LINES[@]}
+LOGS=()
 
-bash run_folder.sh "build/${EXAMPLE}/${ALGORITHM}" "flags/${EXAMPLE}.flags" "$PROFILE" "$MALLOC_DELAY" "$FREE_DELAY" >>"$LOG" 2>&1
+for i in "${!LINES[@]}"; do
+  LINE_NO=$((i + 1))
+  LINE_SHA=$(printf '%s' "${LINES[i]}" | sha256sum | awk '{print $1}' | cut -c1-8)
+  LOG="$OUTDIR/${PREFIX}${LINE_SHA}_$(date --rfc-3339=seconds | sed 's/ /_/g').txt"
+  LOGS+=("$LOG")
+  echo "Running ${EXAMPLE}/${ALGORITHM} m=${MALLOC_DELAY} ns, f=${FREE_DELAY} ns, rep ${REP}/${REPEATS} line ${LINE_NO}/${TOTAL} [${MACHINE}]"
+  echo "  log: $LOG"
+  {
+    echo "# run: ${EXAMPLE}/${ALGORITHM} m=${MALLOC_DELAY} ns f=${FREE_DELAY} ns rep ${REP}/${REPEATS} line ${LINE_NO}/${TOTAL} [${MACHINE}]"
+    python3 logmeta.py run --machine "$MACHINE" --repeats "$REPEATS" --rep "$REP" \
+      --example "$EXAMPLE" --algorithm "$ALGORITHM" \
+      --malloc-delay "$MALLOC_DELAY" --free-delay "$FREE_DELAY" \
+      --line "$LINE_NO" --flags "$FLAGSFILE" --binary "$BIN"
+    echo
+  } >"$LOG"
+  bash run_folder.sh "build/${EXAMPLE}/${ALGORITHM}" "$FLAGSFILE" "$PROFILE" "$MALLOC_DELAY" "$FREE_DELAY" "$LINE_NO" >>"$LOG" 2>&1
+done
 
 STAMP_DIR="run-stamps/${MACHINE}/${EXAMPLE}/${ALGORITHM}/${MALLOC_DELAY}_${FREE_DELAY}"
 mkdir -p "$STAMP_DIR"
-printf '%s\n' "$LOG" >"$STAMP_DIR/rep-${REP}.stamp"
+printf '%s\n' "${LOGS[@]}" >"$STAMP_DIR/rep-${REP}.stamp"
