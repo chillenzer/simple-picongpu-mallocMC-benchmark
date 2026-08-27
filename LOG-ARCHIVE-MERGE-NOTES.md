@@ -94,6 +94,48 @@ constants), `analysis/run_logs.py` (records), `analysis/compute_results.py`
 
 ## Status
 
-- [ ] Commit 1: append-only harness + `sessions/`.
-- [ ] Commit 2: `superseded` flag + the seven metadata columns.
-- [ ] Commit 3: closing status report (this file, updated at the end).
+### Done
+
+- [x] Append-only harness (`run_stamp.sh` no longer removes the earlier
+  vintages, the same-second name collision takes a `.1`, `.2`, ...
+  suffix) + session logs to `<output dir>/sessions/` (six launchers).
+- [x] `superseded` flag (stamp-derived, `RUN_VINTAGE_COLUMNS`) + the
+  seven metadata columns (`log`, `nominal_rep` via
+  `RUN_NOMINAL_COLUMNS`, `flag_sha`, `hw_os`, `cxx_flags`,
+  `cuda_flags`, `build_type` in `RUN_SOURCE_COLUMNS`).
+- [x] The frozen legacy rows default to the log-derived columns
+  (empty strings / no nominal repetition) and `superseded = 0`,
+  applied to the legacy frame before the runs-table concat.
+- [x] The summary line `Runs: N (M superseded)` in
+  `summarize_results.py`; README (analysis and `make runs` sections)
+  documents the vintage model, the columns and the
+  `runs[runs["superseded"] == 0]` filter.
+
+### Closing report
+
+The work is complete on `picongpu-allocation-time` on top of
+`d12a58a`. Gates: with the sweep machines' output directories empty,
+every pre-existing column of every results table is identical (values
+and dtypes) to the `d12a58a` baseline after a re-freeze of the local
+legacy table with `make legacy-results`; only the appended `runs`
+columns, one summary line and the re-padded no-delay table are new. A
+disposable fixture (stub `picongpu` binary emitting the real
+`initialization time:` / `calculation ... simulation time:` /
+`full simulation time:` lines, a git repository, a flags file with
+`-s`) was driven through two plain re-runs and three vintages of one
+identity: the older vintages are all parsed and stay in the `runs`
+table with `superseded = 1` (their `rep` numbers them in file order
+behind the current vintage, which is the stamp's only entry,
+`superseded = 0`); a pre-seeded same-second log name is not clobbered
+(the new log takes the `.1` suffix); a session log in `sessions/` is
+not parsed; a flags edit changes `flag_sha` on the re-run's rows while
+`binary_sha256` / `commit` stay stable, and a stub-binary change
+changes `binary_sha256`. Nothing downstream filters superseded rows;
+the numbers of the current vintages are unchanged by the work.
+
+Remaining for the merge window: none of this work's decisions blocks
+other changes to `analysis/` or the launchers; the one behavioral
+contract to respect when touching the run logs is that make never
+removes or overwrites a run log (the analysis keys the vintage state
+on the file names and the stamps). **Delete this file when the work
+is merged.**

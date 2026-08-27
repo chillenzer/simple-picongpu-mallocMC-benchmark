@@ -333,17 +333,33 @@ figures*, joined by the single HDF5 file `output/results.h5`:
   two timing metrics the old record set dropped (`full_runtime_s`,
   `init_time_s`, after the runtime and before the repetition number) and
   the number of simulation steps the run carried, `sim_steps`, plus the
-  provenance of the log file the run came from (`started_utc`, `commit`,
-  `binary_sha256`, `picongpu`, `mallocmc`, `gpu`, `gpu_driver`,
-  `cuda_version`, `cpu`, `compiler`, `host`, `slurm_job`, at the end; per
-  log, repeated on all of its runs, empty where the log or its metadata
-  carries nothing). The new-format runs take the values from their
-  `# metadata:` line and their trace, the frozen legacy runs from
-  `legacy/legacy_results.h5`. The single source of truth for the column
-  names is `analysis/results_io.py` (`RUN_METRIC_COLUMNS`,
-  `RUN_SOURCE_COLUMNS`).
+   provenance of the log file the run came from (`started_utc`, `commit`,
+   `binary_sha256`, `picongpu`, `mallocmc`, `gpu`, `gpu_driver`,
+   `cuda_version`, `cpu`, `compiler`, `host`, `slurm_job`; per log,
+   repeated on all of its runs, empty where the log or its metadata
+   carries nothing), the log's own file name (`log`), the repetition
+   number the run declared (`nominal_rep`: a re-run of one repetition is
+   distinct from the repetition numbers of the series), the sha of the
+   flags-file line the run came from (`flag_sha`, the filter that
+   separates a flags-edit re-run when binary and commit are identical)
+   and the build- and host-facts the metadata records
+   (`hw_os`, `cxx_flags`, `cuda_flags`, `build_type`). Runs are
+   append-only (see the `make runs` section): a row run by an older
+   vintage of the same (machine, example, algorithm, combination,
+   repetition) carries `superseded = 1`, derived from the run stamps
+   (which name the current vintage's logs), 0 otherwise — all frozen
+   legacy runs are 0 — and nothing downstream filters those rows out:
+   the superseded vintages stay in every table and every number, and a
+   consumer that wants the current state of the world selects
+   `runs[runs["superseded"] == 0]`. The new-format runs take the values
+   from their `# metadata:` line and their trace, the frozen legacy runs
+   from `legacy/legacy_results.h5`. The single source of truth for the
+   column names is `analysis/results_io.py` (`RUN_METRIC_COLUMNS`,
+   `RUN_SOURCE_COLUMNS`, `RUN_NOMINAL_COLUMNS`, `RUN_VINTAGE_COLUMNS`).
 - `summarize_results.py` prints the summary tables from
-  `output/results.h5` (per machine: group statistics; the fits and the
+  `output/results.h5` (first the total run count with its superseded
+  share, `Runs: N (M superseded)`, and the excluded archived runs, when
+  any; then per machine: group statistics; the fits and the
   Amdahl fractions of runtime spent in allocations / frees; the combined
   (shared-parameter) fit of each multi-algorithm scenario compared
   algorithm by algorithm against the individual fits; the no-delay
