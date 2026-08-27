@@ -57,9 +57,11 @@ The Makefile pins the dependency versions (the `dependencies` section of
   builds: the `examples` and `algorithms` lists, the `delays` sweep (the
   (malloc, free) combination values, documented under
   *Changing what is benchmarked*), the pinned
-  `dependencies` and the build flags, and the per-machine `machines` table
+  `dependencies` and the build flags, the per-machine `machines` table
   (profile to source, output directory for the run logs, hardware name,
-  modules to load).
+  modules to load), and the optional `people` table (login to name and
+  ORCID iD; the harness uses it to identify the run's operator in the
+  RO-Crate metadata, and `config.py check` validates the entries).
 - `config.py` — the python3 bridge the harness uses to read
   `config.json` (`get` / `list` lookups) and to validate it (`check` also
   verifies the referenced flag, parameter, and profile files). It parses the
@@ -89,8 +91,9 @@ The Makefile pins the dependency versions (the `dependencies` section of
    line, the self-describing `# metadata:` JSON line (machine, commit, the
    pinned dependency hashes, the slurm job when running under slurm, the
    sha256 of the binary used, the build facts of the binary's tree, the
-   host hardware and the user the run happens as), and that grid run's
-   full output. Runs are append-only:
+   host hardware, the user the run happens as, and the user's ORCID iD
+   when the runner has exported `$ORCID`), and that grid run's full
+   output. Runs are append-only:
    re-running a (combination, repetition) writes a new vintage of the logs
    next to the older ones — nothing is ever removed — and the stamp
    content names the log paths of the current vintage, which the analysis
@@ -112,10 +115,11 @@ The Makefile pins the dependency versions (the `dependencies` section of
   (1-based), so a per-grid log records one grid run.
 - `logmeta.py` — emits the self-describing `# metadata:` JSON line
   (schema 1) of the run and session logs; reads the dependency pins from
-  `config.json`, the user the run happens as, the build facts from the
-  binary's own `CMakeCache.txt`, and the host hardware (the GPU names,
-  the driver version, the CPU model, the operating system); every fact is
-  best effort ("unavailable" placeholders, never an error).
+  `config.json`, the user the run happens as (and that user's ORCID iD,
+  from `$ORCID`), the build facts from the binary's own `CMakeCache.txt`,
+  and the host hardware (the GPU names, the driver version, the CPU
+  model, the operating system); every fact is best effort ("unavailable"
+  placeholders, never an error).
 - `make_rocrate.py` — generates and checks the RO-Crate metadata of the
   repository (`make rocrate`): the harness as a workflow, the benchmark
   runs as provenance, the analysis as actions (what exactly is described,
@@ -259,8 +263,9 @@ python3 config.py list run-matrix
     self-describing `# metadata:` JSON line (machine, commit, the pinned
     dependencies, the slurm job id when running under slurm, the sha256 of
     the binary used, the build facts read from the binary's
-    `CMakeCache.txt`, the host hardware and the user the run happens as),
-    and that grid run's output
+    `CMakeCache.txt`, the host hardware, the user the run happens as,
+    and the user's ORCID iD when the runner has exported `$ORCID`), and
+    that grid run's output
     (including the `calculation ... simulation time:` line). Runs are
     append-only: an earlier attempt of the same (combination, repetition)
     keeps its logs, the re-run writes a new vintage next to them, and no
@@ -500,6 +505,18 @@ repository as one research object:
 - **The analysis as actions**: one `CreateAction` for `results.h5` (from
   the run logs and the frozen legacy table, all vintages) and one per
   figure.
+- **The operator as agent**: the `agent` of every run's `CreateAction`
+  is the user the run happened as, resolved through the `people` table
+  of `config.json` (login to name and ORCID iD); a run whose own metadata
+  carries the ORCID uses that. The harness never manages ORCID: export
+  `ORCID=…` in the environment under which you launch runs (module,
+  profile, or shell) to have the persistent identifier recorded in the
+  log. Where no ORCID can be resolved, the identity degrades to the login
+  only, and `make rocrate` prints a `note:` naming the affected logins —
+  the starting point for growing the table. The root and the workflow
+  also list the configured people (with the ORCID iD as the entity's
+  identifier, so they stay identifyable beyond any cluster's login
+  scheme) as `creator`, alongside the institution.
 
 The declared conformance is RO-Crate 1.3 plus the two profile statements
 on the root data entity. The crate is deliberately *not* packaged for

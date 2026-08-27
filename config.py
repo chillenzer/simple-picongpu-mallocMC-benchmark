@@ -20,6 +20,7 @@ instead of a silently wrong benchmark run. Run it from the repository root.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -202,6 +203,36 @@ def _missing_file(path: Path, dotted: str, errors: list[str]) -> None:
         errors.append(f"{dotted}: file not found: {path}")
 
 
+def _check_people(data: dict, errors: list[str]) -> None:
+    """Validate the optional people table (login to name/orcid mappings).
+
+    Args:
+        data: the parsed configuration.
+        errors: accumulates the problems found.
+
+    """
+    people = _walk(data, "people")
+    if people is None:
+        return
+    if not isinstance(people, dict):
+        errors.append("people: must be a mapping of login to {name, orcid}")
+        return
+    for login, person in people.items():
+        if not isinstance(person, dict):
+            errors.append(f"people.{login}: must be a mapping")
+            continue
+        orcid = person.get("orcid")
+        if orcid is not None and (
+            not isinstance(orcid, str) or not re.fullmatch(r"\d{4}-\d{4}-\d{4}-\d{3}[\dX]", orcid)
+        ):
+            errors.append(f"people.{login}.orcid: must be an ORCID iD (NNNN-NNNN-NNNN-NNNC) or omitted")
+        name = person.get("name")
+        if name is not None and (not isinstance(name, str) or not name):
+            errors.append(f"people.{login}.name: must be a non-empty string or omitted")
+        if person.get("orcid") is None and person.get("name") is None:
+            errors.append(f"people.{login}: needs at least one of name, orcid")
+
+
 def _check_benchmark_files(data: dict, errors: list[str]) -> None:
     """Validate the per-example flag files and per-algorithm parameter files.
 
@@ -260,6 +291,7 @@ def _cmd_check() -> None:
     _check_run_matrix(data, errors)
     _check_build(data, errors)
     _check_machines(data, errors)
+    _check_people(data, errors)
     _check_benchmark_files(data, errors)
     if errors:
         for error in errors:

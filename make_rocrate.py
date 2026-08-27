@@ -443,12 +443,15 @@ def create_main(out: str) -> int:
     notes: list[str] = []
     run_log_ids: list[str] = []
     metadata_name = Path(out).name
+    people = config.get("people")
+    if not isinstance(people, dict):
+        people = {}
 
     _add_context(crate)
-    _add_harness(crate, commit, dirty)
-    run_action_count, superseded_count, machines_described = _add_machines(crate, config, notes, run_log_ids)
+    _add_harness(crate, commit, dirty, people)
+    run_action_count, superseded_count, machines_described = _add_machines(crate, config, notes, run_log_ids, people)
     _add_analysis(crate, run_log_ids, notes)
-    _add_root(crate, config, metadata_name)
+    _add_root(crate, config, metadata_name, people)
 
     metadata = {"@context": [CRATE_CONTEXT, WORKFLOW_RUN_CONTEXT], "@graph": crate.graph(metadata_name)}
     Path(out).write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
@@ -506,13 +509,14 @@ def _add_context(crate: Crate) -> None:
     crate.add({"@id": LICENSE, "@type": "CreativeWork", "name": "MIT License", "alternateName": "MIT"})
 
 
-def _add_harness(crate: Crate, commit: str, dirty: bool | None) -> None:
+def _add_harness(crate: Crate, commit: str, dirty: bool | None, people: dict) -> None:
     """Add the harness as a workflow: the Makefile, its steps, its parameters.
 
     Args:
         crate: the crate to add them to.
         commit: the repository's HEAD commit (the harness's version).
         dirty: the repository's dirtiness at generation time.
+        people: the config `people` table (the workflow's creators).
     """
     makefile = {
         "@id": "Makefile",
@@ -526,7 +530,7 @@ def _add_harness(crate: Crate, commit: str, dirty: bool | None) -> None:
         ),
         "programmingLanguage": ref("#gnu-make"),
         "license": ref(LICENSE),
-        "creator": ref("#hzdr"),
+        "creator": [ref(item) for item in _people_ids(crate, people)] + [ref("#hzdr")],
         "input": [ref(f"#param-{name}") for name, _, _, _ in PARAMS],
         "output": [ref("#param-run-logs"), ref("#param-results-h5"), ref("#param-figures")],
     }
@@ -612,7 +616,7 @@ def _add_harness(crate: Crate, commit: str, dirty: bool | None) -> None:
 
 
 def _add_machines(
-    crate: Crate, config: dict, notes: list[str], run_log_ids: list[str]
+    crate: Crate, config: dict, notes: list[str], run_log_ids: list[str], people: dict
 ) -> tuple[int, int, list[str]]:
     """Add one dataset, log entities and run actions per sweep machine.
 
@@ -622,6 +626,7 @@ def _add_machines(
         notes: the note lines to return to the caller (appended in place).
         run_log_ids: the run log entity ids, for the analysis action
             (appended in place).
+        people: the config `people` table (login to {name, orcid}).
 
     Returns:
         tuple: (run action count, superseded vintage count, described
@@ -629,6 +634,7 @@ def _add_machines(
     """
     run_actions = 0
     superseded = 0
+    unresolved: set[str] = set()
     machines_described: list[str] = []
     machines = config.get("machines")
     if not isinstance(machines, dict):
@@ -658,7 +664,7 @@ def _add_machines(
                 continue
             runline, metadata = header
             add_file(crate, relpath, encoding="text/plain", description=runline[len("# run: ") :])
-            action, superseded_vintage = run_action(crate, label, metadata, relpath)
+            action, superseded_vintage = run_action(crate, label, metadata, relpath, people, unresolved)
             if action is not None:
                 crate.add(action)
                 run_log_ids.append(relpath)
@@ -678,25 +684,77 @@ def _add_machines(
                 }
             )
             file_ids.append(f"{outdir}/sessions/")
-        crate.add(
-            {
-                "@id": f"{outdir}/",
-                "@type": "Dataset",
-                "name": f"{label} ({hardware}) run logs",
-                "description": (
-                    f"the {label} sweep machine's append-only grid-run logs (one self-describing log per "
-                    "grid run per (combination, repetition); a re-run adds a new vintage, nothing is "
-                    f"ever removed). {run_actions_here} run(s) described, {superseded_here} superseded "
-                    "vintage(s); a run's identity's run stamp lists its current vintage's logs."
-                ),
-                "hasPart": [ref(item) for item in file_ids],
-            }
-        )
+        dataset = {
+            "@id": f"{outdir}/",
+            "@type": "Dataset",
+            "name": f"{label} ({hardware}) run logs",
+            "description": (
+                f"the {label} sweep machine's append-only grid-run logs (one self-describing log per "
+                "grid run per (combination, repetition); a re-run adds a new vintage, nothing is "
+                f"ever removed). {run_actions_here} run(s) described, {superseded_here} superseded "
+                "vintage(s); a run's identity's run stamp lists its current vintage's logs."
+            ),
+            "hasPart": [ref(item) for item in file_ids],
+        }
         if first_meta is not None:
             _machine_entity(crate, label, hardware, first_meta)
+            dataset["mentions"] = [ref(f"#machine-{label}")]
+        crate.add(dataset)
         run_actions += run_actions_here
         superseded += superseded_here
+    if unresolved:
+        notes.append(f"no ORCID resolvable for login(s) {', '.join(sorted(unresolved))}; recorded by login only")
     return run_actions, superseded, machines_described
+
+
+def _person(crate: Crate, login: str, orcid: str | None = None, name: str | None = None) -> str:
+    """Add (or find) the Person entity of one login, and return its id.
+
+    With an ORCID iD the entity id is the ORCID URL (the dereferenceable,
+    persistent identity); without one it is the login-only fragment.
+
+    Args:
+        crate: the crate to add it to.
+        login: the login the run happened as.
+        orcid: the resolved ORCID iD, or `None`.
+        name: the display name, when known.
+
+    Returns:
+        str: the person's entity id.
+    """
+    if orcid:
+        crate_id = f"https://orcid.org/{orcid}"
+        if not crate.has(crate_id):
+            crate.add({"@id": crate_id, "@type": "Person", "name": name or login, "identifier": login})
+        return crate_id
+    crate_id = f"#user-{slug(login)}"
+    if not crate.has(crate_id):
+        crate.add({"@id": crate_id, "@type": "Person", "name": name or login})
+    return crate_id
+
+
+def _people_ids(crate: Crate, people: dict) -> list[str]:
+    """Create every configured person's entity, and return the entity ids.
+
+    Args:
+        crate: the crate to add them to.
+        people: the config `people` table (login to {name, orcid}).
+
+    Returns:
+        list: the person entity ids, in config order.
+    """
+    ids: list[str] = []
+    for login, person in people.items():
+        if not isinstance(person, dict):
+            continue
+        orcid = person.get("orcid")
+        if not isinstance(orcid, str) or not orcid:
+            orcid = None
+        name = person.get("name")
+        if not isinstance(name, str) or not name:
+            name = None
+        ids.append(_person(crate, str(login), orcid, name))
+    return ids
 
 
 def _machine_entity(crate: Crate, label: str, hardware: str, metadata: dict) -> None:
@@ -732,7 +790,9 @@ def _machine_entity(crate: Crate, label: str, hardware: str, metadata: dict) -> 
     )
 
 
-def run_action(crate: Crate, label: str, metadata: dict, relpath: str) -> tuple[dict | None, int]:
+def run_action(
+    crate: Crate, label: str, metadata: dict, relpath: str, people: dict, unresolved: set[str]
+) -> tuple[dict | None, int]:
     """Build the CreateAction of one grid-run log (and its entities).
 
     Args:
@@ -740,6 +800,9 @@ def run_action(crate: Crate, label: str, metadata: dict, relpath: str) -> tuple[
         label: the sweep machine's label.
         metadata: the log's `# metadata:` dict (schema 1, kind `run`).
         relpath: the log's path relative to the repository root.
+        people: the config `people` table (login to {name, orcid}).
+        unresolved: the logins without a resolvable ORCID (appended in
+            place; the caller turns them into a note line).
 
     Returns:
         tuple: (the action, or `None` when the log's file name carries
@@ -808,9 +871,22 @@ def run_action(crate: Crate, label: str, metadata: dict, relpath: str) -> tuple[
         action["environment"] = [ref(env_id) for env_id in environment_ids]
     user = metadata.get("user")
     if isinstance(user, str) and user and user != UNAVAILABLE:
-        user_id = f"#user-{slug(user)}"
-        crate.add({"@id": user_id, "@type": "Person", "name": user})
-        action["agent"] = ref(user_id)
+        # The run's own metadata carries the most faithful identity; the
+        # config people table covers runs recorded before it existed.
+        orcid = metadata.get("orcid")
+        if not isinstance(orcid, str) or not orcid or orcid == UNAVAILABLE:
+            orcid = None
+        if orcid is None:
+            entry = people.get(user)
+            if isinstance(entry, dict) and isinstance(entry.get("orcid"), str) and entry["orcid"]:
+                orcid = entry["orcid"]
+        name = None
+        entry = people.get(user)
+        if isinstance(entry, dict) and isinstance(entry.get("name"), str) and entry["name"]:
+            name = entry["name"]
+        action["agent"] = ref(_person(crate, user, orcid, name))
+        if orcid is None:
+            unresolved.add(user)
     return action, 1 if state == "superseded" else 0
 
 
@@ -1044,13 +1120,14 @@ def _figure_instrument(name: str) -> str | None:
     return None
 
 
-def _add_root(crate: Crate, config: dict, metadata_name: str) -> None:
+def _add_root(crate: Crate, config: dict, metadata_name: str, people: dict) -> None:
     """Add the root data entity and the metadata descriptor.
 
     Args:
         crate: the crate to add them to.
         config: the parsed `config.json` (the machine output directories).
         metadata_name: the metadata file's name (the descriptor's id).
+        people: the config `people` table (the crate's creators).
     """
     machines = config.get("machines")
     parts: list[dict] = [ref("Makefile")]
@@ -1081,6 +1158,7 @@ def _add_root(crate: Crate, config: dict, metadata_name: str) -> None:
             "vintages stay in every number; the current state of the world is runs[superseded] == 0."
         ),
         "license": ref(LICENSE),
+        "creator": [ref(item) for item in _people_ids(crate, people)] + [ref("#hzdr")],
         "mainEntity": ref("Makefile"),
         "hasPart": parts,
         "mentions": [ref(action_id) for action_id in crate.action_ids],

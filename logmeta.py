@@ -13,7 +13,8 @@ header:
 The `run` mode carries everything that is known at run time: the run
 context (example, algorithm, imposed delays, the repetition, the
 flags-file line and a short hash of it), the host, the user the run
-happens as and the repository state, the dependency pins of
+happens as (and the user's ORCID iD, when the runner has exported
+$ORCID) and the repository state, the dependency pins of
 `config.json`, the sha256 of the binary used, the build facts of the
 tree the binary was built from (read from its `CMakeCache.txt`, the
 same tree `make clean` removes with the binary), and a hardware
@@ -215,6 +216,20 @@ def _user() -> str:
     return UNAVAILABLE
 
 
+def _orcid() -> str:
+    """Return the run user's ORCID iD, the placeholder when unknown.
+
+    The harness never manages ORCID: the runner exports $ORCID in the
+    environment the run happens in (module, profile, shell); this is a
+    best-effort read.
+
+    Returns:
+        str: $ORCID when set, else the "unavailable" placeholder.
+    """
+    orcid = os.environ.get("ORCID")
+    return orcid if orcid else UNAVAILABLE
+
+
 def _hardware() -> dict[str, object]:
     """Return a snapshot of the host hardware (GPU, GPU driver, CPU, OS).
 
@@ -414,6 +429,7 @@ def _metadata(kind: str, machine: str, extra: dict[str, object]) -> dict[str, ob
         "machine": machine,
         "hostname": socket.gethostname(),
         "user": _user(),
+        "orcid": _orcid(),
     }
     metadata.update(_git_state())
     slurm_job = os.environ.get("SLURM_JOB_ID")

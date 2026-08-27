@@ -36,8 +36,9 @@
 #    the self-describing `# metadata:` JSON line emitted by logmeta.py
 #    (machine, commit, the pinned dependency hashes, the slurm job when
 #    running under slurm, the sha256 of the binary used, the build facts
-#    of the binary's tree, the host hardware and the user the run happens
-#    as), and that grid run's full output. Runs are append-only:
+#    of the binary's tree, the host hardware, the user the run happens
+#    as, and the user's ORCID iD when the runner has exported $ORCID),
+#    and that grid run's full output. Runs are append-only:
 #    re-running a (combination, repetition)
 #    writes a new vintage of the logs next to the older ones, nothing is
 #    ever removed, and the stamp content lists the log paths of the
