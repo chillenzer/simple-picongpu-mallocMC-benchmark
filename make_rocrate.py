@@ -467,6 +467,13 @@ def _add_context(crate: Crate) -> None:
     Args:
         crate: the crate to add them to.
     """
+    crate.add(
+        {
+            "@id": "https://schema.org/CompletedActionStatus",
+            "@type": "ActionStatusEntity",
+            "name": "Completed",
+        }
+    )
     process_run = {
         "@id": PROCESS_RUN_PROFILE,
         "@type": ["CreativeWork", "Profile"],
@@ -1159,11 +1166,6 @@ def check_main(metadata_path: Path) -> int:
                 continue
             if target not in entities:
                 errors.append(f"entity {entity_id} references {target}, which is not in the crate")
-        if entity_id == "./" or entity_id.startswith("#") or "://" in entity_id:
-            continue
-        if not (root / entity_id).exists():
-            kind = "directory" if entity_id.endswith("/") else "file"
-            errors.append(f"data entity {entity_id} is not an existing {kind} in the crate")
         if entity.get("@type") == "CreateAction":
             for required in ("instrument", "result"):
                 if not _refs(entity.get(required)):
@@ -1179,6 +1181,11 @@ def check_main(metadata_path: Path) -> int:
                 env_entity = entities.get(env_id)
                 if env_entity is not None and (not env_entity.get("name") or env_entity.get("value") is None):
                     errors.append(f"environment entity {env_id} has no name/value")
+        if entity_id == "./" or entity_id.startswith("#") or "://" in entity_id:
+            continue
+        if not (root / entity_id).exists():
+            kind = "directory" if entity_id.endswith("/") else "file"
+            errors.append(f"data entity {entity_id} is not an existing {kind} in the crate")
 
     for error in errors:
         print(f"error: {error}")
