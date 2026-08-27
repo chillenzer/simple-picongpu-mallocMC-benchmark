@@ -102,6 +102,8 @@ The Makefile pins the dependency versions (the `dependencies` section of
   by its file name, e.g. `make figures/foil_lct.pdf`. The numbers are
   rebuilt from the run logs on every invocation; make does not list the log
   files themselves as prerequisites (their names are machine-specific).
+  `make rocrate` generates and validates the RO-Crate metadata of the
+  repository (see the *RO-Crate* section below).
 - `run_folder.sh` — runs one already-built example folder, once per flag
   line; takes optional fourth (malloc delay, default `0`) and fifth (free
   delay, default `0`) arguments in nanoseconds, passed via the
@@ -114,6 +116,10 @@ The Makefile pins the dependency versions (the `dependencies` section of
   binary's own `CMakeCache.txt`, and the host hardware (the GPU names,
   the driver version, the CPU model, the operating system); every fact is
   best effort ("unavailable" placeholders, never an error).
+- `make_rocrate.py` — generates and checks the RO-Crate metadata of the
+  repository (`make rocrate`): the harness as a workflow, the benchmark
+  runs as provenance, the analysis as actions (what exactly is described,
+  see the *RO-Crate* section below).
 - `log_{setup,run}_<machine>.sh` — per-machine launchers (hal, rosi,
   rosi-a100): log the environment, load the machine's modules (setup), and
   run `make build` / `make runs MACHINE=<machine>` with the machine's
@@ -467,6 +473,41 @@ Notes:
 - The figure row order is the `algorithms` list of `config.json` (recorded
   in the results file); the hardware display order of the comparison figures
   is fixed in `analysis/results_io.py`.
+
+## RO-Crate
+
+The benchmark is also an [RO-Crate](https://www.researchobject.org/ro-crate/):
+`make rocrate` (via `make_rocrate.py`) generates the metadata file
+`ro-crate-metadata.json` (git-ignored, removed by `make clean`) at the
+repository root and validates it. The metadata is a derived artifact: it is
+rebuilt from the ground truth on every invocation, exactly like
+`results.h5`, and never written during a run. The crate describes the
+repository as one research object:
+
+- **The harness as a workflow** (the RO-Crate *Workflows and scripts*
+  conventions; the metadata requirements of the Workflow RO-Crate profile):
+  the `Makefile` is the main workflow, the shell/python scripts its steps,
+  `MACHINE`/`PROFILE`/`PARAM_DIR`/`REPEATS`/`REP` its input parameters,
+  the run logs, `results.h5` and the figures its outputs.
+- **The runs as provenance** (the Process Run profile): one `CreateAction`
+  per grid-run log, reading the log's self-describing metadata line —
+  instrument the binary used (sha256, build facts, the PIConGPU/mallocMC
+  pins), object the flags/config/parameter/profile files, `environment`
+  the imposed delay and the slurm job, agent the run's user, result the
+  log. Runs are append-only, so every vintage is described: a log whose
+  identity's run stamp does not list it is annotated as superseded, on the
+  same keys the analysis uses.
+- **The analysis as actions**: one `CreateAction` for `results.h5` (from
+  the run logs and the frozen legacy table, all vintages) and one per
+  figure.
+
+The declared conformance is RO-Crate 1.3 plus the two profile statements
+on the root data entity. The crate is deliberately *not* packaged for
+WorkflowHub ingestion: the pipeline is a Makefile, not one of the workflow
+languages WorkflowHub supports. The built-in validation runs with the
+target; the check additionally loads the crate with the official `rocrate`
+package when it is installed (`pip install rocrate`) — reported as a
+warning only, since its newest release supports crate versions up to 1.2.
 
 ## Code style
 

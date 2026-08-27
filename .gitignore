@@ -10,6 +10,7 @@ build/
 run-stamps/
 output/
 figures/
+ro-crate-metadata.json
 
 # frozen legacy benchmark data (the raw logs and the frozen table stay
 # local; only the legacy/ scripts and docs are committed)
