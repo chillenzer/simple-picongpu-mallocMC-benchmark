@@ -301,7 +301,18 @@ def read_all_runs(sweep: dict[str, dict], legacy_frame: pd.DataFrame) -> tuple[p
         frame["superseded"] = frame["name"].map(lambda p: flags.get(Path(p).name, 0)).astype(int)
         frames.append(frame)
     if not legacy_frame.empty:
-        frames.append(legacy_frame)
+        # A frozen legacy row carries no file name and none of the
+        # log-derived columns the sweep machine frames have; default them
+        # (the frozen runs are superseded by nothing).
+        legacy_rows = legacy_frame.copy()
+        for column in RUN_SOURCE_COLUMNS:
+            if column not in legacy_rows:
+                legacy_rows[column] = ""
+        for column in RUN_NOMINAL_COLUMNS:
+            if column not in legacy_rows:
+                legacy_rows[column] = np.nan
+        legacy_rows["superseded"] = 0
+        frames.append(legacy_rows)
     h5_machines = set() if legacy_frame.empty else set(legacy_frame["machine"])
     sweep_labels = [label for label, machine in sweep.items() if machine["dir"].is_dir() or label in h5_machines]
     if not frames:
@@ -309,17 +320,6 @@ def read_all_runs(sweep: dict[str, dict], legacy_frame: pd.DataFrame) -> tuple[p
     runs = pd.concat(frames, ignore_index=True)
     if "name" in runs:
         runs = runs.drop(columns=["name"])
-    # A frozen legacy row carries none of the log-derived columns; fill the
-    # ones a sweep machine frame lacks (and the legacy frame carries none
-    # of) so every frame matches the runs table.
-    for column in (*RUN_SOURCE_COLUMNS,):
-        if column not in runs:
-            runs[column] = ""
-    for column in RUN_NOMINAL_COLUMNS:
-        if column not in runs:
-            runs[column] = np.nan
-    if "superseded" not in runs:
-        runs["superseded"] = 0
     # The single exclusion choke point: archived-but-excluded runs carry the
     # empty hardware name and are dropped here, before the rep numbering, so
     # they neither appear in any table nor shift the rep of an analyzed run.
