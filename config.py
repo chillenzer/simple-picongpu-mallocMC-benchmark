@@ -267,20 +267,60 @@ def _check_microbench(data: dict, errors: list[str]) -> None:
     if not isinstance(microbench, dict):
         errors.append("microbench: must be a mapping")
         return
-    for field in ("submodule", "data", "frozen"):
-        if not isinstance(microbench.get(field), str) or not microbench.get(field):
-            errors.append(f"microbench.{field}: must be a non-empty string")
+    _check_microbench_paths(microbench, errors)
+    _check_microbench_runs(microbench.get("runs"), errors)
+
+
+def _check_microbench_paths(microbench: dict, errors: list[str]) -> None:
+    """Validate the submodule/data/frozen fields of the microbench section.
+
+    Each must be a non-empty string, and the data/frozen paths must not lie
+    inside the submodule checkout (which is pinned code, not data).
+
+    Args:
+        microbench: the parsed `microbench` mapping.
+        errors: accumulates the problems found.
+
+    """
+    errors.extend(
+        f"microbench.{field}: must be a non-empty string"
+        for field in ("submodule", "data", "frozen")
+        if not isinstance(microbench.get(field), str) or not microbench.get(field)
+    )
     submodule = microbench.get("submodule")
     if isinstance(submodule, str) and submodule:
         for field in ("data", "frozen"):
             path = microbench.get(field)
-            if isinstance(path, str) and path and (path == submodule or path.startswith(submodule.rstrip("/") + "/")):
+            if isinstance(path, str) and path and _is_inside(path, submodule):
                 errors.append(f"microbench.{field}: must not lie inside the submodule checkout '{submodule}'")
-    runs = microbench.get("runs")
+
+
+def _is_inside(path: str, root: str) -> bool:
+    """Return True if `path` equals `root` or is nested inside it.
+
+    Args:
+        path: the path to check.
+        root: the root path.
+
+    Returns:
+        bool: True when `path` is `root` or nested under it.
+
+    """
+    return path == root or path.startswith(root.rstrip("/") + "/")
+
+
+def _check_microbench_runs(runs: object, errors: list[str]) -> None:
+    """Validate the microbench run list (a non-empty list of {jobid, hardware}).
+
+    Args:
+        runs: the `microbench.runs` value (checked here).
+        errors: accumulates the problems found.
+
+    """
     if not isinstance(runs, list) or not runs:
         errors.append("microbench.runs: must be a non-empty list of {jobid, hardware}")
         return
-    jobids = []
+    jobids: list[int] = []
     for entry in runs:
         if not isinstance(entry, dict):
             errors.append("microbench.runs: each entry must be a {jobid, hardware} mapping")

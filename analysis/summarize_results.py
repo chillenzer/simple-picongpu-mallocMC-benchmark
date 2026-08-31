@@ -193,6 +193,60 @@ def _print_alloc_cost(alloc_cost: pd.DataFrame) -> None:
         )
 
 
+def _print_alloc_cost_mixed(mixed: pd.DataFrame) -> None:
+    """Print the microbenchmark's mixed-workload per-call costs, one table per run.
+
+    The mean milliseconds per operation at each allocation size range,
+    pivoted with the allocators (and their operation) as rows and the
+    allocation ranges as columns.
+
+    Args:
+        mixed: the `alloc_cost_mixed` table of the results file.
+
+    """
+    if mixed.empty:
+        return
+    for jobid, group in mixed.groupby("jobid", sort=True):
+        hardware = str(group["hardware"].iloc[0])
+        pivot = group.pivot_table(index=["allocator", "operation"], columns="range", values="mean_ms")
+        pivot = pivot.reindex(columns=sorted(pivot.columns))
+        print_table(
+            f"Native allocation cost (mixed workload): run {int(jobid)} ({hardware}, mean ms per operation by range)",
+            pivot.to_string(float_format=lambda v: f"{v:10.4g}"),
+        )
+
+
+def _print_alloc_cost_scaling(scaling: pd.DataFrame) -> None:
+    """Print the microbenchmark's thread-scaling per-call costs, one table per run and size.
+
+    The mean milliseconds per operation at each thread count, pivoted with
+    the allocators (and their operation) as rows and the thread counts as
+    columns, at each fixed allocation size.
+
+    Args:
+        scaling: the `alloc_cost_scaling` table of the results file.
+
+    """
+    if scaling.empty:
+        return
+    for (jobid, num_bytes), group in scaling.groupby(["jobid", "num_bytes"], sort=True):
+        hardware = str(group["hardware"].iloc[0])
+        pivot = group.pivot_table(index=["allocator", "operation"], columns="num_threads", values="mean_ms")
+        pivot = pivot.reindex(columns=sorted(pivot.columns))
+        print_table(
+            f"Native allocation cost (thread scaling): run {int(jobid)} ({hardware}, "
+            f"{int(num_bytes)} bytes, mean ms per operation by thread count)",
+            pivot.to_string(float_format=lambda v: f"{v:10.4g}"),
+        )
+
+
+def _print_microbench(microbench: dict[str, pd.DataFrame]) -> None:
+    """Print the three microbenchmark summary tables (each skips when empty)."""
+    _print_alloc_cost(microbench["alloc_cost"])
+    _print_alloc_cost_mixed(microbench["alloc_cost_mixed"])
+    _print_alloc_cost_scaling(microbench["alloc_cost_scaling"])
+
+
 def _print_fits_ca(fits_ca: pd.DataFrame) -> None:
     """Print the secondary A = N*c_a constrained (native-cost) fit, if any.
 
@@ -231,7 +285,10 @@ def main(*, results: Path = RESULTS, raw: bool = False) -> int:
         fits_ca = read_table(file, "fits_ca") if "fits_ca" in file else pd.DataFrame()
         shared_fits = read_table(file, "shared_fits") if "shared_fits" in file else pd.DataFrame()
         absorption = read_table(file, "absorption") if "absorption" in file else pd.DataFrame()
-        alloc_cost = read_table(file, "alloc_cost") if "alloc_cost" in file else pd.DataFrame()
+        microbench = {
+            name: (read_table(file, name) if name in file else pd.DataFrame())
+            for name in ("alloc_cost", "alloc_cost_mixed", "alloc_cost_scaling")
+        }
         foil = read_table(file, "foil")
         foil_pvalue = read_table(file, "foil_pvalue")
         khi = read_table(file, "khi")
@@ -239,9 +296,9 @@ def main(*, results: Path = RESULTS, raw: bool = False) -> int:
         excluded_runs = file.attrs.get("excluded_runs")
     if runs.empty:
         print("no runs found in the results file")
-        # The microbenchmark table is independent of the PIConGPU runs, so
-        # it is printed even when there are none.
-        _print_alloc_cost(alloc_cost)
+        # The microbenchmark tables are independent of the PIConGPU runs, so
+        # they are printed even when there are none.
+        _print_microbench(microbench)
         return 0
     if "superseded" in runs:
         print(f"Runs: {len(runs)} ({int(runs['superseded'].sum())} superseded)")
@@ -274,6 +331,7 @@ def main(*, results: Path = RESULTS, raw: bool = False) -> int:
         foil.merge(foil_pvalue, on="hardware", how="left").to_string(index=False),
     )
     print_table("Khi metadata", khi.to_string(index=False))
+    _print_microbench(microbench)
     return 0
 
 

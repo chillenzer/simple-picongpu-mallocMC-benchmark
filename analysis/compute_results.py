@@ -59,7 +59,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import performance_model
-from make_microbench import ALLOC_COST_COLUMNS
+from make_microbench import ALLOC_COST_COLUMNS, ALLOC_COST_MIXED_COLUMNS, ALLOC_COST_SCALING_COLUMNS
 from results_io import (
     RESULTS,
     RUN_METRIC_COLUMNS,
@@ -1288,30 +1288,28 @@ def _git_commit() -> str:
 
 
 def _legacy_inputs() -> dict[str, Any]:
-    """Read the pre-redesign runs from the frozen table (the single legacy source).
+    """Read the pre-redesign runs from the frozen table (the legacy source).
 
-    Args:
-        None.
+    The source is optional: when the frozen table (legacy/legacy_results.h5)
+    is absent, an empty frame is returned and the analysis runs without the
+    pre-redesign runs (a fresh checkout without the machine data).
 
     Returns:
         dict: `frame` (the frozen runs, already tagged with `machine` and
-        `hardware`), `excluded_sources` (directory -> reason),
-        `excluded_runs` (the number of archived rows marked excluded), and
-        `source` (the source-list label).
-
-    Raises:
-        SystemExit: with an actionable message if the frozen table is missing.
+        `hardware`, or an empty frame when the table is absent),
+        `excluded_sources` (directory -> reason), `excluded_runs` (the number
+        of archived rows marked excluded), and `source` (the source-list
+        label, "none" when the table is absent).
 
     """
     if not LEGACY_H5.is_file():
         print(
-            "error: legacy/legacy_results.h5 not found. The analysis reads the "
-            "pre-redesign runs from this frozen table; build it from the "
-            "archived logs (under legacy/logs/, created by "
-            "legacy/move_legacy_logs.sh) with `make legacy-results`.",
+            "note: legacy/legacy_results.h5 not found; the analysis runs without the "
+            "pre-redesign runs. Build it from the archived logs (under legacy/logs/, "
+            "created by legacy/move_legacy_logs.sh) with `make legacy-results`.",
             file=sys.stderr,
         )
-        raise SystemExit(1)
+        return {"frame": pd.DataFrame(), "excluded_sources": {}, "excluded_runs": 0, "source": "none"}
     frame, attrs = read_legacy_h5(LEGACY_H5)
     excluded_runs = 0 if frame.empty else int(frame["hardware"].eq("").sum())
     return {
@@ -1323,31 +1321,37 @@ def _legacy_inputs() -> dict[str, Any]:
 
 
 def _microbench_inputs(config: dict) -> dict[str, Any]:
-    """Read the frozen microbenchmark table (the single microbench source).
+    """Read the frozen microbenchmark tables (the single microbench source).
 
     The source is optional: when the frozen table (the `microbench.frozen`
-    path of `config.json`) is absent, an empty table is returned and the
+    path of `config.json`) is absent, empty tables are returned and the
     analysis runs without the microbenchmark numbers.
 
     Args:
         config: the parsed configuration.
 
     Returns:
-        dict: `frame` (the frozen alloc_cost table, or an empty table
-        with the right columns), `source` (the source-list label, "none"
-        when the table is absent), `runs` (the frozen jobid -> hardware
-        map) and `protocol` (the "jobid/operation" -> {num, range} map).
+        dict: `frames` (the frozen microbenchmark tables, by name, or empty
+        tables with the right columns when the source is absent), `source`
+        (the source-list label, "none" when the source is absent), `runs`
+        (the frozen jobid -> hardware map) and `protocol` (the "jobid/test"
+        -> {files, operations} map).
 
     """
     microbench = config.get("microbench", {})
     frozen = repo_root() / str(microbench.get("frozen", ""))
+    empty_frames = {
+        "alloc_cost": _empty_table(ALLOC_COST_COLUMNS),
+        "alloc_cost_mixed": _empty_table(ALLOC_COST_MIXED_COLUMNS),
+        "alloc_cost_scaling": _empty_table(ALLOC_COST_SCALING_COLUMNS),
+    }
     if not frozen.is_file():
-        return {"frame": _empty_table(ALLOC_COST_COLUMNS), "source": "none", "runs": {}, "protocol": {}}
+        return {"frames": empty_frames, "source": "none", "runs": {}, "protocol": {}}
     with load_results(frozen) as file:
-        frame = read_table(file, "alloc_cost")
+        frames = {name: (read_table(file, name) if name in file else empty) for name, empty in empty_frames.items()}
         attrs = read_attrs(file)
     return {
-        "frame": frame,
+        "frames": frames,
         "source": f"frozen microbench: {frozen}",
         "runs": json.loads(attrs.get("runs", "{}")),
         "protocol": json.loads(attrs.get("protocol", "{}")),
@@ -1387,10 +1391,10 @@ def main(output: Path, configuration: str | None = None) -> None:
             "foil": _empty_table(FOIL_COLUMNS),
             "foil_pvalue": _empty_table(FOIL_PVALUE_COLUMNS),
             "khi": _empty_table(KHI_COLUMNS),
-            # The microbenchmark source is independent of the runs: the
-            # frozen table (or an empty table) is in either branch.
-            "alloc_cost": microbench_input["frame"],
         }
+        # The microbenchmark source is independent of the runs: the frozen
+        # tables (or empty tables) are in either branch.
+        tables.update(microbench_input["frames"])
     else:
         analyzed = sweep_runs if configuration is None else sweep_runs[sweep_runs["configuration"] == configuration]
         tables = {
@@ -1404,14 +1408,15 @@ def main(output: Path, configuration: str | None = None) -> None:
             "foil": foil_stats(runs),
             "foil_pvalue": foil_pvalues(runs),
             "khi": khi_stats(runs),
-            "alloc_cost": microbench_input["frame"],
         }
-        tables["fits"], tables["fits_ca"], fit_covs = fit_sweep(analyzed, microbench_input["frame"])
+        tables.update(microbench_input["frames"])
+        tables["fits"], tables["fits_ca"], fit_covs = fit_sweep(analyzed, microbench_input["frames"]["alloc_cost"])
         tables["shared_fits"], shared_covs = fit_sweep_combined(
             analyzed, tables["fits"], [str(algorithm) for algorithm in config.get("algorithms", [])]
         )
     source_parts = [f"{label}: {sweep[label]['dir']}" for label in sweep if sweep[label]["dir"].is_dir()]
-    source_parts.append(legacy_input["source"])
+    if legacy_input["source"] != "none":
+        source_parts.append(legacy_input["source"])
     attrs = {
         "created_utc": datetime.now(UTC).isoformat(timespec="seconds"),
         "git_commit": _git_commit(),

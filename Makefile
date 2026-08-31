@@ -228,9 +228,11 @@ endif
 endif
 
 .PHONY: all build check clean distclean results summary figures \
-	figures-sweeps figures-shared picongpu-src mallocmc-src microbench-src \
-	env-check env runs full clean-runs legacy-results legacy-verify \
-	microbench-results microbench-verify rocrate crate-zip sweep-status
+	figures-picongpu figures-sweeps figures-shared figures-microbench \
+	picongpu-src mallocmc-src microbench-src env-check env runs full \
+	clean-runs freeze freeze-verify \
+	legacy-results legacy-verify microbench-results microbench-verify \
+	rocrate crate-zip sweep-status
 
 # --- per (example, algorithm) harness targets ------------------------------
 
@@ -516,23 +518,57 @@ microbench-results:
 microbench-verify:
 	$(PY) analysis/make_microbench.py --check
 
+# Freeze every raw source (the PIConGPU legacy logs and the microbenchmark
+# CSVs) into its frozen table. The freezes are separate steps from `results`;
+# each source freezes independently and is skipped when its raw data is
+# absent (a fresh checkout without the machine data), so this runs cleanly on
+# any checkout. Use `freeze-verify` to report if any input file has changed
+# since the last freeze.
+freeze: legacy-results microbench-results
+
+freeze-verify: legacy-verify microbench-verify
+
+# Compute the analysis tables (output/results.h5) from the sweep machines'
+# run logs and the frozen tables (legacy + microbench, built by `freeze`).
+# The freezes are a separate step; run `make freeze` first to refresh them.
 results:
 	$(PY) analysis/compute_results.py --output $(RESULTS)
 
 summary: results
 	$(PY) analysis/summarize_results.py --results $(RESULTS)
 
-figures: figures-sweeps figures-shared \
+# The full figure set: both the PIConGPU figures and the microbenchmark
+# figures. Each family depends on `results` and skips gracefully when its
+# data is absent (a fresh checkout without the machine data), so `make
+# figures` runs cleanly on any checkout.
+figures: figures-picongpu figures-microbench
+
+# The PIConGPU figures: the per-machine sweep fits, the shared fits, and the
+# setup-specific figures (FoilLCT, KelvinHelmholtz, the fade models, the
+# native-cost comparison). The family targets run the plotting scripts
+# unfiltered (all machines, all scenarios), so they work even when figures/
+# does not exist yet.
+figures-picongpu: figures-sweeps figures-shared \
 	$(FIGDIR)/foil_lct.pdf $(FIGDIR)/kelvin_helmholtz.pdf $(FIGDIR)/fade-models.pdf \
 	$(FIGDIR)/native-cost.pdf
 
-# The family targets run the plotting scripts unfiltered (all machines,
-# all scenarios), so they work even when figures/ does not exist yet.
 figures-sweeps: results
 	$(PY) analysis/plot_sweeps.py --results $(RESULTS)
 
 figures-shared: results
 	$(PY) analysis/plot_shared_fits.py --results $(RESULTS)
+
+# The microbenchmark figures: the allocation-cost figures (from the frozen
+# table in results.h5) and the diagnostic figures (from the suite's raw CSVs
+# under microbench.data). The microbench data is an optional source: the
+# allocation-cost figures are drawn only when `results` carries the frozen
+# tables (built by `make freeze`), and the diagnostic figures only when the
+# raw CSVs are present. Both plotting scripts skip gracefully when their data
+# is absent (a fresh checkout without the machine data), so this target runs
+# cleanly on any checkout.
+figures-microbench: results
+	$(PY) analysis/plot_microbench.py --results $(RESULTS) && \
+	$(PY) analysis/plot_microbench_misc.py
 
 $(FIGDIR)/foil_lct.pdf: results
 	$(PY) analysis/plot_foil_lct.py --results $(RESULTS)

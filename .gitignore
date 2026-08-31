@@ -25,3 +25,6 @@ microbenchmarks/microbench_results.h5
 
 # local patch artifacts
 *.patch
+
+# local data artifacts (machine data kept out of the repository)
+/tmp.zip

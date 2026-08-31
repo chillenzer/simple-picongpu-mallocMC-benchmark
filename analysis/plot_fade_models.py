@@ -499,8 +499,8 @@ def main(*, show: bool = False, results: Path = RESULTS) -> int:
         runs[column] = [value.decode() if isinstance(value, bytes) else value for value in runs[column]]
     entries = _load_entries(runs)
     if not entries:
-        print("no delay-injected runs found; nothing to compare", file=sys.stderr)
-        return 1
+        print("no delay-injected runs found; nothing to draw", file=sys.stderr)
+        return 0
     fits, deltas = _fit_all(entries)
     fig, axes = plt.subplots(2, 2, figsize=(12.0, 9.0), layout="constrained")
     fig.suptitle("Performance-model fade terms: the candidate family and the measured choice of the exponential")
