@@ -1,0 +1,145 @@
+# SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
+# SPDX-License-Identifier: MIT
+
+
+====================================================================================================
+P1. candidate fade terms (all: F(0) = A, F(inf) = 0, monotone)
+====================================================================================================
+u = m/s. The stored model is H. T and Q are the overlap picture (the delay hides
+parallel work until the slack is exhausted) with a hard cutoff at m = s.
+
+form                     F'(0)/A   F''(0)/A |  F/A @u=1     @u=3    @u=10 |     tail m>>s  int F dm/(A s)
+H  A s/(m+s)                -1/s     +1/s^2 |     0.500    0.250 9.09e-02 |         A s/m             inf
+E  A exp(-m/s)              -1/s +1/(2 s^2) |     0.368    0.050 4.54e-05 |    A e^(-m/s)               1
+L  A s^2/(m^2+s^2)             0     -1/s^2 |     0.500    0.100 9.90e-03 |     A s^2/m^2            pi/2
+T  A (1-m/s)+               -1/s          0 |     0.000    0.000 0.00e+00 |  0 (cut at s)             1/2
+Q  A (1-m/s)^2+             -2/s     +1/s^2 |     0.000    0.000 0.00e+00 |  0 (cut at s)             2/3
+P  A (1+m/s)^-k             -1/s +(k+1)/(2 s^2) |     0.500    0.250 9.09e-02 |     A (s/m)^k    1/(k-1), k>1
+
+====================================================================================================
+P2. fit quality: every candidate refit, delta-SSR against the stored H fit
+====================================================================================================
+delta-SSR in units of sig^2 (0 = equivalent to the stored fit, negative = better);
+u_max = the farthest measured delay in the stored fade-scale units of its arm:
+
+group                           n    u_max      sig |      dE      dL      dT      dQ      dP | best
+hal Foil Flat 256x1280x0      137   3300.1     5.97 |  -71.26  -71.53  -71.28  -71.60  -71.06 |    Q
+hal Foil Scat 256x1280x0       19    315.5     8.82 |  -11.96  -11.93  -11.95  -11.95  -11.96 |    P
+hal Kelv Flat 128x128x128      80     46.1     6.96 |  -64.63  -64.98  -64.46  -64.72  -64.59 |    L
+hal Kelv Flat 256x128x128      82      7.9     31.2 |  -74.62  -74.58  -74.58  -74.61  -74.62 |    E
+hal Kelv Flat 256x128x256      81      8.0     70.2 |  -73.89  -73.81  -73.84  -73.87  -73.90 |    P
+hal Kelv Scat 128x128x128      22    103.2     6.58 |  -12.57  -12.58  -12.53  -12.57  -12.59 |    P
+hal Kelv Scat 256x128x128      22     45.2     24.4 |  -14.68  -14.66  -14.54  -14.64  -14.69 |    P
+hal Kelv Scat 256x128x256      21     32.1     51.6 |  -13.97  -13.95  -13.91  -13.94  -13.98 |    P
+rosi Foil Flat 256x1280x0     175    624.6     11.4 | -152.27 -152.55 -152.03 -152.36 -152.62 |    P
+rosi Kelv Flat 128x128x128    194   1013.0     12.2 | -119.75 -117.44 -121.19 -120.43 -122.09 |    P
+rosi Kelv Flat 256x128x128    179    128.8     7.77 |  -96.57  -23.16 -102.37  -25.96  -59.93 |    T
+rosi Kelv Flat 256x128x256    178   6199.1     10.5 |  -48.10  -48.24  -48.03  -48.11  -48.06 |    L
+
+====================================================================================================
+P3. detailed fits of the focus groups
+====================================================================================================
+the shape contest on the three groups with the widest delay ranges in fade-scale units:
+
+hal Kelv Flat 256x128x128 (n=82):  dSSR vs the fresh H refit, in sig^2; then the 1sig % of the
+fade params A_m, s_m, A_f, s_f (cond(pcov) of each: section P5):
+  cand  parameters                                                SSR    dSSR |    A_m    s_m    A_f    s_f
+  H     A_m=   40.9s s_m=0.00126s A_f=   38.6s s_f=0.00173s     375.1    0.00 |   10.5%   18.1%   30.0%   43.6%
+  E     A_m=   27.6s s_m=0.000993s A_f=     25s s_f=0.00134s    368.1   -1.40 |    6.7%   11.6%   19.6%   28.4%
+  L     A_m=   24.6s s_m=0.000618s A_f=   21.9s s_f=0.00091s    409.6    6.89 |    6.1%    8.5%   15.8%   18.7%
+  T     A_m=   24.4s s_m=0.00132s A_f=   19.1s s_f=0.00163s     405.9    6.16 |    5.8%    6.7%   11.3%   14.2%
+  Q     A_m=   25.3s s_m= 0.0022s A_f=   21.7s s_f=0.00292s     378.8    0.74 |    5.7%    8.5%   13.3%   17.7%
+  P     A_m=   28.6s s_m=0.00998s k_m=10.00 A_f=   38.7s s_f=0.00187s k_f=1.04    368.2   -1.38 |   20.1%  518.2%  285.3%  495.8%
+
+hal Foil Flat 256x1280x0 (n=137):  dSSR vs the fresh H refit, in sig^2; then the 1sig % of the
+fade params A_m, s_m, A_f, s_f (cond(pcov) of each: section P5):
+  cand  parameters                                                SSR    dSSR |    A_m    s_m    A_f    s_f
+  H     A_m=   11.8s s_m=6.64e-05s A_f=   6.05s s_f=1.7e-05s   2174.1    0.00 |   10.5%   40.3%   23.4%  151.8%
+  E     A_m=   10.3s s_m=8.25e-05s A_f=      6s s_f=3.51e-05s   2096.3   -4.66 |    9.6%   27.3%   21.8%  154.0%
+  L     A_m=   9.74s s_m=5.87e-05s A_f=   5.69s s_f=1.7e-05s   2086.7   -5.23 |    9.5%   23.1%   22.6%   96.5%
+  T     A_m=   9.54s s_m=0.000139s A_f=   5.65s s_f=4.08e-05s   2095.7   -4.69 |    9.6%   15.7%   22.4%  151.4%
+  Q     A_m=   9.88s s_m=0.000217s A_f=   5.81s s_f=7.38e-05s   2084.3   -5.37 |    9.5%   21.3%   21.9%  153.7%
+  P     A_m=   10.4s s_m=0.000784s k_m=10.00 A_f=   6.03s s_f=0.000329s k_f=10.00   2103.7   -4.21 |   13.4%  747.9%   23.3% 3511.8%
+
+rosi Kelv Flat 256x128x128 (n=179):  dSSR vs the fresh H refit, in sig^2; then the 1sig % of the
+fade params A_m, s_m, A_f, s_f (cond(pcov) of each: section P5):
+  cand  parameters                                                SSR    dSSR |    A_m    s_m    A_f    s_f
+  H     A_m=   13.8s s_m=6.36e-06s A_f=2.74e-10s s_f= 0.0061s   8714.7    0.00 |   11.4%   54.0%     --    0.0%
+  E     A_m=   6.59s s_m=6.12e-05s A_f=1.09e-10s s_f= 0.0061s   4557.6  -82.05 |   15.6%   53.2%     --    0.0%
+  L     A_m=   2.62s s_m=1.4e-06s A_f=1.12e-10s s_f= 0.0061s   8993.5    5.50 |   56.2% 2043.9%     --    0.0%
+  T     A_m=   7.03s s_m=0.000716s A_f=1.08e-24s s_f= 0.0061s   4207.1  -88.97 |   12.9%   28.3%     --    0.0%
+  Q     A_m=   3.12s s_m=0.000147s A_f=5.52e-09s s_f= 0.0183s   8824.0    2.16 |   44.4%  124.8%     --    0.0%
+  P     A_m=   13.9s s_m=4.5e-06s k_m=0.35 A_f=9.55e-11s s_f= 0.0183s k_f=2.00   6771.7  -38.35 |   28.0%  187.9%     --    0.0%
+
+====================================================================================================
+P4. tail claims beyond the data (focus group, malloc arm, fitted s_m)
+====================================================================================================
+F_m/A_m = the visible fade the candidate still claims at delay u*s_m; a 1/m tail (H)
+says the cost never vanishes, a cutoff (T, Q) says it is fully absorbed by m = s:
+
+  cand    s_m fit |  F/A @u=3    @u=10   @u=100 | claim beyond the data
+  H        0.00126 |    0.2500 9.09e-02 9.90e-03 |  a visible A s/m forever (divergent total)
+  E       0.000993 |    0.0498 4.54e-05 3.72e-44 |  gone by u ~ 5 (total A s)
+  L       0.000618 |    0.1000 9.90e-03 1.00e-04 |  a 1/m^2 tail (total pi A s /2)
+  T        0.00132 |    0.0000 0.00e+00 0.00e+00 |  exactly zero beyond u = 1 (total A s /2)
+  Q         0.0022 |    0.0000 0.00e+00 0.00e+00 |  exactly zero beyond u = 1 (total 2 A s /3)
+  P        0.00998 |    0.0000 3.86e-11 9.05e-21 |  an (s/m)^k tail (total A s/(k-1))
+
+  microbenchmark cross-check: c(malloc) = 104.2 us per call (N = 186362 calls/run; N c = 19.4 s = the absorbed plateau deficit d)
+  stored s_m = 0.00126 s = 12.07 x c;  fresh H s_m = 0.00126 s = 12.07 x c: the fade scale is the half-saturation delay, ~12x the per-call cost, not c itself
+
+====================================================================================================
+P5. gauge structure: what each form pins (delay-origin gauge, per arm)
+====================================================================================================
+the measured delays carry an unknown origin offset d (stored = true + d); the
+parameters are only identifiable up to the gauge it induces:
+
+  form gauge  identifiable combinations (7 params = combos + gauge freedoms)
+  H      2  N,  A s,  W - N_m s_m - N_f s_f            (pins the product A s, not A or s)
+  E      2  N,  s,  W + N_m s_m ln A_m + N_f s_f ln A_f  (pins the scale s; A via ln)
+  L      0  W, N, A, s  --  the form is rigid: no origin-shift symmetry, all pinned
+  T      2  N,  A/s,  W - N_m s_m - N_f s_f              (pins the absorption rate A/s)
+  Q      2  N,  A/s^2,  W - N_m s_m - N_f s_f             (pins the initial curvature)
+  P      2  N,  k,  A s^k,  W - N_m s_m - N_f s_f         (pins k and the product A s^k)
+
+measured cond(pcov) of the focus fits: every form carries the same ~1e13-1e15 cond, i.e. the
+gauge correlation is a property of the family, not of one shape; P3 shows the individual fade
+params at 6-50 % 1sig in every form (except the inactive rosi free arm and P's extra (s,k)):
+  hal Kelv Flat 256x128x128    H= 1.9e+14  E= 9.5e+13  L= 1.5e+14  T= 2.3e+13  Q= 9.2e+12  P= 6.0e+14
+  hal Foil Flat 256x1280x0     H= 3.7e+14  E= 2.3e+14  L= 5.3e+14  T= 1.5e+14  Q= 4.2e+13  P= 5.7e+12
+  rosi Kelv Flat 256x128x128   H=     inf  E=     inf  L=     inf  T=     inf  Q=     inf  P=     inf
+
+====================================================================================================
+P6. verdict (measured)
+====================================================================================================
+shape effect only: delta-SSR against the FRESH H refit (removes the stored fit's drift
+along the flat direction; negative = better than H):
+  H: +0.00  E: -6.71  L: +7.67  T: +0.38  Q: +2.98  P: -5.10
+
+per-group best candidate:  H:0  E:1  L:2  T:1  Q:1  P:7
+
+the stored H fit itself sits +626.19 sig^2 above the fresh H optimum
+(median over the 12 groups; max +54970.17 in the degenerate rosi group), so
+the large gaps in P2 are the stored fit's drift along the flat direction, not the shape.
+
+ranking by mean shape delta (negative = better than the fresh H fit):
+  E: -6.71
+  P: -5.10  (step +1.61)
+  H: +0.00  (step +5.10)
+  T: +0.38  (step +0.38)
+  Q: +2.98  (step +2.61)
+  L: +7.67  (step +4.69)
+
+  verdict: E (the exponential) is the most suitable fade term. It is the best mean
+  delta among the 2-parameter forms, never the worst group, is smooth, has a finite total
+  absorbed cost (A s), and pins its scale s as a gauge invariant (P5). Its claim -- the
+  visible cost is down to e^-5 ~ 0.7 % of A by u = 5 -- is falsifiable, unlike H's eternal
+  1/m tail, whose total absorbed cost diverges. L is rejected (worst mean delta): the data
+  see a linear initial absorption, F'(0) = -A/s != 0. P wins the most per-group contests, but
+  its mean is worse than E's and its extra (s, k) is unresolvable (k hits the 0.2-10 bound,
+  1sig up to 3512 % in P3): those wins are the extra parameter, not an identified shape.
+  T ties H on average and is the pure-overlap physical null model (hard cutoff at the
+  per-call slack); keep it as the benchmark -- runs with delay > s showing exactly zero fade
+  would confirm T, a residual ~ A e^(-m/s) would confirm E. H stays defensible (middle of
+  the pack) but is not the best; the next fit round should use E, re-anchored on the fresh
+  optimum, not on the stored fit (which sits hundreds of sig^2 above the H optimum).
