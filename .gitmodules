@@ -1,0 +1,4 @@
+[submodule "microbenchmarks/memmansurvey"]
+	path = microbenchmarks/memmansurvey
+	url = https://github.com/chillenzer/memmansurvey
+	branch = add-mallocMC
