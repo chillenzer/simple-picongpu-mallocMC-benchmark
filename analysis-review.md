@@ -5,8 +5,9 @@
 runtime-budget split (W / A_malloc / A_free) and the fraction
 `f = A/T0` shown in the sweep figures.
 **Basis:** re-analysis of all 12 sweeps in `output/results.h5`
-(`python critique_fit.py`; read-only, reproduces the stored fits to ≤ 0.1 s
-and checks the stored model against the raw data).
+(`python critique_fit.py`; read-only, reproduces the stored fits to ≤ 0.1 s,
+checks the stored model against the raw data, and verifies the model's gauge
+symmetry).
 
 ## Verdict
 
@@ -25,7 +26,9 @@ cost" (which cannot fade with the imposed delay); it is the total delay
 absorbed by parallel slack, and f = A/T0 is "absorbed delay per run /
 zero-delay runtime" — a measure of the pipeline's slack, not of the
 allocator: a run with more in-flight work has a bigger f even if malloc/free
-cost nothing. On top of that, the *stored* f is not well determined: the data
+cost nothing. Section 6 adds the algebraic point: the hyperbola carries a
+delay-origin gauge under which f moves freely, so f is not even an invariant
+of the model form. On top of that, the *stored* f is not well determined: the data
 pin the model-consistent A's directly (the plateaus d_m, d_f, 2–11σ), but the
 stored fit drifts 16–64 s in W (and up to 44 s in the A's) from them along
 the flat W/N/A direction
@@ -192,6 +195,45 @@ model tests the fitter, not the model. No independent check — a directly
 measured per-call cost, or a sweep dense enough in the bend to resolve s0 —
 exists in the repository.
 
+## 6. The model has a gauge symmetry, and f is not an invariant of it
+
+The hyperbolic term is not uniquely parameterised. The model is exactly
+invariant under a per-arm shift of the delay origin — for the malloc arm, and
+identically for the free arm,
+
+    W  -> W + N·s0·d      A  -> A/(1+d)      s0 -> s0·(1+d)      s -> s - s0·d,
+
+with N unchanged. The product A·s0 and the combination W - N·s0 are invariant,
+so a one-arm model has exactly three invariants — N, A·s0, W - N·s0 — and the
+two-operation model has five: N_m, N_f, A_m·m0, A_f·f0, and
+W - N_m·m0 - N_f·f0 (verified to ≤ 4e-12 s on all 12 stored fits,
+`critique_fit.py` block 6). This is a horizontal translation of the fitted
+curve: the same runtime versus the *physical* delay, described from a different
+origin. The origin is fixed by the experiment (s = 0 is the measured
+no-injection baseline), so it is a gauge of the model's internal origin, not a
+redundancy of the fit — with s fixed, all four parameters stay independent, and
+the gauge direction is not the fit's flat direction (block 6: it carries 0.00
+of the two flattest covariance directions in all 12 groups; the flat direction
+is the fade scale s0, orthogonal to it).
+
+The reported fraction is not one of the invariants. With T0 = W + A,
+
+    f = A/T0   ->   A / [(W + N·s0·d)(1+d) + A],
+
+equal to f only for d = 0. So f (and T0) moves along the gauge orbit, and the
+model form alone fixes nothing about its value: over each fit's own s0 search
+window, f_malloc and f_free span roughly [0, 100 %] — a range 26–189× the
+stored 1-σ error (block 6). The data pin the gauge, which is why the reported
+f is nonetheless well determined; the model can simply not be the reason f has
+the value it does.
+
+This is the algebraic half of section 3. Section 3 showed the *data* do not
+identify the W/A split (flat W/N/A direction, covariance condition number
+1e11–1e14); this shows the *model form* does not make f an invariant either. f
+is a convention-dependent, gauge-dependent ratio that is well determined only
+because the data happen to pin the gauge — not a quantity defined by the model
+or the measurement on their own.
+
 ## What the data do support, and what a defensible version needs
 
 - **N (calls per run)** from the large-delay slope: well determined and
@@ -220,6 +262,125 @@ Until then, f is a slack fraction with a fitting artifact mixed in, and the
 runtime-budget figures should not be read as decompositions of the measured
 runtime.
 
+## 7. Follow-up 1 — the flat direction: can a re-parameterization with one fewer parameter remove it?
+
+Full analysis and per-fit tables: `qa-flat-direction.md`
+(reproduce: `python qa_flat_direction.py`).
+
+**No.** At the fixed experimental delays the model map is genuinely
+4-dimensional (1-op) / 7-dimensional (2-op): the parameter Jacobian has full
+rank (the one exception, rosi KHI 256×128×128, sits on the `A_f→0` boundary
+and is rank 6). The per-arm delay-origin gauge of §6 has invariants
+`N`, `A·s0`, `W−N·s0`, but those span only a 3-D (5-D) subfamily — the fade
+scale `s0` is an *additional, independent* degree of freedom of the function
+(holding the invariants fixed and moving `s0` by 0.1×–10× still moves the
+curve by up to 140 s). A one-fewer-parameter family is a proper subset of the
+function space and cannot reproduce the same curves. And the flat direction is
+a **data near-degeneracy** (weak information), not a parameter redundancy: the
+information spectrum is invariant under any reparameterization, so no change of
+coordinates removes it.
+
+Two "degeneracies" must not be conflated. The **gauge** (a redundancy of the
+model *form*, §6) is pinned by the fixed delay origin and is *not* the fit's
+flat direction (its share of the two flattest covariance directions is
+0.008–0.111). The **near-degeneracy** (cond(pcov) 1e11–1e14) is a data
+limitation: *locally* the flattest directions are the **N slope-pivots** and
+the **(W, A_m, A_f) split**, and the fade scales are locally the *stiffest*;
+*globally*, the fade scale is the weakly-identified quantity — seed-dependent
+and multi-modal, at the 50 ms search cap in the slow-fade rosi KHI arms, and
+exactly degenerate in the `(A_f, f0)` product at the `A_f→0` corner. (The
+"0.00 gauge share" quoted in §6 was measured on `eigh`'s first two
+eigenvectors, which are the two *stiffest* — numpy sorts ascending — not the
+flattest; on the actual flattest it is 0.008–0.111. The practical conclusion
+is unchanged.)
+
+What actually helps — options that add information or change what is reported,
+not the coordinate system:
+
+- **Fix the fade scales externally** (a sweep dense in the bend, or a prior) →
+  the fit becomes an exact linear 5-parameter problem (condition number
+  1e11–1e14 → 1e4–1e6); `f` then depends on the chosen `s0`, so report the
+  ×0.1/×10 sensitivity.
+- **Impose `A = N·c_a`** with `c_a` from an *independent* zero-delay
+  microbenchmark of `DeviceAllocator::malloc`/`free` (the model already
+  supports `model_c_a`) → the only route that gives `f` a measured
+  allocation-cost meaning (using the fitted `A` is circular, §5).
+- **Report the identifiable, gauge-invariant, data-pinned combinations** —
+  `N`, `T0`, the plateau deficits `d_m`,`d_f` (and per-call `c = d/N`) —
+  instead of the `(W, A, s0)` split; give `f` a profile-likelihood CI or a
+  multi-start seed range, not the Gaussian 1σ (an order of magnitude too small
+  along the flat direction).
+- A combined fit across algorithms does **not** remove the per-algorithm flat
+  direction; the reparameterization `(T0, N_m, N_f, A_m, K_m=A_m·m0, A_f,
+  K_f=A_f·f0)` drops the condition number 2–3 orders and helps local-minimum
+  risk but does not remove the data flat direction.
+
+**Bottom line:** no reparameterization eliminates the flat direction. Report
+the data-pinned gauge-invariant quantities, fix or bound `s0` with external
+information, and for a genuine allocation-cost budget measure `c_a`
+independently and impose `A = N·c_a`.
+
+## 8. Follow-up 2 — can the plateau measure the (de-)allocation cost, and can we compare algorithms?
+
+Full analysis, per-arm tables, and shape fits: `qa-allocation-cost.md`
+(reproduce: `python qa2_analysis.py`, `python qa2_table.py`).
+
+**The hiding claim is verified, with a refinement.** 20 of 24 arms show the
+saturating absorption (plateau deficit `d = T(0) − b0 > 0`, 0.4–70 s per run
+= 3–291 µs per call); in all 12 non-KHI arms the 100 ns delay is (almost)
+fully absorbed. The delay is a device-timer busy-wait inside
+`DeviceAllocator::malloc`/`free`, so while it spins the rest of the pipeline
+keeps working — exactly "hidden by other asynchronous tasks when allocation is
+not the bottleneck." The refinement: the hiding **fades smoothly
+(hyperbolically)**, not as a sharp bottleneck switch. The literal model
+`T = W + N·max(c_a+s, H)` is **rejected**: in all 18 shape-resolvable arms the
+sharp-knee (step) fit is 1.5–103× worse (SSR) than the hyperbola. Four arms
+over-expose (`d < 0`) and the twelve hal KHI arms show small-delay
+*amplification humps* (E(100 ns) = +0.4 to +12.3 s) — unexplained anomalies no
+hiding model can produce.
+
+**Vertical vs horizontal.** The robust, gauge-invariant, flat-direction-free
+quantity is the **vertical plateau deficit `d`** (use `c = d/N`). The
+horizontal "plateau length" (the knee) is the fade scale `s0` — a flat,
+seed-dependent fit direction, out of range in the slow-fade rosi KHI arms
+(`s0` = 12.5–72.9 ms), and undefined in the anomalous arms; where it works
+(clean arms) it just re-measures `d/N` (knee ≈ `s0` ≈ `d/N`). So **"measure the
+plateau length" is not an independent measure** of the allocation cost — use
+the vertical `c = d/N`. (Correction to the preliminary note: the smallest
+non-zero delay is 100 ns, so the bend *is* in the data in most arms; the first
+"no visible plateau" impression mixed up the smallest and largest delays.)
+
+**Absolute vs relative.** Under the supported reading, `c = d/N` is the
+**unused hiding capacity `H − c_a`**, not the native cost — so an *absolute
+native cost cannot be deduced* from these data (3–291 µs/call is implausible
+as a device-allocation cost, plausible as 0.3–34 % of the per-call pipeline
+budget `T0/N`). A *relative* measure is available: for two algorithms in the
+same (machine, setup, grid), `Δc = (d_B/N_B) − (d_A/N_A)` is well-defined,
+gauge-invariant, flat-robust, and needs no `H`; **if `H` is invariant across
+the algorithms, `Δc` is the relative native-cost difference**. The assumption
+decomposes: the structural part holds (`N` is algorithm-invariant at
+0.00–1.11 %), but `H` itself is untestable (only `H − c_a = d/N` is measured,
+and it varies 5–46 % across algorithms and up to 346 µs across malloc/free) —
+so the relative statement is conditional on an unverified `H`-invariance.
+
+**Comparing the algorithms** (`c = d/N`, µs/call; hiding reading, larger =
+more unused capacity = faster if `H` constant):
+
+| scenario | FlatterScatter | ScatterAlloc | Δ(Flat−Scat) |
+|---|---|---|---|
+| FoilLCT 256×1280 malloc | 65.5 ± 3.2 | 68.6 ± 11.7 | −3.1 ± 12.1 (n.s.) |
+| KHI 256×128×128 malloc | 104.2 ± 7.2 | 57.9 ± 15.6 | **+46.4 ± 17.1 (2.7σ)** — Flat cheaper |
+| KHI 256×128×256 malloc | 165.0 ± 7.9 | 241.3 ± 9.4 | **−76.3 ± 12.3 (6.2σ)** — Scat cheaper |
+| KHI 256×128×256 free | 176.6 ± 10.7 | 225.8 ± 12.2 | **−49.2 ± 16.1 (3.1σ)** — Scat cheaper |
+| KHI 128³ | — | — | no significant plateau, unrankable |
+
+The ranking **flips between the two large grids** — under `H`-invariance the
+native-cost advantage switches with problem size; under the native-cost reading
+(§8 interpretation II) the same numbers rank the algorithms the other way. The
+data cannot adjudicate the interpretation; a zero-delay `DeviceAllocator`
+microbenchmark would (and would also give `H = c_a + d/N`). rosi allows no
+comparison (single algorithm).
+
 ## References and reproduction
 
 - `analysis/allocation_model.py:1–31` (model, bounds), `:218` (degeneracy),
@@ -231,4 +392,11 @@ runtime.
 - Data: `output/results.h5` (`runs`, `fits`, `shared_fits`, `baselines`,
   `fits/cov`); reproduction: `python critique_fit.py` (blocks: 1 nested-model
   tests, 2 multi-modality, 3 seed sensitivity, 4 baseline-anchored
-  absorption, 5 stored vs data-pinned decomposition)
+  absorption, 5 stored vs data-pinned decomposition, 6 gauge symmetry)
+- Follow-up 1 (flat direction / reparameterization, §7): `qa-flat-direction.md`
+  + `qa_flat_direction.py` (per-fit pcov eigen-decomposition, function-space
+  rank, reparameterization condition numbers, options A–F)
+- Follow-up 2 (plateau / allocation cost / algorithm comparison, §8):
+  `qa-allocation-cost.md` + `qa2_analysis.py`, `qa2_table.py` (per-arm N, d,
+  c, E, O; hyperbola/step/line shape fits; parametric-bootstrap errors;
+  scenario comparison)
