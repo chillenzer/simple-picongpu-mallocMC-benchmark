@@ -13,7 +13,11 @@ fits, the slack-ratio summary (f = A/T0, the absorbed delay over the
 zero-delay runtime — a convention-dependent ratio, not a runtime budget),
 and the per-arm absorbed-delay slack (the plateau deficit d and the
 per-call c = d/N, the gauge-invariant Tier-2 quantities); the No-delay
-runtimes; and the FoilLCT / KelvinHelmholtz figure statistics.
+runtimes; the FoilLCT / KelvinHelmholtz figure statistics; and, from the
+microbenchmark suite (the `alloc_cost` table, empty when the frozen
+microbench table is absent), the native per-call allocation costs of
+every allocator as the mean milliseconds per operation at each
+allocation size, one table per run.
 """
 
 from __future__ import annotations
@@ -166,6 +170,29 @@ def print_shared_fit_summary(shared_fits: pd.DataFrame, fits: pd.DataFrame) -> N
             print(f"    note: {ref['note']}")
 
 
+def _print_alloc_cost(alloc_cost: pd.DataFrame) -> None:
+    """Print the microbenchmark's native per-call allocation costs, one table per run.
+
+    The mean milliseconds per operation at each allocation size, pivoted
+    with the allocators (and their operation) as rows and the allocation
+    sizes as columns.
+
+    Args:
+        alloc_cost: the `alloc_cost` table of the results file.
+
+    """
+    if alloc_cost.empty:
+        return
+    for jobid, group in alloc_cost.groupby("jobid", sort=True):
+        hardware = str(group["hardware"].iloc[0])
+        pivot = group.pivot_table(index=["allocator", "operation"], columns="size_bytes", values="mean_ms")
+        pivot = pivot.reindex(columns=sorted(pivot.columns))
+        print_table(
+            f"Native allocation cost: run {int(jobid)} ({hardware}, mean ms per operation by size)",
+            pivot.to_string(float_format=lambda v: f"{v:10.4g}"),
+        )
+
+
 def main(*, results: Path = RESULTS, raw: bool = False) -> int:
     """Print the summary tables of one results file.
 
@@ -188,6 +215,7 @@ def main(*, results: Path = RESULTS, raw: bool = False) -> int:
         fits = read_table(file, "fits")
         shared_fits = read_table(file, "shared_fits") if "shared_fits" in file else pd.DataFrame()
         absorption = read_table(file, "absorption") if "absorption" in file else pd.DataFrame()
+        alloc_cost = read_table(file, "alloc_cost") if "alloc_cost" in file else pd.DataFrame()
         foil = read_table(file, "foil")
         foil_pvalue = read_table(file, "foil_pvalue")
         khi = read_table(file, "khi")
@@ -195,6 +223,9 @@ def main(*, results: Path = RESULTS, raw: bool = False) -> int:
         excluded_runs = file.attrs.get("excluded_runs")
     if runs.empty:
         print("no runs found in the results file")
+        # The microbenchmark table is independent of the PIConGPU runs, so
+        # it is printed even when there are none.
+        _print_alloc_cost(alloc_cost)
         return 0
     if "superseded" in runs:
         print(f"Runs: {len(runs)} ({int(runs['superseded'].sum())} superseded)")

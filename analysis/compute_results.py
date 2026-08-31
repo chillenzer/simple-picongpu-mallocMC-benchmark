@@ -10,7 +10,14 @@ and the frozen legacy table `legacy/legacy_results.h5` (the pre-redesign
 logs of legacy/, with their machine and paper-figure hardware attribution
 applied at the freeze; the archived-but-excluded runs are marked by an
 empty hardware name and dropped here at the single exclusion choke
-point). Superseded vintages (an append-only re-run of a stamped series)
+point). The native per-call allocation costs of the microbenchmark suite
+(the microbenchmarks/memmansurvey submodule) come from a third, optional
+source: the frozen table under `microbench.frozen` of `config.json`,
+built with `analysis/make_microbench.py` (`make microbench-results`) from
+the raw CSVs under `microbench.data` (see microbenchmarks/README.md);
+when the frozen table is absent (a fresh checkout without the machine
+data), the analysis runs without it and `alloc_cost` comes out empty.
+Superseded vintages (an append-only re-run of a stamped series)
 are not filtered out of the table: they stay in every table and every
 number, and the group statistics and the fits include them; a consumer
 that wants the current state selects `runs[runs["superseded"] == 0]`. The
@@ -26,7 +33,11 @@ comparison charts have always used, and computed from
 - `foil` / `foil_pvalue` / `khi`: the statistics behind the FoilLCT bar
   chart and the KelvinHelmholtz violin chart (distributions, Kruskal
   p-values, relative runtimes), over the zero-delay runs of both
-  sources, grouped by the short hardware name.
+  sources, grouped by the short hardware name,
+- `alloc_cost`: the native per-call allocation costs of the microbenchmark
+  suite, one row per (run, allocator, operation, allocation size) in
+  milliseconds per operation (the frozen table as-is; empty when the
+  frozen table is absent).
 
 Everything is written to `output/results.h5`; this script prints nothing.
 Print the tables with `summarize_results.py`, draw the figures with the
@@ -48,6 +59,7 @@ from typing import Any
 import allocation_model
 import numpy as np
 import pandas as pd
+from make_microbench import ALLOC_COST_COLUMNS
 from results_io import (
     RESULTS,
     RUN_METRIC_COLUMNS,
@@ -1036,6 +1048,38 @@ def _legacy_inputs() -> dict[str, Any]:
     }
 
 
+def _microbench_inputs(config: dict) -> dict[str, Any]:
+    """Read the frozen microbenchmark table (the single microbench source).
+
+    The source is optional: when the frozen table (the `microbench.frozen`
+    path of `config.json`) is absent, an empty table is returned and the
+    analysis runs without the microbenchmark numbers.
+
+    Args:
+        config: the parsed configuration.
+
+    Returns:
+        dict: `frame` (the frozen alloc_cost table, or an empty table
+        with the right columns), `source` (the source-list label, "none"
+        when the table is absent), `runs` (the frozen jobid -> hardware
+        map) and `protocol` (the "jobid/operation" -> {num, range} map).
+
+    """
+    microbench = config.get("microbench", {})
+    frozen = repo_root() / str(microbench.get("frozen", ""))
+    if not frozen.is_file():
+        return {"frame": _empty_table(ALLOC_COST_COLUMNS), "source": "none", "runs": {}, "protocol": {}}
+    with load_results(frozen) as file:
+        frame = read_table(file, "alloc_cost")
+        attrs = read_attrs(file)
+    return {
+        "frame": frame,
+        "source": f"frozen microbench: {frozen}",
+        "runs": json.loads(attrs.get("runs", "{}")),
+        "protocol": json.loads(attrs.get("protocol", "{}")),
+    }
+
+
 def main(output: Path, configuration: str | None = None) -> None:
     """Parse all the run logs, compute every table, and write the results file.
 
@@ -1052,6 +1096,7 @@ def main(output: Path, configuration: str | None = None) -> None:
     config = load_config()
     sweep = load_machines(config)
     legacy_input = _legacy_inputs()
+    microbench_input = _microbench_inputs(config)
     runs, sweep_labels = read_all_runs(sweep, legacy_input["frame"])
     sweep_runs = runs[runs["machine"].isin(sweep_labels)]
     fit_covs: list[tuple[tuple, tuple, tuple]] = []
@@ -1067,6 +1112,9 @@ def main(output: Path, configuration: str | None = None) -> None:
             "foil": _empty_table(FOIL_COLUMNS),
             "foil_pvalue": _empty_table(FOIL_PVALUE_COLUMNS),
             "khi": _empty_table(KHI_COLUMNS),
+            # The microbenchmark source is independent of the runs: the
+            # frozen table (or an empty table) is in either branch.
+            "alloc_cost": microbench_input["frame"],
         }
     else:
         analyzed = sweep_runs if configuration is None else sweep_runs[sweep_runs["configuration"] == configuration]
@@ -1081,6 +1129,7 @@ def main(output: Path, configuration: str | None = None) -> None:
             "foil": foil_stats(runs),
             "foil_pvalue": foil_pvalues(runs),
             "khi": khi_stats(runs),
+            "alloc_cost": microbench_input["frame"],
         }
         tables["fits"], fit_covs = fit_sweep(analyzed)
         tables["shared_fits"], shared_covs = fit_sweep_combined(
@@ -1097,6 +1146,9 @@ def main(output: Path, configuration: str | None = None) -> None:
         "algorithm_order": ",".join(str(algorithm) for algorithm in config.get("algorithms", [])),
         "excluded_sources": json.dumps(legacy_input["excluded_sources"], sort_keys=True),
         "excluded_runs": str(legacy_input["excluded_runs"]),
+        "microbench_source": microbench_input["source"],
+        "microbench_runs": json.dumps(microbench_input["runs"], sort_keys=True),
+        "microbench_protocol": json.dumps(microbench_input["protocol"], sort_keys=True),
     }
     write_results(output, tables, attrs, fit_covs, shared_covs)
 

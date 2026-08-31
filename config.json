@@ -90,6 +90,21 @@
       ]
     }
   },
+  "microbench": {
+    "submodule": "microbenchmarks/memmansurvey",
+    "data": "microbenchmarks/data",
+    "frozen": "microbenchmarks/microbench_results.h5",
+    "runs": [
+      {
+        "jobid": 9032687,
+        "hardware": "NVIDIA A100"
+      },
+      {
+        "jobid": 9057444,
+        "hardware": "NVIDIA A100"
+      }
+    ]
+  },
   "people": {
     "lenz93": {
       "name": "Julian Lenz",

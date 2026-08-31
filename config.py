@@ -13,8 +13,9 @@ values:
     python3 config.py check
 
 `check` validates the structure and the file references (flag files,
-parameter files, profiles) so that a typo fails fast with a clear message
-instead of a silently wrong benchmark run. Run it from the repository root.
+parameter files, profiles, the microbenchmark paths) so that a typo fails
+fast with a clear message instead of a silently wrong benchmark run. Run
+it from the repository root.
 """
 
 from __future__ import annotations
@@ -247,6 +248,55 @@ def _check_people(data: dict, errors: list[str]) -> None:
             errors.append(f"people.{login}: needs at least one of name, orcid")
 
 
+def _check_microbench(data: dict, errors: list[str]) -> None:
+    """Validate the microbenchmark section (the memmansurvey pin and data).
+
+    The raw results and the frozen table are machine data (git-ignored), so
+    only the paths and the published run list are validated here; the data
+    directories themselves are not required to exist. The data and frozen
+    paths must not lie inside the submodule checkout, which is pinned code.
+
+    Args:
+        data: the parsed configuration.
+        errors: accumulates the problems found.
+
+    """
+    microbench = _walk(data, "microbench")
+    if microbench is None:
+        return
+    if not isinstance(microbench, dict):
+        errors.append("microbench: must be a mapping")
+        return
+    for field in ("submodule", "data", "frozen"):
+        if not isinstance(microbench.get(field), str) or not microbench.get(field):
+            errors.append(f"microbench.{field}: must be a non-empty string")
+    submodule = microbench.get("submodule")
+    if isinstance(submodule, str) and submodule:
+        for field in ("data", "frozen"):
+            path = microbench.get(field)
+            if isinstance(path, str) and path and (path == submodule or path.startswith(submodule.rstrip("/") + "/")):
+                errors.append(f"microbench.{field}: must not lie inside the submodule checkout '{submodule}'")
+    runs = microbench.get("runs")
+    if not isinstance(runs, list) or not runs:
+        errors.append("microbench.runs: must be a non-empty list of {jobid, hardware}")
+        return
+    jobids = []
+    for entry in runs:
+        if not isinstance(entry, dict):
+            errors.append("microbench.runs: each entry must be a {jobid, hardware} mapping")
+            continue
+        jobid = entry.get("jobid")
+        if not isinstance(jobid, int) or isinstance(jobid, bool):
+            errors.append(f"microbench.runs.{jobid!r}.jobid: must be an integer")
+        else:
+            jobids.append(jobid)
+        hardware = entry.get("hardware")
+        if not isinstance(hardware, str) or not hardware:
+            errors.append(f"microbench.runs.{jobid!r}.hardware: must be a non-empty string")
+    if len(set(jobids)) != len(jobids):
+        errors.append("microbench.runs: jobid values must be unique")
+
+
 def _check_benchmark_files(data: dict, errors: list[str]) -> None:
     """Validate the per-example flag files and per-algorithm parameter files.
 
@@ -322,6 +372,7 @@ def _cmd_check() -> None:
     _check_run_matrix(data, errors)
     _check_build(data, errors)
     _check_machines(data, errors)
+    _check_microbench(data, errors)
     _check_people(data, errors)
     _check_benchmark_files(data, errors)
     if errors:

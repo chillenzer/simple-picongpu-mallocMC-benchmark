@@ -59,6 +59,13 @@
 #    table, the new-format logs with the `# metadata:` JSON line) and the
 #    frozen legacy table legacy/legacy_results.h5, built once with
 #    `make legacy-results` from the legacy/ tree (see legacy/README.md).
+#    The native per-call allocation costs of the microbenchmark suite
+#    (the microbenchmarks/memmansurvey submodule, kept in sync by
+#    `make microbench-src`) come from a third, optional source: the frozen
+#    table microbenchmarks/microbench_results.h5, built once with
+#    `make microbench-results` from the raw CSVs under microbenchmarks/
+#    data/ (see microbenchmarks/README.md); when it is absent (a fresh
+#    checkout without the machine data), the analysis runs without it.
 #    The numbers are rebuilt from both on every invocation: make
 #    deliberately does not list files of the output/ or legacy/ data as
 #    prerequisites, because their names are machine-specific (run names,
@@ -134,6 +141,14 @@ MALLOCMC_URL   := $(shell $(PY) config.py get dependencies.mallocmc.url)
 MALLOCMC_HASH  := $(shell $(PY) config.py get dependencies.mallocmc.hash)
 MALLOCMC_ABS   := $(CURDIR)/$(MALLOCMC_PATH)
 MALLOCMC_SHORT := $(shell printf '%.8s' $(MALLOCMC_HASH))
+
+# The microbenchmark suite (microbenchmarks/memmansurvey, a git submodule;
+# its raw results and frozen table live under microbenchmarks/, the
+# microbench section of config.json): the pin is kept in sync like the
+# cloned dependency sources, and the freeze step is driven like the legacy
+# one (analysis/make_microbench.py, `make microbench-results`).
+MICROBENCH_PATH  := $(shell $(PY) config.py get microbench.submodule)
+MICROBENCH_STAMP := build/.microbench
 
 # Nasty little bug here: GCC has a constexpr std::source_location but nvcc
 # does not. So Boost gets confused and tries to use std::source_location
@@ -213,8 +228,9 @@ endif
 endif
 
 .PHONY: all build check clean distclean results summary figures \
-	figures-sweeps figures-shared picongpu-src mallocmc-src env-check env \
-	runs full clean-runs legacy-results legacy-verify rocrate crate-zip sweep-status
+	figures-sweeps figures-shared picongpu-src mallocmc-src microbench-src \
+	env-check env runs full clean-runs legacy-results legacy-verify \
+	microbench-results microbench-verify rocrate crate-zip sweep-status
 
 # --- per (example, algorithm) harness targets ------------------------------
 
@@ -397,6 +413,8 @@ check:
 		"$$(python3 config.py list run-matrix arms | tr '\n' ' ' | sed 's/ *$$//')"
 	@printf 'picongpu:   %s @ %s\n' "$(PICONGPU_ABS)" "$(PICONGPU_SHORT)"
 	@printf 'mallocmc:   %s @ %s\n' "$(MALLOCMC_ABS)" "$(MALLOCMC_SHORT)"
+	@printf 'microbench: %s @ %s\n' "$(MICROBENCH_PATH)" \
+		"$$(git -C "$(MICROBENCH_PATH)" rev-parse --short HEAD 2>/dev/null || echo 'not initialised')"
 	# Each value comes through a double-quoted command substitution, so any
 	# spaces, quotes or leading dashes in them stay one single shell word.
 	@printf 'flags:      -DCMAKE_CXX_FLAGS=%s -DCMAKE_CUDA_FLAGS=%s %s\n' \
@@ -484,6 +502,19 @@ legacy-results:
 
 legacy-verify:
 	$(PY) legacy/make_legacy_results.py --check
+
+# Freeze the microbenchmark results (the memmansurvey allocation-test CSVs
+# under microbenchmarks/data/, the runs of the microbench section of
+# config.json) once into the frozen table (microbenchmarks/
+# microbench_results.h5): the main analysis reads the native per-call
+# allocation costs from it. Re-running is safe: the table is rebuilt from
+# the raw CSVs every time, and `microbench-verify` reports if any input
+# file has changed since the freeze.
+microbench-results:
+	$(PY) analysis/make_microbench.py
+
+microbench-verify:
+	$(PY) analysis/make_microbench.py --check
 
 results:
 	$(PY) analysis/compute_results.py --output $(RESULTS)
@@ -595,6 +626,35 @@ mallocmc-src: picongpu-src
 	  echo "$(MALLOCMC_HASH)" >"$(MALLOCMC_STAMP)"
 	fi
 
+# The microbenchmark suite is a git submodule (the microbench section of
+# config.json), pinned by the gitlink of the repository HEAD: the driver
+# initialises it when absent, re-checks it out at the pinned commit when it
+# has drifted (a pull of the outer repository moves the pin), and
+# initialises the suite's own framework submodules (its .gitmodules). The
+# stamp records the pinned commit, like the dependency stamps; nothing in
+# the PIConGPU build keys off it (the suite is not compiled into the
+# benchmark binaries).
+microbench-src:
+	@if [ ! -d "$(MICROBENCH_PATH)/.git" ]; then
+	  if [ -e "$(MICROBENCH_PATH)" ]; then
+	    echo "Replacing $(MICROBENCH_PATH) (not a git checkout) ..."
+	    rm -rf "$(MICROBENCH_PATH)"
+	  fi
+	  echo "Initialising $(MICROBENCH_PATH) ..."
+	  git submodule update --init --force -- "$(MICROBENCH_PATH)"
+	else
+	  PINNED=$$(git ls-tree HEAD -- "$(MICROBENCH_PATH)" | awk '{print $$3}')
+	  if [ "$$(git -C "$(MICROBENCH_PATH)" rev-parse HEAD)" != "$$PINNED" ]; then
+	    echo "Updating $(MICROBENCH_PATH) to $$(printf '%.8s' $$PINNED) ..."
+	    git submodule update --force -- "$(MICROBENCH_PATH)"
+	  fi
+	fi
+	git -C "$(MICROBENCH_PATH)" submodule update --init --force --quiet
+	if [ "$$(cat "$(MICROBENCH_STAMP)" 2>/dev/null)" != "$$(git -C "$(MICROBENCH_PATH)" rev-parse HEAD)" ]; then
+	  git -C "$(MICROBENCH_PATH)" rev-parse HEAD >"$(MICROBENCH_STAMP)"
+	fi
+	@echo "Using $(MICROBENCH_PATH) @ $$(printf '%.8s' "$$(git -C "$(MICROBENCH_PATH)" rev-parse HEAD)")."
+
 # The stamp files are side effects of the phony drivers above; the trivial
 # recipes only tie them into the dependency graph (their mtime is what the
 # inputs and builds key off). The recipe is what matters: make refreshes a
@@ -604,6 +664,8 @@ mallocmc-src: picongpu-src
 $(PICONGPU_STAMP): picongpu-src
 	@true
 $(MALLOCMC_STAMP): mallocmc-src
+	@true
+$(MICROBENCH_STAMP): microbench-src
 	@true
 
 # Prepare the build environment once per make invocation: patch PICSRC= in

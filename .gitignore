@@ -18,5 +18,10 @@ ro-crate.crate.zip
 legacy/logs/
 legacy/legacy_results.h5
 
+# frozen microbenchmark data (the raw CSVs and the frozen table stay
+# local; the microbenchmarks/memmansurvey submodule is pinned code)
+microbenchmarks/data/
+microbenchmarks/microbench_results.h5
+
 # local patch artifacts
 *.patch
