@@ -538,10 +538,24 @@ KHI_FRAME_BYTES = 7696
 # The microbenchmark operation of each model arm (malloc -> alloc, free ->
 # free): the value of the alloc_cost table's `operation` column.
 MICROBENCH_OPERATION = {"malloc": "alloc", "free": "free"}
-# Benchmark algorithm -> microbenchmark allocator name, where the two differ
-# (the microbenchmark allocator is the mallocMC creation-policy name). A
-# missing match simply leaves the group unconstrained.
-ALLOCATOR_ALIASES: dict[str, list[str]] = {"ScatterAlloc": ["Scatter"], "Gallatin": ["GallatinCuda"]}
+# The number of parallel allocations in one wave of the perf microbenchmark:
+# each thread performs exactly one allocation per wave, so the per-single-call
+# cost estimate divides the wave time (the frozen table's `mean_ms`) by that
+# count.
+MICROBENCH_WAVE_ALLOCATIONS = 1_000_000
+# Benchmark algorithm -> microbenchmark allocator names, tried in order: the
+# first entry is the current-survey name (the mallocMC creation-policy name),
+# the following entries are legacy fallbacks that let the pre-existing frozen
+# data still resolve (it used the older single-`mallocMC` and standalone
+# names). The legacy "ScatterAlloc" and "Gallatin" are the pre-mallocMC
+# standalone allocators (not the mallocMC policies), while the legacy
+# "mallocMC" run corresponds to FlatterScatter. A missing match leaves the
+# group unconstrained.
+ALLOCATOR_ALIASES: dict[str, list[str]] = {
+    "ScatterAlloc": ["mallocMC-Scatter", "ScatterAlloc"],
+    "FlatterScatter": ["mallocMC-FlatterScatter", "mallocMC"],
+    "Gallatin": ["Gallatin"],
+}
 
 
 def _gpu_model(hardware: object) -> str:
@@ -562,13 +576,16 @@ def _gpu_model(hardware: object) -> str:
 def _resolve_c_a(
     alloc_cost: pd.DataFrame, hardware: object, algorithm: str, operation: str, setup: str
 ) -> tuple[float | None, str]:
-    """Resolve the native per-call cost (ns) of one (hardware, allocator, operation).
+    """Resolve the native per-single-call cost (ns) of one (hardware, allocator, operation).
 
     The cost is the microbenchmark mean at the representative allocation size
     (the dominant KHI frame, the nearest measured size; an order-of-magnitude
-    estimate for the other setups). Without a matching row -- no microbenchmark
-    data for the hardware, or no matching allocator -- the cost is None and
-    the note says why, so the fit stays unconstrained.
+    estimate for the other setups). The frozen table's `mean_ms` is the time of
+    one wave of `MICROBENCH_WAVE_ALLOCATIONS` parallel allocations (one per
+    thread), so the per-single-call cost is the wave mean divided by that
+    count. Without a matching row -- no microbenchmark data for the hardware,
+    or no matching allocator -- the cost is None and the note says why, so the
+    fit stays unconstrained.
 
     Args:
         alloc_cost: the microbenchmark alloc_cost table.
@@ -578,7 +595,7 @@ def _resolve_c_a(
         setup: the scenario's setup name (KHI is precise, the rest order-of-magnitude).
 
     Returns:
-        tuple: (the native per-call cost in nanoseconds, or None, the note).
+        tuple: (the native per-single-call cost in nanoseconds, or None, the note).
 
     """
     if alloc_cost is None or alloc_cost.empty:
@@ -590,7 +607,7 @@ def _resolve_c_a(
         sel = alloc_cost[hw_model & op_model & alloc_cost["allocator"].eq(name)]
         if not sel.empty:
             idx = sel["size_bytes"].sub(KHI_FRAME_BYTES).abs().idxmin()
-            return float(sel.loc[idx, "mean_ms"]) * 1e6, (
+            return float(sel.loc[idx, "mean_ms"]) * 1e6 / MICROBENCH_WAVE_ALLOCATIONS, (
                 f"microbenchmark {operation} at {int(sel.loc[idx, 'size_bytes'])} B "
                 f"({name} on {str(sel.loc[idx, 'hardware']).strip()}){precision}"
             )
