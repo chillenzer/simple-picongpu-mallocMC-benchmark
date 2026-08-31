@@ -5,10 +5,11 @@ SPDX-License-Identifier: MIT
 
 # Plan: supplement the performance models with the microbenchmark data
 
-**Status:** proposal (not implemented). Supersedes nothing; it is the follow-up
+**Status:** implemented (Phases 1–5). Supersedes nothing; it is the follow-up
 to `analysis-review.md` §6–§7 and the microbenchmark integration
 (`analysis/make_microbench.py`, commit "Integrate the microbenchmark allocation
-costs into the analysis pipeline").
+costs into the analysis pipeline"). The open questions below are resolved;
+each records the decision that was made.
 
 ## 1. What the microbenchmark gives us
 
@@ -43,94 +44,104 @@ absorbed (hidden) delay. Two distinct, useful quantities fall out:
   new, meaningful ratio — *how much of the native per-call cost the pipeline
   hides*.
 
-## 3. Current state (what is wired, what is missing)
+## 3. What is wired now
 
 | piece | state |
 |---|---|
-| microbench suite + freeze pipeline | present (`make_microbench.py`, `make microbench-results`) |
-| frozen `alloc_cost` table read by the analysis | present, but **optional** (empty when the table is absent); **not built in this env** (data lives on the benchmark machine, git-ignored) |
-| `c_a` constraint in the model | present for **1-D only** (`model_c_a`, `fit_1d(c_a=...)`) |
-| `c_a` constraint in the 2-D model | **missing** (`fit_2d` has no `c_a`) — but all 12 fit groups are 2-D |
-| `c_a` supplied by the pipeline | **missing** — `fit_sweep(analyzed)` is called with `c_a=None`; the 2-D branch ignores `c_a` even if given |
-| reporting of native cost / absorbed-vs-native ratio | **missing** |
+| microbench suite + freeze pipeline | present (`make_microbench.py`, `make microbench-results`); the frozen table is optional (empty when absent) and **not built in this env** (data lives on the benchmark machine, git-ignored) |
+| 1-D and 2-D `c_a` constraint | present (`model_c_a` / `model_2d_c_a`; `fit_1d(c_a=...)` and `fit_2d(c_malloc=..., c_free=...)`) |
+| `c_a` supplied by the pipeline | present — `fit_sweep(runs, alloc_cost)` resolves `c_malloc` / `c_free` per group via `_resolve_c_a` |
+| reporting of native cost / absorbed-vs-native | present — primary `fits` row carries `c_a_{malloc,free}_ns`, `slack_over_native_{malloc,free}`, `native_note`; the secondary `A = N·c_a` fit is the `fits_ca` table; the comparison figure is `figures/native-cost.pdf` (`analysis/plot_native_cost.py`) |
 
-## 4. The plan
+## 4. The implementation
 
-### Phase 1 — `c_a` lookup (compute_results.py)
-Add a helper that resolves the native per-call cost for a fit group:
-`c_a(machine, algorithm, operation, alloc_cost, machines_cfg) -> float | None` (ns).
+### Phase 1 — `c_a` lookup (`compute_results.py::_resolve_c_a`)
+Resolves the native per-call cost for one (hardware, allocator, operation):
+`_resolve_c_a(alloc_cost, hardware, algorithm, operation, setup) -> (ns|None, note)`.
 It matches
-- **hardware**: the machine's `hardware` (config `machines.<m>.hardware`) to the
-  microbench run's hardware (A100 ↔ `rosi-a100`);
+- **hardware**: the group's short hardware name, normalized by `_gpu_model`
+  (vendor stripped, so `NVIDIA A30` == `A30`), to the microbench run's hardware;
 - **allocator → algorithm**: the microbench `allocator` to the benchmark
-  `algorithm` (FlatterScatter / ScatterAlloc / Gallatin — same names);
-- **operation**: `alloc` → malloc arm, `free` → free arm;
-- **size**: the microbench `size_bytes` to the benchmark's allocation size
-  (see Open question 2 — this is the non-trivial part).
-Returns `mean_ms × 1e3` ns, or `None` when no match (hardware or allocator).
+  `algorithm`, via `ALLOCATOR_ALIASES` (e.g. `ScatterAlloc` → `Scatter`,
+  `Gallatin` → `GallatinCuda`) plus the exact name;
+- **operation**: `MICROBENCH_OPERATION` maps the model arm to the microbench
+  operation (`malloc` → `alloc`, `free` → `free`);
+- **size**: the nearest measured `size_bytes` to the representative allocation
+  size `KHI_FRAME_BYTES = 7696` B (see the Size decision below).
+It returns `mean_ms × 1e3` ns, or `(None, note)` with an explanatory note when
+there is no microbenchmark data, no matching hardware, or no matching allocator —
+so the fit simply stays unconstrained.
 
-### Phase 2 — 2-D `c_a` constraint (performance_model.py)
-- Add `model_2d_c_a(m, f, W, N_m, N_f, c_malloc, c_free, m0, f0, fade)`:
+### Phase 2 — 1-D and 2-D `c_a` constraint (`performance_model.py`)
+- `model_2d_c_a(m, f, p, c_malloc, c_free, fade)`:
   `T = W + N_m·m + N_f·f + (N_m·c_malloc)·g(m/m0) + (N_f·c_free)·g(f/f0)`.
-- Extend `fit_2d(..., c_malloc=None, c_free=None)`:
-  - both given → fit `(W, N_m, N_f, m0, f0)` with `A_m = N_m·c_malloc`,
-    `A_f = N_f·c_free` (5 free params instead of 7);
-  - one given → constrain that arm only;
-  - none → current 7-parameter behavior (unchanged default).
-- Propagate standard errors through the constraint (mirror the existing
-  `_fit_constrained_1d` / `_f_of_p_ca` pattern).
-- (Later, optional) extend `fit_combined` for the shared `W`/`N` case with
-  per-algorithm `c` constraints.
+- `fit_2d(..., c_malloc=None, c_free=None)`: with **both** set, fit
+  `(W, N_m, N_f, m0, f0)` (5 free params) with `A_m = N_m·c_malloc`,
+  `A_f = N_f·c_free`; otherwise the unconstrained 7-parameter model. Standard
+  errors are propagated through the constraint (`_fit_2d_errors`,
+  `_f_of_{m,f}_ca`). `fit_1d(c_a=...)` was already present.
+- The combined (shared-parameter) fit is intentionally left unconstrained (see
+  the Combined-fit decision).
 
-### Phase 3 — pipeline wiring (compute_results.py)
-- In `fit_sweep` / `fit_one_group`, resolve `c_malloc`, `c_free` per group via
-  Phase 1 and pass them to `fit_2d` (and `fit_1d` for 1-D fallback groups).
-- **Keep the unconstrained fit as the primary** (it measures absorbed slack);
-  add columns for the native-cost reading: `A_malloc_native = N_malloc·c_malloc`,
-  `A_free_native`, `f_malloc_native`, `f_free_native`, plus the raw
-  `c_malloc_ns`, `c_free_ns` used, and a `note` recording the hardware/size the
-  `c_a` came from. (Alternatively, run the constrained fit as a separate,
-  clearly-labelled table — see Open question 3.)
+### Phase 3 — pipeline wiring (`compute_results.py::fit_sweep`)
+`fit_sweep(runs, alloc_cost)` resolves `c_malloc` / `c_free` per group and:
+- keeps the **unconstrained fit as the primary** row in `fits` (it measures
+  absorbed slack); that row also reports `c_a_{malloc,free}_ns`,
+  `slack_over_native_{malloc,free}` (`(A/N) / c_a`), and `native_note`;
+- where the microbenchmark supplies **both** costs for the group's hardware,
+  records a secondary `A = N·c_a` constrained fit in the `fits_ca` table
+  (`model = 2d-ca` / `1d-*-ca`).
+Without matching microbenchmark data a group has `NaN` native columns and no
+`fits_ca` row — the graceful fallback that makes the analysis general across
+hardware.
 
-### Phase 4 — reporting & figures
-- `summarize_results.py`: per arm, report the fitted absorbed slack `A/N`, the
-  microbench native cost `c_a`, and their ratio (absorbed / native). Report the
-  native-cost budget `A = N·c_a` and `f_native`.
-- Figures: add a panel (to `sweeps-<machine>.pdf` or a new figure) plotting,
-  per arm, absorbed slack vs native cost, and/or the native-cost budget split.
-  The headline new quantity: the fraction of the native per-call cost that the
-  pipeline hides.
+### Phase 4 — reporting & figure
+- `analysis/plot_native_cost.py` → `figures/native-cost.pdf` (Makefile target
+  `figures/native-cost.pdf`): one panel per operation, each fitted group plotted
+  as (native cost `c_a`, absorbed slack `A/N`) in µs per call, coloured by
+  machine, with the dotted `A/N = c_a` hypothesis line (the review's rejected
+  reading). Data-optional: with no matching microbenchmark cost it prints a note
+  and writes no file.
+- The native-cost columns are carried through `output/results.h5` (`fits`,
+  `fits_ca`).
 
 ### Phase 5 — prose
-- README "The method": document the microbench supplement — `c_a` measured
-  independently, `A = N·c_a` gives the native-cost budget, and the fitted `A`
-  remains the absorbed-s hiding model.
-- `analysis-review.md`: update the §6/§7 status — `c_a` is now measured; the
-  native-cost reading is available (with the hardware/size caveats).
+- README "The method": documents the microbench supplement — `c_a` measured
+  independently, the unconstrained fit primary, the `A = N·c_a` constrained fit
+  (`fits_ca`) as the native-cost budget.
+- `analysis-review.md` §6/§7: updated to record that `c_a` is now measured and
+  wired (1-D and 2-D).
 
-## 5. Open questions (decisions needed)
+## 5. Decisions (the former open questions)
 
-1. **Hardware scope.** The microbench ran only on **A100**, matching
-   `rosi-a100`. `hal` (A30) and `rosi` (V100) have no matching `c_a`. Apply the
-   constraint only where hardware matches (rosi-a100), and for A30/V100 either
-   (a) leave them unconstrained and report the A100 `c_a` as a cross-hardware
-   reference, or (b) treat A100 `c_a` as a proxy with an explicit caveat?
-2. **Size matching.** The microbench `c_a` is per allocation **size**, but the
-   benchmark's actual allocation sizes are implicit (set by the simulation's
-   memory layout) and not directly reported. How to pick the size: a
-   representative/median size, an estimate from the simulation, mallocMC's own
-   counters (size-weighted `c_a`), or report `c_a` over a size band? This is
-   the least-well-defined part.
-3. **Hard constraint vs soft comparison.** (a) Hard-constrain the fit
-   (`A = N·c_a`, fewer free params) — the review's route to a genuine budget,
-   but it removes the data's own `A`; or (b) keep the fit free and only report
-   the comparison (absorbed slack vs native cost)? Proposal: do (b) for the
-   primary fit and (a) as a labelled secondary reading.
-4. **Combined fit.** Constrain the shared-parameter combined fit too, or only
-   the per-group fits (simpler; the combined fit already pools `W`/`N`)?
-5. **Data prerequisite.** The frozen table is not built here. Confirm the
-   microbench runs (jobids 9032687, 9057444, A100) are frozen on the benchmark
-   machine before Phases 3–4 can be exercised end-to-end.
+1. **Hardware scope — resolved.** Apply `c_a` **only on matching hardware**
+   (normalized by `_gpu_model`). The code is written to be **general**: it fails
+   gracefully to the unconstrained fit wherever there is no microbenchmark data,
+   and shows the full constrained + comparison picture wherever there is. This
+   keeps it correct as more runs land on various systems (A100 today; A30/V100
+   and others later). No cross-hardware proxy is implied.
+2. **Size matching — resolved.** The representative size is the **dominant
+   KHI frame, 7696 B** (the paper's number; consistent with the parameter-derived
+   ~8 KiB: 2 MiB page ÷ 256 frames). The microbench cost is read at the
+   **nearest measured size** to 7696 B. For the **non-KHI setups** (FoilLCT) the
+   same 7696 B is used as an **order-of-magnitude estimate only** — their
+   allocation patterns differ (ScatterAlloc 2 MiB pages vs FlatterScatter
+   128 KiB pages) — and the `native_note` is tagged
+   "(order-of-magnitude estimate)".
+3. **Hard vs soft — resolved.** The **soft comparison is primary** (the
+   unconstrained fit + `slack_over_native` ratio), and the **hard constraint**
+   (`A = N·c_a`) is a **separately labelled secondary fit** (`fits_ca`).
+4. **Combined fit — resolved.** The shared-parameter combined fit is **not**
+   constrained; only the per-group fits carry the native-cost reading (simpler,
+   and the combined fit already pools `W`/`N`, so per-algorithm `c` constraints
+   are not its purpose).
+5. **Data prerequisite — resolved (graceful).** The frozen table is not built in
+   this env, so the pipeline and the figure run end-to-end on the empty
+   `alloc_cost` table (verified): all groups stay unconstrained, the native
+   columns are `NaN`, `fits_ca` is empty, and the figure prints a note. On the
+   benchmark machine, `make microbench-results` freezes the A100 runs
+   (jobids 9032687, 9057444) and the constrained path lights up for the
+   matching hardware/allocator.
 
 ## 6. Risks / caveats
 
@@ -141,5 +152,5 @@ Returns `mean_ms × 1e3` ns, or `None` when no match (hardware or allocator).
 - The degenerate group (rosi KHI 256×128×128, `A_f → 0` boundary) and the
   `hal` KHI humps remain unexplained; the `c_a` constraint does not address
   them.
-- Until the size question (Open 2) is settled, the native-cost budget is
-  approximate; label it clearly rather than presenting it as exact.
+- For the non-KHI setups the native-cost figure is order-of-magnitude (see the
+  Size decision); the KHI groups are the precise reading.

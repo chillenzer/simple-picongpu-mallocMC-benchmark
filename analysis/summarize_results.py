@@ -193,6 +193,21 @@ def _print_alloc_cost(alloc_cost: pd.DataFrame) -> None:
         )
 
 
+def _print_fits_ca(fits_ca: pd.DataFrame) -> None:
+    """Print the secondary A = N*c_a constrained (native-cost) fit, if any.
+
+    Args:
+        fits_ca: the `fits_ca` table of the results file.
+
+    """
+    if fits_ca.empty:
+        return
+    print_table(
+        "A = N*c_a constrained fits (native-cost reading; c_a from the microbenchmark)",
+        fits_ca.to_string(index=False, float_format=lambda v: f"{v:10.3g}"),
+    )
+
+
 def main(*, results: Path = RESULTS, raw: bool = False) -> int:
     """Print the summary tables of one results file.
 
@@ -213,6 +228,7 @@ def main(*, results: Path = RESULTS, raw: bool = False) -> int:
         runs = read_table(file, "runs")
         group_stats = read_table(file, "group_stats")
         fits = read_table(file, "fits")
+        fits_ca = read_table(file, "fits_ca") if "fits_ca" in file else pd.DataFrame()
         shared_fits = read_table(file, "shared_fits") if "shared_fits" in file else pd.DataFrame()
         absorption = read_table(file, "absorption") if "absorption" in file else pd.DataFrame()
         alloc_cost = read_table(file, "alloc_cost") if "alloc_cost" in file else pd.DataFrame()
@@ -244,6 +260,7 @@ def main(*, results: Path = RESULTS, raw: bool = False) -> int:
         if len(stats):
             print_table(f"Group statistics: {label}", stats.to_string(index=False))
     print_table("Fits", fits.to_string(index=False, float_format=lambda v: f"{v:10.3g}"))
+    _print_fits_ca(fits_ca)
     print_shared_fit_summary(shared_fits, fits)
     print_fraction_summary(fits)
     if len(absorption):

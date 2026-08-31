@@ -523,7 +523,8 @@ summary: results
 	$(PY) analysis/summarize_results.py --results $(RESULTS)
 
 figures: figures-sweeps figures-shared \
-	$(FIGDIR)/foil_lct.pdf $(FIGDIR)/kelvin_helmholtz.pdf $(FIGDIR)/fade-models.pdf
+	$(FIGDIR)/foil_lct.pdf $(FIGDIR)/kelvin_helmholtz.pdf $(FIGDIR)/fade-models.pdf \
+	$(FIGDIR)/native-cost.pdf
 
 # The family targets run the plotting scripts unfiltered (all machines,
 # all scenarios), so they work even when figures/ does not exist yet.
@@ -541,6 +542,12 @@ $(FIGDIR)/kelvin_helmholtz.pdf: results
 
 $(FIGDIR)/fade-models.pdf: results
 	$(PY) analysis/plot_fade_models.py --results $(RESULTS)
+
+# The absorbed-slack-vs-native-cost comparison (figures/native-cost.pdf).
+# Data-optional: with no frozen microbenchmark table the script prints a note
+# and writes no file, so the fit stays unconstrained and the figure is skipped.
+$(FIGDIR)/native-cost.pdf: results
+	$(PY) analysis/plot_native_cost.py --results $(RESULTS)
 
 # Build a single figure by name: `make figures/sweeps-hal.pdf` or
 # `make figures/sweeps-shared-hal.pdf`.

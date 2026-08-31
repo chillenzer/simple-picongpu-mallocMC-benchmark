@@ -272,12 +272,17 @@ measured independently (a zero-delay microbenchmark of
 `DeviceAllocator::malloc`/`free`, or mallocMC's own counters) and imposed as
 A_alloc = N·c_a — the fitted A measures absorbed delay, not allocation cost,
 and using it for the budget would book the pipeline's slack against the
-allocator. The (A, s0) structure can stay as a hiding model, but labeled as
-such, with A_m, A_f taken from the measured plateaus (which also removes the
-flat W/N/A direction) and s0 resolved by a sweep dense enough in the bend.
-Until then, f is a slack fraction with a fitting artifact mixed in, and the
-runtime-budget figures should not be read as decompositions of the measured
-runtime.
+allocator. This is now wired: the microbenchmark suite (the frozen
+`alloc_cost` table, `make microbench-results`) supplies `c_a` per
+(hardware, allocator, operation); the unconstrained fit stays the primary
+absorbed-slack reading, and a separate `A = N·c_a` constrained fit (the
+`fits_ca` table, in 1-D and 2-D) gives the native-cost budget — see
+`plan-microbench-supplement.md`. The (A, s0) structure can stay as a hiding
+model, but labeled as such, with A_m, A_f taken from the measured plateaus
+(which also removes the flat W/N/A direction) and s0 resolved by a sweep
+dense enough in the bend. In the unconstrained fit f is a slack fraction
+with a fitting artifact mixed in, and the runtime-budget figures should not
+be read as decompositions of the measured runtime.
 
 ## 7. Follow-up 1 — the flat direction: can a re-parameterization with one fewer parameter remove it?
 
@@ -319,8 +324,9 @@ not the coordinate system:
   1e11–1e14 → 1e4–1e6); `f` then depends on the chosen `s0`, so report the
   ×0.1/×10 sensitivity.
 - **Impose `A = N·c_a`** with `c_a` from an *independent* zero-delay
-  microbenchmark of `DeviceAllocator::malloc`/`free` (the model already
-  supports `model_c_a`) → the only route that gives `f` a measured
+  microbenchmark of `DeviceAllocator::malloc`/`free` (the model supports it
+  in 1-D and 2-D — `model_c_a` / `model_2d_c_a` — and it is wired to the
+  microbenchmark suite) → the only route that gives `f` a measured
   allocation-cost meaning (using the fitted `A` is circular, §5).
 - **Report the identifiable, gauge-invariant, data-pinned combinations** —
   `N`, `T0`, the plateau deficits `d_m`,`d_f` (and per-call `c = d/N`) —

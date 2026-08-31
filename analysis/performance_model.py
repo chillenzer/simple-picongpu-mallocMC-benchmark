@@ -72,8 +72,11 @@ where theory says it may differ between algorithms.
 
 `sleeptimes` are in nanoseconds, `runtimes` in seconds. If an independently
 measured native per-call cost c_a (ns) is available, pass it: A = N*c_a is
-then used and only (W, N, s0) are fitted — the path to a native-cost
-reading, unused by default (no such microbenchmark exists yet).
+then used and only the baseline, the call counts, and the fade scale(s) are
+fitted -- the path to a native-cost reading. `fit_1d` takes one c_a; `fit_2d`
+takes c_malloc and c_free (A_m = N_m*c_malloc, A_f = N_f*c_free). Both are
+used only when the microbenchmark suite of make_microbench.py supplies a
+matching cost; without such data the fits stay unconstrained.
 """
 
 from __future__ import annotations
@@ -310,6 +313,40 @@ def model_c_a(  # ruff: ignore[too-many-arguments, too-many-positional-arguments
     """
     A = N * c
     return W + N * s + A * _fade(fade)(s / s0)
+
+
+def model_2d_c_a(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
+    m: np.ndarray,
+    f: np.ndarray,
+    p: Sequence[float],
+    c_malloc: float,
+    c_free: float,
+    fade: str = BEST_FADE,
+) -> np.ndarray:
+    """Evaluate the 2-operation model with the A = N*c_a constraint, c in seconds.
+
+    The parameters p are (W, N_m, N_f, m0, f0); the absorbed delays are the
+    native per-call costs times the call counts, A_m = N_m*c_malloc and
+    A_f = N_f*c_free, so only (W, N_m, N_f, m0, f0) are free.
+
+    Args:
+        m: the malloc delays in seconds.
+        f: the free delays in seconds.
+        p: the parameters (W, N_m, N_f, m0, f0).
+        c_malloc: the native malloc per-call cost (s), so A_m = N_m*c_malloc.
+        c_free: the native free per-call cost (s), so A_f = N_f*c_free.
+        fade: the fade shape name (a member of `FADE_SHAPES`); defaults to
+        the selected best shape, the exponential.
+
+    Returns:
+        np.ndarray: the model runtime in seconds.
+
+    """
+    W, N_m, N_f, m0, f0 = p
+    A_m = N_m * c_malloc
+    A_f = N_f * c_free
+    shape = _fade(fade)
+    return W + N_m * m + N_f * f + A_m * shape(m / m0) + A_f * shape(f / f0)
 
 
 _BOOTSTRAP_N = 512
@@ -781,6 +818,44 @@ def _f_of_f(p: np.ndarray) -> float:
     return p[4] / (p[0] + p[3] + p[4]) if p[0] + p[3] + p[4] > EPS_S else 0.0
 
 
+def _f_of_m_ca(p: np.ndarray, c_malloc: float, c_free: float) -> float:
+    """Compute f_malloc of the A = N*c_a constrained 2-D fit.
+
+    Args:
+        p: the constrained 2-D parameter vector (W, N_m, N_f, m0, f0).
+        c_malloc: the native malloc per-call cost (s).
+        c_free: the native free per-call cost (s).
+
+    Returns:
+        float: the slack ratio (A_m / zero-delay runtime), A_m = N_m*c_malloc.
+
+    """
+    W, N_m, N_f, _m0, _f0 = p
+    A_m = N_m * c_malloc
+    A_f = N_f * c_free
+    total = W + A_m + A_f
+    return A_m / total if total > EPS_S else 0.0
+
+
+def _f_of_f_ca(p: np.ndarray, c_malloc: float, c_free: float) -> float:
+    """Compute f_free of the A = N*c_a constrained 2-D fit.
+
+    Args:
+        p: the constrained 2-D parameter vector (W, N_m, N_f, m0, f0).
+        c_malloc: the native malloc per-call cost (s).
+        c_free: the native free per-call cost (s).
+
+    Returns:
+        float: the slack ratio (A_f / zero-delay runtime), A_f = N_f*c_free.
+
+    """
+    W, N_m, N_f, _m0, _f0 = p
+    A_m = N_m * c_malloc
+    A_f = N_f * c_free
+    total = W + A_m + A_f
+    return A_f / total if total > EPS_S else 0.0
+
+
 def _fit_bounds_2d(m: np.ndarray, f: np.ndarray) -> tuple[float, float, float, float]:
     """Compute the search ranges of the 2-D fade scales.
 
@@ -892,6 +967,22 @@ def _p0_2d(guess: tuple[float, ...], eps: float) -> list[float]:
     return [max(gW, eps), max(gNm, eps), max(gNf, eps), max(gAm, eps), max(gAf, eps), gm0, gf0]
 
 
+def _p0_2d_ca(guess: tuple[float, ...], eps: float) -> list[float]:
+    """Compute the initial curve_fit parameters of the A = N*c_a constrained 2-D fit.
+
+    Args:
+        guess: the robust grid solution (W, N_m, N_f, A_m, A_f, m0, f0); its
+        absorbed delays are unused (they are the native costs times the counts).
+        eps: the floor for the initial guess.
+
+    Returns:
+        list[float]: the free (W, N_m, N_f, m0, f0) initial guess.
+
+    """
+    gW, gNm, gNf, _gAm, _gAf, gm0, gf0 = guess
+    return [max(gW, eps), max(gNm, eps), max(gNf, eps), gm0, gf0]
+
+
 def _fit_notes_2d(model: Model2d, guess: tuple[float, ...], bounds: tuple[float, float, float, float]) -> list[str]:
     """Report the corner solutions of the constrained 2-D fit.
 
@@ -920,6 +1011,36 @@ def _fit_notes_2d(model: Model2d, guess: tuple[float, ...], bounds: tuple[float,
         notes.append(
             "f0 reached the search cap: the absorbed free delay does not clearly fade, so "
             "A_free and W (hence f_free) are weakly constrained"
+        )
+    return notes
+
+
+def _fit_notes_2d_ca(model: Model2d, bounds: tuple[float, float, float, float]) -> list[str]:
+    """Report the corner solutions of the A = N*c_a constrained 2-D fit.
+
+    With the native-cost constraint the absorbed delays are fixed by the
+    counts, so only the fade scales can reach their search cap (leaving W,
+    and hence the slack ratios, weakly constrained).
+
+    Args:
+        model: the fitted 2-D model.
+        bounds: the (lo_m, hi_m, lo_f, hi_f) search ranges.
+
+    Returns:
+        list[str]: the diagnostics (a fade scale at the search cap).
+
+    """
+    hi_m, hi_f = bounds[1], bounds[3]
+    notes = []
+    if model.m0 >= hi_m * 0.999:
+        notes.append(
+            "m0 reached the search cap: the absorbed malloc delay does not clearly fade, so "
+            "W (hence f_malloc) is weakly constrained"
+        )
+    if model.f0 >= hi_f * 0.999:
+        notes.append(
+            "f0 reached the search cap: the absorbed free delay does not clearly fade, so "
+            "W (hence f_free) is weakly constrained"
         )
     return notes
 
@@ -966,7 +1087,98 @@ def _fit_constrained_2d(
     return ConstrainedFit(model, pcov, list(popt), _fit_notes_2d(model, guess, bounds))
 
 
-def fit_2d(m_delays: pd.Series, f_delays: pd.Series, runtimes: pd.Series, fade: str = BEST_FADE) -> dict:
+def _fit_constrained_2d_ca(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
+    sweep: tuple[np.ndarray, np.ndarray],
+    t: np.ndarray,
+    bounds: tuple[float, float, float, float],
+    guess: tuple[float, ...],
+    c_malloc: float,
+    c_free: float,
+    fade: str = BEST_FADE,
+) -> ConstrainedFit:
+    """Run curve_fit for the A = N*c_a constrained 2-D sweep.
+
+    The absorbed delays are pinned by the native per-call costs (c in
+    seconds), so only (W, N_m, N_f, m0, f0) are fitted.
+
+    Args:
+        sweep: the (m, f) delay arrays in seconds.
+        t: the runtimes in seconds.
+        bounds: the (lo_m, hi_m, lo_f, hi_f) search ranges.
+        guess: the robust grid solution (W, N_m, N_f, A_m, A_f, m0, f0).
+        c_malloc: the native malloc per-call cost (s).
+        c_free: the native free per-call cost (s).
+        fade: the fade shape name (a member of `FADE_SHAPES`).
+
+    Returns:
+        ConstrainedFit: the fitted model, the covariance of the free
+        parameters, the free fit_params, and the corner notes.
+
+    """
+    m, f = sweep
+    eps = 1e-9 * max(1.0, float(np.max(np.abs(t))))
+    p0 = _p0_2d_ca(guess, eps)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", OptimizeWarning)
+        popt, pcov = curve_fit(
+            lambda pf, W, N_m, N_f, m0, f0: model_2d_c_a(
+                pf[0], pf[1], (W, N_m, N_f, m0, f0), c_malloc, c_free, fade=fade
+            ),
+            (m, f),
+            t,
+            p0=p0,
+            bounds=([0.0, 0.0, 0.0, bounds[0], bounds[2]], [_INF, _INF, _INF, bounds[1], bounds[3]]),
+            maxfev=40000,
+        )
+    W, N_m, N_f, m0, f0 = (float(v) for v in popt)
+    model = Model2d(W, N_m, N_f, N_m * c_malloc, N_f * c_free, m0, f0)
+    return ConstrainedFit(model, pcov, list(popt), _fit_notes_2d_ca(model, bounds))
+
+
+def _fit_2d_errors(
+    fit_params: list[float] | None,
+    pcov: np.ndarray | None,
+    *,
+    c_ca: bool,
+    c_m_s: float,
+    c_f_s: float,
+) -> tuple[float, float, float, float, float, float, float, float, float]:
+    """Compute the standard errors of a 2-D fit (unconstrained or A = N*c_a).
+
+    Args:
+        fit_params: the fitted parameter vector (or None).
+        pcov: the parameter covariance matrix (or None).
+        c_ca: whether the A = N*c_a constraint is active.
+        c_m_s: the native malloc per-call cost (s).
+        c_f_s: the native free per-call cost (s).
+
+    Returns:
+        tuple: (W, N_m, N_f, A_m, A_f, m0, f0, f_malloc, f_free) standard errors.
+
+    """
+    if fit_params is None:
+        return (float("nan"),) * 9
+    if c_ca:
+        W_e, Nm_e, Nf_e, m0_e, f0_e, f_malloc_e = _uncertainties(
+            fit_params, pcov, lambda p: _f_of_m_ca(p, c_m_s, c_f_s)
+        )
+        f_free_e = _uncertainties(fit_params, pcov, lambda p: _f_of_f_ca(p, c_m_s, c_f_s))[-1]
+        Am_e = Nm_e * c_m_s if not math.isnan(Nm_e) else float("nan")
+        Af_e = Nf_e * c_f_s if not math.isnan(Nf_e) else float("nan")
+        return W_e, Nm_e, Nf_e, Am_e, Af_e, m0_e, f0_e, f_malloc_e, f_free_e
+    W_e, Nm_e, Nf_e, Am_e, Af_e, m0_e, f0_e, f_malloc_e = _uncertainties(fit_params, pcov, _f_of_m)
+    f_free_e = _uncertainties(fit_params, pcov, _f_of_f)[-1]
+    return W_e, Nm_e, Nf_e, Am_e, Af_e, m0_e, f0_e, f_malloc_e, f_free_e
+
+
+def fit_2d(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
+    m_delays: pd.Series,
+    f_delays: pd.Series,
+    runtimes: pd.Series,
+    fade: str = BEST_FADE,
+    c_malloc: float | None = None,
+    c_free: float | None = None,
+) -> dict:
     """Fit one (malloc, free) delay combination sweep to the two-operation performance model.
 
     The model is T(m, f) = W + N_m*m + N_f*f + A_m*g(m/m0) + A_f*g(f/f0).
@@ -977,6 +1189,10 @@ def fit_2d(m_delays: pd.Series, f_delays: pd.Series, runtimes: pd.Series, fade: 
         runtimes: the runtimes in seconds.
         fade: the fade shape name (a member of `FADE_SHAPES`); defaults to
         the selected best shape, the exponential.
+        c_malloc: the A_m = N_m*c_a malloc constraint in nanoseconds, or None.
+        c_free: the A_f = N_f*c_a free constraint in nanoseconds, or None.
+        With both set, the absorbed delays are the native per-call costs and
+        only (W, N_m, N_f, m0, f0) are fitted (the native-cost reading).
 
     Returns:
         dict: W, N_m, N_f, A_m, A_f, m0, f0, T0, f_malloc, f_free, r2 plus
@@ -998,6 +1214,9 @@ def fit_2d(m_delays: pd.Series, f_delays: pd.Series, runtimes: pd.Series, fade: 
         raise ValueError(msg)
     ss_tot = float(np.sum((t - t.mean()) ** 2))
     notes = []
+    c_ca = c_malloc is not None and c_free is not None
+    c_m_s = (c_malloc if c_malloc is not None else 0.0) * 1e-9
+    c_f_s = (c_free if c_free is not None else 0.0) * 1e-9
 
     def finish(
         model: Model2d, pcov: np.ndarray | None, fit_params: list[float] | None, note: str | None = None
@@ -1013,11 +1232,17 @@ def fit_2d(m_delays: pd.Series, f_delays: pd.Series, runtimes: pd.Series, fade: 
         T0 = model.W + model.A_m + model.A_f
         f_malloc = model.A_m / T0 if T0 > EPS_S else 0.0
         f_free = model.A_f / T0 if T0 > EPS_S else 0.0
-        if fit_params is None:
-            W_e = Nm_e = Nf_e = Am_e = Af_e = m0_e = f0_e = f_malloc_e = f_free_e = float("nan")
-        else:
-            W_e, Nm_e, Nf_e, Am_e, Af_e, m0_e, f0_e, f_malloc_e = _uncertainties(fit_params, pcov, _f_of_m)
-            f_free_e = _uncertainties(fit_params, pcov, _f_of_f)[-1]
+        (
+            W_e,
+            Nm_e,
+            Nf_e,
+            Am_e,
+            Af_e,
+            m0_e,
+            f0_e,
+            f_malloc_e,
+            f_free_e,
+        ) = _fit_2d_errors(fit_params, pcov, c_ca=c_ca, c_m_s=c_m_s, c_f_s=c_f_s)
         return {
             "W": float(model.W),  # no-delay runtime (s)
             "N_m": float(model.N_m),  # allocation calls per run
@@ -1051,7 +1276,10 @@ def fit_2d(m_delays: pd.Series, f_delays: pd.Series, runtimes: pd.Series, fade: 
     bounds = _fit_bounds_2d(m, f)
     guess = _grid_guess_2d(sweep, t, bounds, fade)
     try:
-        cf = _fit_constrained_2d(sweep, t, bounds, guess, fade)
+        if c_ca:
+            cf = _fit_constrained_2d_ca(sweep, t, bounds, guess, c_m_s, c_f_s, fade)
+        else:
+            cf = _fit_constrained_2d(sweep, t, bounds, guess, fade)
         notes.extend(cf.notes)
         return finish(cf.model, cf.pcov, cf.fit_params)
     except (RuntimeError, ValueError) as err:

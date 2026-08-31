@@ -143,6 +143,44 @@ FITS_COLUMNS = [
     "f0_ns",
     "f_free",
     "f_free_err",
+    # The soft comparison against the microbenchmark: the native per-call cost
+    # c_a (ns) and how the fitted per-call absorbed slack (A/N) compares to it.
+    "c_a_malloc_ns",
+    "c_a_free_ns",
+    "slack_over_native_malloc",
+    "slack_over_native_free",
+    "native_note",
+    "note",
+]
+# One row per (group) of the A = N*c_a constrained (secondary) fit: the
+# absorbed delays are the microbenchmark's native per-call costs (c_a) times
+# the call counts, so only (W, N_malloc, N_free, m0, f0) are fitted. Present
+# only for groups whose hardware has a matching microbenchmark cost.
+FITS_CA_COLUMNS = [
+    "machine",
+    *GROUP_KEYS,
+    "n_runs",
+    "model",
+    "c_a_malloc_ns",
+    "c_a_free_ns",
+    "W",
+    "W_err",
+    "T0",
+    "r2",
+    "N_malloc",
+    "N_malloc_err",
+    "A_malloc",
+    "A_malloc_err",
+    "m0_ns",
+    "f_malloc",
+    "f_malloc_err",
+    "N_free",
+    "N_free_err",
+    "A_free",
+    "A_free_err",
+    "f0_ns",
+    "f_free",
+    "f_free_err",
     "note",
 ]
 # One row per (group, arm): the data-pinned absorbed-delay slack. The plateau
@@ -492,17 +530,107 @@ def _fit_cov(res: dict) -> tuple | None:
     return (res["fit_params"], res["pcov"]) if res["fit_params"] is not None else None
 
 
-def fit_one_group(m: pd.Series, f: pd.Series, runtimes: pd.Series, c_a: float | None) -> dict:
-    """Fit one (setup, algorithm, grid) group and map the result onto a row.
+# The dominant KelvinHelmholtz allocation: the particle-frame size in bytes
+# (the paper's number). It is the size at which the native per-call cost c_a
+# is looked up for the A = N*c_a constraint; for the other setups the same
+# size is an order-of-magnitude estimate (their allocation patterns differ).
+KHI_FRAME_BYTES = 7696
+# The microbenchmark operation of each model arm (malloc -> alloc, free ->
+# free): the value of the alloc_cost table's `operation` column.
+MICROBENCH_OPERATION = {"malloc": "alloc", "free": "free"}
+# Benchmark algorithm -> microbenchmark allocator name, where the two differ
+# (the microbenchmark allocator is the mallocMC creation-policy name). A
+# missing match simply leaves the group unconstrained.
+ALLOCATOR_ALIASES: dict[str, list[str]] = {"ScatterAlloc": ["Scatter"], "Gallatin": ["GallatinCuda"]}
 
-    Groups spanning both delays get the two-operation model; groups spanning
-    one delay fall back to the 1-D model on that delay.
+
+def _gpu_model(hardware: object) -> str:
+    """Normalize a hardware label to its GPU model (the vendor stripped).
+
+    Args:
+        hardware: a hardware label, e.g. "NVIDIA A100" or "A100".
+
+    Returns:
+        str: the GPU model, e.g. "A100" in both cases.
+
+    """
+    value = hardware.decode("utf-8", "replace") if isinstance(hardware, (bytes, bytearray)) else str(hardware)
+    tokens = value.split()
+    return " ".join(token for token in tokens if token.upper() not in {"NVIDIA", "AMD", "INTEL"}).strip()
+
+
+def _resolve_c_a(
+    alloc_cost: pd.DataFrame, hardware: object, algorithm: str, operation: str, setup: str
+) -> tuple[float | None, str]:
+    """Resolve the native per-call cost (ns) of one (hardware, allocator, operation).
+
+    The cost is the microbenchmark mean at the representative allocation size
+    (the dominant KHI frame, the nearest measured size; an order-of-magnitude
+    estimate for the other setups). Without a matching row -- no microbenchmark
+    data for the hardware, or no matching allocator -- the cost is None and
+    the note says why, so the fit stays unconstrained.
+
+    Args:
+        alloc_cost: the microbenchmark alloc_cost table.
+        hardware: the group's hardware label (the short name).
+        algorithm: the benchmark algorithm (allocator) name.
+        operation: the arm's microbenchmark operation ("alloc" or "free").
+        setup: the scenario's setup name (KHI is precise, the rest order-of-magnitude).
+
+    Returns:
+        tuple: (the native per-call cost in nanoseconds, or None, the note).
+
+    """
+    if alloc_cost is None or alloc_cost.empty:
+        return None, "no microbenchmark data"
+    hw_model = alloc_cost["hardware"].map(_gpu_model).eq(_gpu_model(hardware))
+    op_model = alloc_cost["operation"].eq(operation)
+    precision = "" if str(setup) == "KelvinHelmholtz" else " (order-of-magnitude estimate)"
+    for name in [str(algorithm), *ALLOCATOR_ALIASES.get(str(algorithm), [])]:
+        sel = alloc_cost[hw_model & op_model & alloc_cost["allocator"].eq(name)]
+        if not sel.empty:
+            idx = sel["size_bytes"].sub(KHI_FRAME_BYTES).abs().idxmin()
+            return float(sel.loc[idx, "mean_ms"]) * 1e6, (
+                f"microbenchmark {operation} at {int(sel.loc[idx, 'size_bytes'])} B "
+                f"({name} on {str(sel.loc[idx, 'hardware']).strip()}){precision}"
+            )
+    have = sorted(set(alloc_cost.loc[hw_model & op_model, "allocator"].astype(str)))
+    if not have:
+        return None, f"no microbenchmark data for this hardware ({_gpu_model(hardware)})"
+    return None, f"no microbenchmark allocator matching {algorithm!r} (have: {', '.join(have)})"
+
+
+def _slack_over_native(A: float, N: float, c_a: float | None) -> float:
+    """Return the fitted per-call absorbed slack (A/N) over the native cost c_a.
+
+    Args:
+        A: the fitted absorbed delay per run (s).
+        N: the fitted call count per run.
+        c_a: the native per-call cost (ns), or None.
+
+    Returns:
+        float: (A/N) / c_a, or NaN when either is unavailable.
+
+    """
+    if c_a is None or not np.isfinite(c_a) or c_a == 0:
+        return float("nan")
+    if not (np.isfinite(A) and np.isfinite(N)) or N == 0:
+        return float("nan")
+    return (A / N) / (c_a * 1e-9)
+
+
+def fit_one_group(m: pd.Series, f: pd.Series, runtimes: pd.Series) -> dict:
+    """Fit one (setup, algorithm, grid) group with the unconstrained model.
+
+    This is the primary fit (the absorbed-slack reading). Groups spanning both
+    delays get the two-operation model; groups spanning one delay fall back to
+    the 1-D model on that delay. The A = N*c_a constrained (native-cost)
+    reading is a separate secondary fit (`fit_one_group_ca`).
 
     Args:
         m: the group's malloc sleeptimes in nanoseconds.
         f: the group's free sleeptimes in nanoseconds.
         runtimes: the group's runtimes in seconds.
-        c_a: the A = N*c constraint in nanoseconds, or None.
 
     Returns:
         dict: the fitted row fields (model, parameters, note, cov).
@@ -534,7 +662,7 @@ def fit_one_group(m: pd.Series, f: pd.Series, runtimes: pd.Series, c_a: float | 
     if m.nunique() >= 2 or f.nunique() >= 2:
         varying = "malloc" if m.nunique() >= 2 else "free"
         delays = m if varying == "malloc" else f
-        res = performance_model.fit_1d(delays, runtimes, c_a=c_a)
+        res = performance_model.fit_1d(delays, runtimes)
         row = {
             "model": f"1d-{varying}",
             "W": res["W"],
@@ -572,24 +700,138 @@ def fit_one_group(m: pd.Series, f: pd.Series, runtimes: pd.Series, c_a: float | 
     return {"note": "fewer than 2 distinct delays in each operation"}
 
 
-def fit_sweep(runs: pd.DataFrame, c_a: float | None = None) -> tuple[pd.DataFrame, list[tuple[tuple, tuple, tuple]]]:
+def fit_one_group_ca(
+    m: pd.Series,
+    f: pd.Series,
+    runtimes: pd.Series,
+    c_malloc: float | None,
+    c_free: float | None,
+) -> dict | None:
+    """Fit one group with the A = N*c_a constrained (secondary, native-cost) model.
+
+    The absorbed delays are the microbenchmark's native per-call costs
+    (c_malloc, c_free, in nanoseconds) times the call counts, so only the
+    baseline, the call counts, and the fade scale(s) are fitted.
+
+    Args:
+        m: the group's malloc sleeptimes in nanoseconds.
+        f: the group's free sleeptimes in nanoseconds.
+        runtimes: the group's runtimes in seconds.
+        c_malloc: the native malloc per-call cost (ns), or None.
+        c_free: the native free per-call cost (ns), or None.
+
+    Returns:
+        dict | None: the constrained row fields (model, parameters, note,
+        cov), or None when the constraint is not applicable (a needed cost
+        is missing) or the group has too few distinct delays.
+
+    """
+    nan = float("nan")
+    c_m = nan if c_malloc is None else c_malloc
+    c_f = nan if c_free is None else c_free
+    if m.nunique() >= 2 and f.nunique() >= 2:
+        if c_malloc is None or c_free is None:
+            return None
+        res = performance_model.fit_2d(m, f, runtimes, c_malloc=c_malloc, c_free=c_free)
+        return {
+            "model": "2d-ca",
+            "c_a_malloc_ns": c_m,
+            "c_a_free_ns": c_f,
+            "W": res["W"],
+            "W_err": res["W_err"],
+            "T0": res["T0"],
+            "r2": res["r2"],
+            "N_malloc": res["N_m"],
+            "N_malloc_err": res["N_m_err"],
+            "A_malloc": res["A_m"],
+            "A_malloc_err": res["A_m_err"],
+            "m0_ns": _to_ns(res["m0"]),
+            "f_malloc": res["f_malloc"],
+            "f_malloc_err": res["f_malloc_err"],
+            "N_free": res["N_f"],
+            "N_free_err": res["N_f_err"],
+            "A_free": res["A_f"],
+            "A_free_err": res["A_f_err"],
+            "f0_ns": _to_ns(res["f0"]),
+            "f_free": res["f_free"],
+            "f_free_err": res["f_free_err"],
+            "note": "; ".join(res["warnings"]),
+            "cov": _fit_cov(res),
+        }
+    if m.nunique() >= 2 or f.nunique() >= 2:
+        varying = "malloc" if m.nunique() >= 2 else "free"
+        c = c_malloc if varying == "malloc" else c_free
+        if c is None:
+            return None
+        delays = m if varying == "malloc" else f
+        res = performance_model.fit_1d(delays, runtimes, c_a=c)
+        row = {
+            "model": f"1d-{varying}-ca",
+            "c_a_malloc_ns": c_m,
+            "c_a_free_ns": c_f,
+            "W": res["W"],
+            "W_err": res["W_err"],
+            "T0": res["T0"],
+            "r2": res["r2"],
+            "note": "; ".join(res["warnings"]),
+            "cov": _fit_cov(res),
+        }
+        if varying == "malloc":
+            row.update(
+                {
+                    "N_malloc": res["N"],
+                    "N_malloc_err": res["N_err"],
+                    "A_malloc": res["A"],
+                    "A_malloc_err": res["A_err"],
+                    "m0_ns": _to_ns(res["s0"]),
+                    "f_malloc": res["f"],
+                    "f_malloc_err": res["f_err"],
+                }
+            )
+        else:
+            row.update(
+                {
+                    "N_free": res["N"],
+                    "N_free_err": res["N_err"],
+                    "A_free": res["A"],
+                    "A_free_err": res["A_err"],
+                    "f0_ns": _to_ns(res["s0"]),
+                    "f_free": res["f"],
+                    "f_free_err": res["f_err"],
+                }
+            )
+        return row
+    return None
+
+
+def fit_sweep(
+    runs: pd.DataFrame, alloc_cost: pd.DataFrame | None = None
+) -> tuple[pd.DataFrame, pd.DataFrame, list[tuple[tuple, tuple, tuple]]]:
     """Fit every (machine, setup, algorithm, grid) group of a runs table.
 
-    Groups whose runs span both the malloc and the free delay are fitted
-    with the two-operation model of `performance_model.fit_2d`; groups spanning only
-    one delay fall back to the 1-D model of `performance_model.fit_1d` on that delay.
+    The primary fit is the unconstrained model: groups whose runs span both
+    the malloc and the free delay are fitted with the two-operation model of
+    `performance_model.fit_2d`, groups spanning only one delay fall back to
+    the 1-D model of `performance_model.fit_1d` on that delay. The primary
+    row also carries the soft comparison against the microbenchmark (the
+    native per-call cost c_a and the fitted per-call absorbed slack relative
+    to it). Where the microbenchmark supplies a matching cost for the
+    group's hardware, a secondary A = N*c_a constrained (native-cost) fit is
+    recorded in the `fits_ca` table.
 
     Args:
         runs: the parsed runs table.
-        c_a: the A = N*c constraint in nanoseconds, or None.
+        alloc_cost: the microbenchmark alloc_cost table (or None); the source
+        of the native per-call costs. Without it (or without a matching
+        hardware/allocator) the fits stay unconstrained.
 
     Returns:
-        tuple: (the fits table, the (key, fit_params, pcov) entries to store
-        under `fits/cov/`).
+        tuple: (the fits table, the fits_ca table, the (key, fit_params,
+        pcov) entries to store under `fits/cov/`).
 
     """
     if runs.empty:
-        return _empty_table(FITS_COLUMNS), []
+        return _empty_table(FITS_COLUMNS), _empty_table(FITS_CA_COLUMNS), []
     no_fit = {
         "model": None,
         "W": np.nan,
@@ -608,9 +850,15 @@ def fit_sweep(runs: pd.DataFrame, c_a: float | None = None) -> tuple[pd.DataFram
         "f0_ns": np.nan,
         "f_free": np.nan,
         "f_free_err": np.nan,
+        "c_a_malloc_ns": np.nan,
+        "c_a_free_ns": np.nan,
+        "slack_over_native_malloc": np.nan,
+        "slack_over_native_free": np.nan,
+        "native_note": None,
         "note": None,
     }
     rows = []
+    ca_rows = []
     covs = []
     for key, frame in runs.groupby(["machine", *GROUP_KEYS], dropna=False):
         grp = frame.dropna(subset=[MALLOC_DELAY, FREE_DELAY, RUN_TIME])
@@ -620,15 +868,41 @@ def fit_sweep(runs: pd.DataFrame, c_a: float | None = None) -> tuple[pd.DataFram
             "n_runs": len(grp),
             **no_fit,
         }
+        hardware = frame["hardware"].iloc[0] if len(frame["hardware"]) else None
         try:
-            row.update(fit_one_group(grp[MALLOC_DELAY], grp[FREE_DELAY], grp[RUN_TIME], c_a))
+            row.update(fit_one_group(grp[MALLOC_DELAY], grp[FREE_DELAY], grp[RUN_TIME]))
         except ValueError as err:
             row.update({**no_fit, "note": str(err)})
+        c_malloc, note_m = _resolve_c_a(
+            alloc_cost, hardware, str(row["algorithm"]), MICROBENCH_OPERATION["malloc"], str(row["setup"])
+        )
+        c_free, note_f = _resolve_c_a(
+            alloc_cost, hardware, str(row["algorithm"]), MICROBENCH_OPERATION["free"], str(row["setup"])
+        )
+        row["c_a_malloc_ns"] = c_malloc if c_malloc is not None else np.nan
+        row["c_a_free_ns"] = c_free if c_free is not None else np.nan
+        row["slack_over_native_malloc"] = _slack_over_native(row["A_malloc"], row["N_malloc"], c_malloc)
+        row["slack_over_native_free"] = _slack_over_native(row["A_free"], row["N_free"], c_free)
+        row["native_note"] = f"{note_m}; {note_f}"
+        ca_row = fit_one_group_ca(grp[MALLOC_DELAY], grp[FREE_DELAY], grp[RUN_TIME], c_malloc, c_free)
+        if ca_row is not None:
+            ca_row.pop("cov", None)  # the standard errors are in the table columns
+            ca_row = {
+                "machine": key[0],
+                **dict(zip(GROUP_KEYS, key[1:], strict=True)),
+                "n_runs": len(grp),
+                **ca_row,
+            }
+            ca_rows.append(ca_row)
         cov = row.pop("cov", None)
         if cov is not None:
             covs.append(((key[0], key[1], key[2], grid_label(key[3], key[4], key[5])), cov[0], cov[1]))
         rows.append(row)
-    return pd.DataFrame(rows)[FITS_COLUMNS], covs
+    return (
+        pd.DataFrame(rows)[FITS_COLUMNS],
+        pd.DataFrame(ca_rows)[FITS_CA_COLUMNS] if ca_rows else _empty_table(FITS_CA_COLUMNS),
+        covs,
+    )
 
 
 def _arm_absorption(x_ns: pd.Series, runtimes: pd.Series, baseline: float) -> dict:
@@ -1106,6 +1380,7 @@ def main(output: Path, configuration: str | None = None) -> None:
             "runs": runs,
             "group_stats": _empty_table(GROUP_STATS_COLUMNS),
             "fits": _empty_table(FITS_COLUMNS),
+            "fits_ca": _empty_table(FITS_CA_COLUMNS),
             "shared_fits": _empty_table(SHARED_FITS_COLUMNS),
             "baselines": _empty_table(BASELINES_COLUMNS),
             "absorption": _empty_table(ABSORPTION_COLUMNS),
@@ -1131,7 +1406,7 @@ def main(output: Path, configuration: str | None = None) -> None:
             "khi": khi_stats(runs),
             "alloc_cost": microbench_input["frame"],
         }
-        tables["fits"], fit_covs = fit_sweep(analyzed)
+        tables["fits"], tables["fits_ca"], fit_covs = fit_sweep(analyzed, microbench_input["frame"])
         tables["shared_fits"], shared_covs = fit_sweep_combined(
             analyzed, tables["fits"], [str(algorithm) for algorithm in config.get("algorithms", [])]
         )

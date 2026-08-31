@@ -89,13 +89,18 @@ The fit is a bounded `scipy.optimize.curve_fit` (W, N, A >= 0, s0 in
 [0.05*s_min, 0.5*s_range]) with a robust linear solution over a log-s0
 grid as the initial guess — reported as the fit when `curve_fit` does
 not converge; the parameter errors are propagated from the fit
-covariance, and the figures carry a bootstrap sleeve. When an
-independently measured native per-call cost c_a (ns) is available, the
-fit can be constrained to A = N*c_a and fit (W, N, s0) only — the path to
-a native-cost reading; it is unused by default, as no such microbenchmark
-exists yet. The model, the bounds, and the bootstrap's caveats are
-documented in the `analysis/performance_model.py` module docstring, which
-is the single source of truth for the model.
+covariance, and the figures carry a bootstrap sleeve. The
+microbenchmark suite of `make_microbench.py` measures the native per-call
+cost c_a (ns) independently; where its frozen table supplies a cost for a
+group's hardware and allocator, the unconstrained fit above stays the
+primary (absorbed-slack) reading and the fits row also reports the native
+cost and the absorbed slack relative to it (`slack_over_native_*`), while a
+separate `A = N*c_a` constrained fit — fitting (W, N, s0) only, the
+`fits_ca` table — gives the native-cost budget. Without matching
+microbenchmark data a group stays unconstrained. The model, the bounds,
+the constraint, and the bootstrap's caveats are documented in the
+`analysis/performance_model.py` module docstring, which is the single
+source of truth for the model.
 
 **Why the sweep is shaped like this.** The delay arms run a log grid from
 100 ns to 1e8 ns so the large delays anchor the asymptote W + N*s —
