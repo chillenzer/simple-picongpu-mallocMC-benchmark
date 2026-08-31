@@ -5,7 +5,7 @@ its `runs` table) and re-fits every (machine, setup, algorithm, grid) sweep
 with nested models to test whether the saturation terms
 A_m*m0/(m+m0) + A_f*f0/(f+f0) are supported by the data.
 
-Prints four blocks:
+Prints six blocks:
   1. per group: reproduction of the stored 7-parameter fit (same pipeline),
      F-tests / BIC of the full 7-param model vs the 3-param linear null and
      vs the 5-param models with one saturation term removed, the
@@ -14,17 +14,24 @@ Prints four blocks:
   2. multi-modality of the flagged group: SSR/r2 of the stored fit, of a
      fresh refit from the same documented grid initial guess, and of the
      linear null, on the identical data;
-   3. the implied native cost per call c_a = A/N per group;
-   4. the baseline-anchored view: E(s) = T(s) - T(0) - N*s per arm, the
-      plateau deficit d = T(0) - (large-delay line intercept) = the total
-      delay absorbed by parallel work, and d/N = the absorbable slack per
-      call. This is the test of the "the delay is hidden because allocation
-      is not the bottleneck" hypothesis;
-   5. the model-consistent decomposition: on the malloc arm
-      T(m,0) -> W + A_free + N_malloc*m as m -> inf, so the data pin
-      A_malloc = d_m, A_free = d_f, W = T(0) - d_m - d_f directly; this
-      block compares the stored fit to those data-pinned values and prints
-      the stored model's max residual against the raw data.
+  3. sensitivity of the headline fractions to the fade-scale seed;
+  4. the baseline-anchored view: E(s) = T(s) - T(0) - N*s per arm, the
+     plateau deficit d = T(0) - (large-delay line intercept) = the total
+     delay absorbed by parallel work, and d/N = the absorbable slack per
+     call. This is the test of the "the delay is hidden because allocation
+     is not the bottleneck" hypothesis;
+  5. the model-consistent decomposition: on the malloc arm
+     T(m,0) -> W + A_free + N_malloc*m as m -> inf, so the data pin
+     A_malloc = d_m, A_free = d_f, W = T(0) - d_m - d_f directly; this
+     block compares the stored fit to those data-pinned values and prints
+     the stored model's max residual against the raw data;
+  6. the gauge symmetry of the model: the exact per-arm delay-origin shift
+     (W -> W + N*m0*d, A -> A/(1+d), m0 -> m0*(1+d), m -> m - m0*d), whose
+     invariants are N, A*m0 and W - N*m0. The reported fractions A/T0 are
+     not invariants, so this block quantifies how far f_malloc / f_free move
+     along the gauge orbit over the fade-scale search window, and how much of
+     each gauge direction is a flat direction of the fit (its share in the
+     two flattest pcov directions).
 """
 
 from __future__ import annotations
@@ -183,6 +190,70 @@ def seed_sensitivity(m, f, t, lo_m, hi_m, lo_f, hi_f, ngrid=25):
     return out
 
 
+def gauge_block(m, fv, stored, lo_m, hi_m, lo_f, hi_f, pcov):
+    """Gauge-symmetry diagnostic for one stored 7-parameter fit.
+
+    The model is exactly invariant under the per-arm delay-origin shifts
+        malloc: W -> W + N_m*m0*d, A_m -> A_m/(1+d), m0 -> m0*(1+d), m -> m - m0*d
+        free:   W -> W + N_f*f0*e, A_f -> A_f/(1+e), f0 -> f0*(1+e), f -> f - f0*e
+    with invariants (N_m, N_f, A_m*m0, A_f*f0, W - N_m*m0 - N_f*f0). The
+    reported fractions f_m = A_m/T0 and f_f = A_f/T0 are not invariants, so
+    this quantifies how far they move along the gauge orbit over the fade-scale
+    search window, plus the share of each gauge direction in the two flattest
+    directions of `pcov` (1 = a flat direction of the fit, i.e. the data do
+    not pin the gauge).
+    """
+    W, Nm, Nf, Am, Af, m0, f0 = (float(v) for v in stored)
+    base = model_full(m, fv, W, Nm, Nf, Am, Af, m0, f0)
+
+    worst = 0.0
+    for d in (-0.5, -0.2, 0.05, 0.2, 0.5):
+        r = model_full(m - m0 * d, fv, W + Nm * m0 * d, Nm, Nf, Am / (1 + d), Af, m0 * (1 + d), f0)
+        worst = max(worst, float(np.max(np.abs(r - base))))
+    for e in (-0.5, -0.2, 0.05, 0.2, 0.5):
+        r = model_full(m, fv - f0 * e, W + Nf * f0 * e, Nm, Nf, Am, Af / (1 + e), m0, f0 * (1 + e))
+        worst = max(worst, float(np.max(np.abs(r - base))))
+
+    T0 = W + Am + Af
+    fm0 = Am / T0 if T0 > EPS_S else 0.0
+    ff0 = Af / T0 if T0 > EPS_S else 0.0
+
+    def fm_of_d(d):
+        Ad = Am / (1 + d)
+        T0d = W + Nm * m0 * d + Ad + Af
+        return Ad / T0d if T0d > EPS_S else 0.0
+
+    def ff_of_e(e):
+        Ae = Af / (1 + e)
+        T0e = W + Nf * f0 * e + Am + Ae
+        return Ae / T0e if T0e > EPS_S else 0.0
+
+    # gauge orbit over the whole fade-scale search window (includes d = 0)
+    dg = np.unique(np.concatenate([np.linspace(lo_m / m0 - 1.0, hi_m / m0 - 1.0, 121), [0.0]]))
+    eg = np.unique(np.concatenate([np.linspace(lo_f / f0 - 1.0, hi_f / f0 - 1.0, 121), [0.0]]))
+    # how far f moves along the gauge orbit over that window
+    fmg = np.array([fm_of_d(d) for d in dg])
+    ffg = np.array([ff_of_e(e) for e in eg])
+    fm_rng = (float(fmg.min()), float(fmg.max()))
+    ff_rng = (float(ffg.min()), float(ffg.max()))
+
+    g_m = np.array([Nm * m0, 0.0, 0.0, -Am, 0.0, m0, 0.0])
+    g_f = np.array([Nf * f0, 0.0, 0.0, 0.0, -Af, 0.0, f0])
+    flat = (float("nan"), float("nan"))
+    if pcov is not None and np.all(np.isfinite(pcov)):
+        cov = np.asarray(pcov, dtype=float)
+        _eig, evec = np.linalg.eigh(0.5 * (cov + cov.T))
+        v1, v2 = evec[:, 0], evec[:, 1]
+
+        def frac(g):
+            gn = g / np.linalg.norm(g)
+            return float(np.hypot(np.dot(v1, gn), np.dot(v2, gn)))
+
+        flat = (frac(g_m), frac(g_f))
+
+    return {"id_res": worst, "fm0": fm0, "ff0": ff0, "fm_rng": fm_rng, "ff_rng": ff_rng, "flat": flat}
+
+
 def arm_offset(m, f, t):
     """Per arm (per-delay medians): offset above the line through the two
     largest-delay points, at the smallest delay and at mid-range (s)."""
@@ -300,6 +371,7 @@ def main():
     multimod = None
     seed_results: dict[str, list] = {}
     anchored_results: dict[str, tuple] = {}
+    gauge_results: dict[str, dict] = {}
     for i, row in fits.iterrows():
         key = (row["machine"], row["setup"], row["algorithm"], row["x"], row["y"], row["z"])
         sub = group_of(runs, key)
@@ -362,6 +434,7 @@ def main():
         arm = arm_offset(m, fv, t)
         arms = arm_profile(m, fv, t)
         seeds = seed_sensitivity(m, fv, t, lo_m, hi_m, lo_f, hi_f)
+        gauge = gauge_block(m, fv, stored, lo_m, hi_m, lo_f, hi_f, pcov)
 
         rows.append(
             {
@@ -390,6 +463,8 @@ def main():
                 "base00": base00,
                 "W": row["W"],
                 "spread": spread,
+                "fm_err": float(row["f_malloc_err"]) if np.isfinite(row["f_malloc_err"]) else float("nan"),
+                "ff_err": float(row["f_free_err"]) if np.isfinite(row["f_free_err"]) else float("nan"),
                 "am_off_s": arm["malloc"][0] if arm["malloc"] else float("nan"),
                 "am_off_m": arm["malloc"][1] if arm["malloc"] else float("nan"),
                 "af_off_s": arm["free"][0] if arm["free"] else float("nan"),
@@ -406,6 +481,7 @@ def main():
             }
         )
         seed_results[rows[-1]["group"]] = seeds
+        gauge_results[rows[-1]["group"]] = gauge
         anchored = arm_anchored(m, fv, t, base00)
         anchored_results[rows[-1]["group"]] = anchored
         # model-consistent decomposition pinned by the data:
@@ -545,6 +621,42 @@ def main():
     for c in ("f_m%", "f_m_pin%", "f_f%", "f_f_pin%", "maxres_stored"):
         pin[c] = df[c].map(lambda v: f"{v:.2f}")
     print(pin.to_string(index=False))
+    print()
+    print("=== 6. gauge symmetry: the reported fractions are not model invariants ===")
+    print("The model is exactly invariant under the per-arm delay-origin shifts")
+    print("  malloc: W -> W + N_m*m0*d   A_m -> A_m/(1+d)   m0 -> m0*(1+d)   m -> m - m0*d")
+    print("  free:   W -> W + N_f*f0*e   A_f -> A_f/(1+e)   f0 -> f0*(1+e)   f -> f - f0*e")
+    print("invariants: N_m, N_f, A_m*m0, A_f*f0, W - N_m*m0 - N_f*f0; id = max identity residual (s).")
+    print("f_m%/f_f%: stored fractions. *_win: fraction range along the gauge orbit over the fade-scale")
+    print("search window (f is a convention, not a model invariant). w/err: that range width in units of")
+    print("the stored 1-sigma fraction error. flat_gm/gf: share of the malloc/free gauge direction in the")
+    print("two flattest pcov directions (1 = a flat direction, the data do not pin the gauge; 0 = pinned).")
+    gtab = []
+    for grp, g in gauge_results.items():
+        fm_rng, ff_rng = g["fm_rng"], g["ff_rng"]
+
+        def rngstr(r):
+            return f"[{100*r[0]:.1f},{100*r[1]:.1f}]" if np.isfinite(r[0]) and np.isfinite(r[1]) else "-"
+
+        fm_err = df.loc[df["group"] == grp, "fm_err"].iloc[0]
+        ff_err = df.loc[df["group"] == grp, "ff_err"].iloc[0]
+        fm_w = fm_rng[1] - fm_rng[0] if np.isfinite(fm_rng[0]) and np.isfinite(fm_rng[1]) else float("nan")
+        ff_w = ff_rng[1] - ff_rng[0] if np.isfinite(ff_rng[0]) and np.isfinite(ff_rng[1]) else float("nan")
+        gtab.append(
+            {
+                "group": grp,
+                "id": f"{g['id_res']:.1e}",
+                "f_m%": f"{100*g['fm0']:.1f}",
+                "f_m_win": rngstr(fm_rng),
+                "w/err_m": f"{fm_w/fm_err:5.1f}" if np.isfinite(fm_w) and fm_err > EPS_S else "-",
+                "f_f%": f"{100*g['ff0']:.1f}",
+                "f_f_win": rngstr(ff_rng),
+                "w/err_f": f"{ff_w/ff_err:5.1f}" if np.isfinite(ff_w) and ff_err > EPS_S else "-",
+                "flat_gm": f"{g['flat'][0]:.2f}" if np.isfinite(g["flat"][0]) else "-",
+                "flat_gf": f"{g['flat'][1]:.2f}" if np.isfinite(g["flat"][1]) else "-",
+            }
+        )
+    print(pd.DataFrame(gtab).to_string(index=False))
 
 
 if __name__ == "__main__":
