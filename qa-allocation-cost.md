@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
+SPDX-License-Identifier: MIT
+-->
+
 # Q2 — Can the delay-sweep plateau measure the (de-)allocation cost?
 
 **Data:** `output/results.h5`, 12 fit groups / 24 arms (3558 runs), 2 algorithms

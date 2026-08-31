@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
+SPDX-License-Identifier: MIT
+-->
+
 # f is not an allocation fraction: the saturation terms measure hidden delay
 
 **Subject:** `analysis/allocation_model.py` — the model
@@ -381,6 +386,51 @@ data cannot adjudicate the interpretation; a zero-delay `DeviceAllocator`
 microbenchmark would (and would also give `H = c_a + d/N`). rosi allows no
 comparison (single algorithm).
 
+## Strongest justifiable claims from these fits (and what to stop claiming)
+
+The re-analysis above settles what the delay-sweep fits do and do not support.
+When comparing the allocation algorithms within PIConGPU, the defensible
+content of these data is, in order of strength:
+
+**Tier 1 — model-free; the core of the comparison.**
+- **End-to-end runtime at the (0,0) baseline, per algorithm.** With no imposed
+  delay the measured runtime is the real "which allocator is faster" answer
+  (the `foil`/`khi` tables and the zero-delay figures). It is end-to-end — it
+  includes any memory-layout / pipeline / lock effect of the allocator, not a
+  pure allocation cost — which is exactly what "performance within PIConGPU"
+  means.
+- **Call-count parity.** `N_malloc`, `N_free` (the large-delay slope) agree
+  between algorithms to 0.00–1.11 %, so a runtime difference is not from
+  issuing more or fewer allocations.
+
+**Tier 2 — robust, gauge-invariant, data-anchored (the fits' real
+contribution).**
+- **Absorbed-delay slack.** The plateau deficit `d` (total imposed delay the
+  pipeline hides per run) and the per-call `c = d/N` are gauge-invariant and
+  flat-direction-free: a quantitative fingerprint of the host/device overlap,
+  *not* an allocation cost.
+- **The absorption mechanism.** Imposed delay is absorbed smoothly
+  (hyperbolically) up to the per-call slack, then exposed at the `N·s` line —
+  the allocation is not the bottleneck until the imposed delay exceeds the
+  slack (20/24 arms).
+
+**Tier 3 — real, unexplained (flag; do not over-claim).**
+- The twelve hal KHI small-delay amplification humps and the four over-exposed
+  arms. Genuine and reproducible; they limit the KHI cost comparison and are
+  open questions (diagnosed in `khi-humps.md`).
+
+**Retired — what these fits do not support.**
+- `f = A/T0` as "the fraction of runtime spent in allocation": gauge- and
+  seed-dependent, not a data quantity, and `A` is not a native cost.
+- The `(W, A, s0)` split / any runtime-budget decomposition (the flat
+  direction, unidentifiable — §7).
+- An absolute per-call allocation cost (not measured; `c = d/N` is the slack
+  `H − c_a`, not `c_a`).
+
+The benchmark now reports the Tier-1 comparison as the headline and the
+Tier-2 quantities as the supporting characterization; `f` is kept only as a
+clearly-labelled, convention-dependent slack ratio.
+
 ## References and reproduction
 
 - `analysis/allocation_model.py:1–31` (model, bounds), `:218` (degeneracy),
@@ -400,3 +450,8 @@ comparison (single algorithm).
   `qa-allocation-cost.md` + `qa2_analysis.py`, `qa2_table.py` (per-arm N, d,
   c, E, O; hyperbola/step/line shape fits; parametric-bootstrap errors;
   scenario comparison)
+- Follow-up 3 (the KHI small-delay amplification humps and the
+  over-exposed arms; data-only diagnosis): `khi-humps.md` +
+  `analysis/diagnose_humps.py` (model-free per-arm excess E(s), per-run
+  breakdowns, scaling; ruled-out mechanisms, candidate mechanisms, and
+  the decisive measurements)

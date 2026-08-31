@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
+SPDX-License-Identifier: MIT
+-->
+
 # Q1 — Can a re-parameterization with one fewer parameter remove the flat direction of the fit?
 
 **Data:** `output/results.h5`, 12 fit groups / 24 arms (3558 runs), all 7-parameter

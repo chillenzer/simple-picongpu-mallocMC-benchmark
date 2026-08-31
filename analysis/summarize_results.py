@@ -9,8 +9,11 @@ prints the total run count with its superseded share
 then the summary tables: per machine, the parsed runs (with `--raw`) and
 the group runtime statistics; the allocation-model fit tables, a
 comparison of the shared-parameter (combined) fits against the individual
-fits, and the fraction summary; the No-delay runtimes; and the FoilLCT /
-KelvinHelmholtz figure statistics.
+fits, the slack-ratio summary (f = A/T0, the absorbed delay over the
+zero-delay runtime — a convention-dependent ratio, not a runtime budget),
+and the per-arm absorbed-delay slack (the plateau deficit d and the
+per-call c = d/N, the gauge-invariant Tier-2 quantities); the No-delay
+runtimes; and the FoilLCT / KelvinHelmholtz figure statistics.
 """
 
 from __future__ import annotations
@@ -42,7 +45,11 @@ def print_table(name: str, text: str) -> None:
 
 
 def print_fraction_summary(fits: pd.DataFrame) -> None:
-    """Print the fraction f = A/T0 of every fit with a fraction in (0, 1).
+    """Print the slack ratio f = A/T0 of every fit with a ratio in (0, 1).
+
+    f is the absorbed delay as a share of the zero-delay runtime T0 — a
+    convention-dependent ratio, not a runtime budget and not the native
+    allocation cost (analysis-review.md).
 
     Args:
         fits: the fits table of the results file.
@@ -53,7 +60,7 @@ def print_fraction_summary(fits: pd.DataFrame) -> None:
         # Name the algorithm only when more than one is present: single-policy
         # output stays exactly as before multi-algorithm sweeps.
         show_algorithm = fits["algorithm"].nunique() > 1
-        print("\nFraction of runtime spent in the operation (f = A/T0):")
+        print("\nSlack ratio (f = A/T0, the absorbed delay over the zero-delay runtime):")
         for _, r in fit.iterrows():
             fractions = []
             for name in ("f_malloc", "f_free"):
@@ -180,6 +187,7 @@ def main(*, results: Path = RESULTS, raw: bool = False) -> int:
         group_stats = read_table(file, "group_stats")
         fits = read_table(file, "fits")
         shared_fits = read_table(file, "shared_fits") if "shared_fits" in file else pd.DataFrame()
+        absorption = read_table(file, "absorption") if "absorption" in file else pd.DataFrame()
         foil = read_table(file, "foil")
         foil_pvalue = read_table(file, "foil_pvalue")
         khi = read_table(file, "khi")
@@ -207,6 +215,11 @@ def main(*, results: Path = RESULTS, raw: bool = False) -> int:
     print_table("Fits", fits.to_string(index=False, float_format=lambda v: f"{v:10.3g}"))
     print_shared_fit_summary(shared_fits, fits)
     print_fraction_summary(fits)
+    if len(absorption):
+        print_table(
+            "Absorbed delay per arm (d = plateau deficit in s, c = d/N in us per call)",
+            absorption.to_string(index=False, float_format=lambda v: f"{v:10.3g}"),
+        )
     print_table("No-delay runtimes", runs[no_delay_mask(runs)].to_string(index=False))
     print_table(
         "Foil metadata",

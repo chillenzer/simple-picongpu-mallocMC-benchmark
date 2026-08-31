@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
+# SPDX-License-Identifier: MIT
+
 ====================================================================================================
 P1. per stored fit: cond(pcov), flat directions (largest pcov eigenvalues)
 ====================================================================================================

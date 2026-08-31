@@ -24,6 +24,7 @@ run, change, and analyze the benchmark. *Where to look* indexes the goals.
 | You want to ...                         | Read                                              | Open first                          |
 |-----------------------------------------|---------------------------------------------------|-------------------------------------|
 | verify the measurement and the model    | *The method*                                      | `analysis/allocation_model.py`      |
+| understand the KHI small-delay anomaly  | `khi-humps.md`                                    | `analysis/diagnose_humps.py`        |
 | reproduce the numbers and figures       | *Where the data lives*, *Reproducing the analysis* | `make env`, then `make`            |
 | run the benchmark, or add a machine     | *Running the benchmark*                           | the `machines` table of `config.json` |
 | extend the benchmark                    | *Changing what is benchmarked*                    | `config.json`                       |
@@ -49,17 +50,16 @@ on the 64-bit device global timer injected at the top of
 turned out too weak and produced step-like sweeps, so the busy-wait
 replaced it.
 
-**The allocation model.** Each of the N allocation calls on the
-(serial, host-side) critical path takes its native cost c_a plus the
-imposed delay s, so the runtime follows the straight line
-
-```
-T(s) = W + A + N*s,   A = N*c_a (native allocation time)
-```
-
-with W the runtime without any allocation cost. The native part is
-negligible against large imposed delays but sets the small-delay
-behaviour, so a sweep is fitted with the allocation model
+**The allocation model.** With no imposed delay the measured runtime is
+the simulation's real runtime with each allocator — the `(0, 0)`
+baseline — and that end-to-end runtime is the benchmark's headline
+algorithm comparison. The delay arms characterize how the allocator
+interacts with the pipeline: each of the N calls on the critical path
+takes the imposed delay s, so at large delay the runtime is the straight
+line `T = W + N*s` (W the no-delay runtime). The delay does not simply
+add, though — part of it is hidden by the parallel work that runs while
+the allocator spins — so the absorbed part fades over the sleeptime scale
+s0 and a sweep is fitted with the allocation model
 
 ```
 T(s)  = W + N*s + A*s0/(s+s0)                 (one delay)
@@ -67,29 +67,34 @@ T(m,f) = W + N_m*m + N_f*f + A_m*m0/(m+m0)
          + A_f*f0/(f+f0)                      (both delays)
 ```
 
-which has the straight line's zero-delay value T0 = W + A (one delay;
-T0 = W + A_malloc + A_free with the two operations) and approaches its
-large-delay asymptote W + N*s, the native cost fading over the sleeptime
-scale s0 (m0, f0 per operation). The fitted parameters are therefore W
-(baseline runtime), N (allocation calls per run; N_malloc / N_free per
-operation), A (native allocation time; A_malloc / A_free per operation),
-and the fade scale s0 (m0, f0). The fraction of the zero-delay runtime
-T0 spent in the native cost is f = A/T0 (f_malloc = A_malloc/T0,
-f_free = A_free/T0), always in [0, 1) by the fit's bounds.
+which equals the baseline T0 = W + A (one delay; T0 = W + A_malloc +
+A_free with both) at zero delay and approaches the asymptote W + N*s,
+where every call's delay is exposed. The fitted parameters are W
+(baseline runtime), N (calls per run; N_malloc / N_free per operation), A
+(the total delay absorbed per run; A_malloc / A_free per operation), and
+the fade scale s0 (m0, f0). The per-call absorbed slack c = A/N is how
+much imposed delay per call the pipeline hides before it reaches the
+runtime. The ratio f = A/T0 (f_malloc = A_malloc/T0, f_free = A_free/T0)
+is a convention-dependent slack ratio — absorbed delay over zero-delay
+runtime — not a runtime budget and not the native allocation cost; see
+`analysis-review.md` for why the "A = native allocation time" reading is
+not supported.
 
 The fit is a bounded `scipy.optimize.curve_fit` (W, N, A >= 0, s0 in
 [0.05*s_min, 0.5*s_range]) with a robust linear solution over a log-s0
 grid as the initial guess — reported as the fit when `curve_fit` does
 not converge; the parameter errors are propagated from the fit
-covariance, and the figures carry a bootstrap sleeve. When the native
-per-allocation cost c_a (ns) is known, the fit can be constrained to
-A = N*c_a and fit (W, N, s0) only. The model, the bounds, and the
-bootstrap's caveats are documented in the `analysis/allocation_model.py`
-module docstring, which is the single source of truth for the model.
+covariance, and the figures carry a bootstrap sleeve. When an
+independently measured native per-call cost c_a (ns) is available, the
+fit can be constrained to A = N*c_a and fit (W, N, s0) only — the path to
+a native-cost reading; it is unused by default, as no such microbenchmark
+exists yet. The model, the bounds, and the bootstrap's caveats are
+documented in the `analysis/allocation_model.py` module docstring, which
+is the single source of truth for the model.
 
 **Why the sweep is shaped like this.** The delay arms run a log grid from
 100 ns to 1e8 ns so the large delays anchor the asymptote W + N*s —
-which matters most for free, whose native cost fades slowly — and they
+which matters most for free, whose absorbed delay fades slowly — and they
 omit the zero-delay point, so the (0, 0) baseline runs are outside every
 fit and provide the T0 baselines and the paper figures instead. The arms
 are run in two phases (*Running the benchmark*): a log-dense first scan
@@ -468,18 +473,20 @@ empty):
   the sweep machines' run logs (the `machines` table of `config.json`) and
   the legacy runs (from the frozen `legacy/legacy_results.h5`, required —
   build it with `make legacy-results`), all grouped by their short
-  hardware name, and computes the group runtime statistics, the
-  allocation-model fits of every (machine, example, algorithm, grid) sweep
-  (with the parameter covariances), the combined (shared-parameter) fit of
-  every (machine, example, grid) scenario spanned by at least two
-  algorithms, the zero-delay baselines (sweep machines), and the
-  FoilLCT/KelvinHelmholtz figure statistics (all zero-delay runs, per short
-  hardware name); writes everything to `output/results.h5` (*Analysis*)
-  and prints nothing.
+   hardware name, and computes the group runtime statistics, the
+   allocation-model fits of every (machine, example, algorithm, grid) sweep
+   (with the parameter covariances), the combined (shared-parameter) fit of
+   every (machine, example, grid) scenario spanned by at least two
+   algorithms, the zero-delay baselines (sweep machines), the per-arm
+   absorbed-delay slack (the plateau deficit d and the per-call c = d/N),
+   and the FoilLCT/KelvinHelmholtz figure statistics (all zero-delay runs,
+   per short hardware name); writes everything to `output/results.h5`
+   (*Analysis*) and prints nothing.
 - `analysis/summarize_results.py` — prints the summary tables from
   `output/results.h5` (group statistics, fits, the combined fit vs the
-  individual fits per scenario, the fractions of runtime spent in
-  allocations / frees, the No-delay runtimes table, the figure
+  individual fits per scenario, the slack-ratio summary (f = A/T0, the
+  absorbed delay over the zero-delay runtime), the per-arm absorbed-delay
+  slack (d, c = d/N), the No-delay runtimes table, the figure
   statistics; `--raw` adds the parsed runs).
 - `analysis/plot_sweeps.py` — one delay-sweep figure per sweep machine
   (`figures/sweeps-<machine>.pdf`: one row per algorithm, the malloc and
@@ -489,10 +496,9 @@ empty):
 - `analysis/plot_shared_fits.py` — one forest figure per sweep machine
   (`figures/sweeps-shared-<machine>.pdf`: one row per (scenario, algorithm),
   the shared W / N_malloc / N_free values against each algorithm's
-  individual fit, and the individual vs combined A_malloc / A_free,
-  each A_* value annotated with its fraction f = A/T0, the share of the
-  zero-delay runtime T0 = W + A_malloc + A_free the operation's native
-  cost occupies).
+   individual fit, and the individual vs combined A_malloc / A_free,
+   each A_* value annotated with its slack ratio f = A/T0, the absorbed
+   delay's share of the zero-delay runtime T0 = W + A_malloc + A_free).
 - `analysis/plot_foil_lct.py` — the FoilLCT bar chart of the zero-delay
   runs (`figures/foil_lct.pdf`).
 - `analysis/plot_kelvin_helmholtz.py` — the KelvinHelmholtz violin chart of
@@ -527,12 +533,13 @@ figures*, joined by the single HDF5 file `output/results.h5`:
 - `summarize_results.py` prints the summary tables from
   `output/results.h5` (first the total run count with its superseded
   share, `Runs: N (M superseded)`, and the excluded archived runs, when
-  any; then per machine: group statistics; the fits and the
-  fractions of runtime spent in allocations / frees; the combined
-  (shared-parameter) fit of each multi-algorithm scenario compared
-  algorithm by algorithm against the individual fits; the No-delay
-  runtimes; the figure statistics). `--raw` also prints the parsed
-  runs.
+   any; then per machine: group statistics; the fits and the slack-ratio
+   summary (f = A/T0, the absorbed delay over the zero-delay runtime);
+   the combined (shared-parameter) fit of each multi-algorithm scenario
+   compared algorithm by algorithm against the individual fits; the
+   per-arm absorbed-delay slack (the plateau deficit d and the per-call
+   c = d/N); the No-delay runtimes; the figure statistics). `--raw` also
+   prints the parsed runs.
 - one script per figure, each reading `output/results.h5` (all take
   `--show` to display the figure in a window): `plot_sweeps.py`
   (`figures/sweeps-<machine>.pdf`, `--machine` for one machine),
@@ -571,6 +578,7 @@ to their row:
 | `runs`        | every parsed run, the columns below                                                              |
 | `group_stats` | per (machine, setup, algorithm, grid, delays): the runtime's count, mean, std, min, p25, p50, p75, max |
 | `baselines`   | the zero-delay (0, 0) runtime IQR per group (sweep machines)                                      |
+| `absorption`  | the per-arm absorbed-delay slack, one row per (group, arm): the plateau deficit `d` (s) and the per-call `c = d/N` (µs), from the raw runs (gauge-invariant) |
 | `fits`        | the allocation-model fits, one row per group (+ the `fits/cov/<machine>/<setup>/<algorithm>/<grid>/` subgroups) |
 | `shared_fits` | the combined (shared-parameter) fits, one row per (scenario, algorithm) (+ the `shared_fit_cov/<machine>/<setup>/<grid>/` subgroups) |
 | `foil`        | the FoilLCT bar chart's distributions over the zero-delay runs, per hardware                      |
@@ -608,15 +616,16 @@ the frozen legacy table):
 - `figures/sweeps-<machine>.pdf` — the per-machine delay sweeps: one row
   per algorithm, the malloc sweep (free delay 0) on the left and the free
   sweep (malloc delay 0) on the right, all axes sharing the x- and
-  y-axes; the median with IQR error bars per delay, the fitted model with
-  its bootstrap sleeve, the extrapolation to zero native cost, and the
-  scenario's combined fit as a heavy line.
+   y-axes; the median with IQR error bars per delay, the fitted model with
+   its bootstrap sleeve, the extrapolation to the zero-delay baseline
+   (A_malloc = A_free = 0), and the scenario's combined fit as a heavy
+   line.
 - `figures/sweeps-shared-<machine>.pdf` — the per-machine forest of the
   combined (shared-parameter) fit: one row per (scenario, algorithm), the
-  individual W / N_malloc / N_free (dots with error bars) against the
-  values fitted once across the algorithms, and the individual vs
-  combined A_malloc / A_free, each A_* annotated with its fraction
-  f = A/T0.
+   individual W / N_malloc / N_free (dots with error bars) against the
+   values fitted once across the algorithms, and the individual vs
+   combined A_malloc / A_free, each A_* annotated with its slack ratio
+   f = A/T0 (the absorbed delay over the zero-delay runtime).
 - `figures/foil_lct.pdf` — the FoilLCT bar chart of the zero-delay runs:
   one bar per allocator (in the file's `algorithm_order`), median with
   IQR error bar; the Kruskal significance is in the `foil_pvalue` table.

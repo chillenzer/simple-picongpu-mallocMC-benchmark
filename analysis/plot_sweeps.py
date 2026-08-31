@@ -16,7 +16,8 @@ error bars and overlays the
 fitted model
 (solid), the extrapolation to A_malloc = A_free = 0 (dashed) and, for
 two-operation fits, the intermediate extrapolation that keeps only the held
-operation's native cost (dotted); the gaps at the smallest delay are marked
+operation's absorbed delay (dotted); the gaps at the smallest delay are
+marked
 by a short line. Each fit line carries a transparent sleeve, the
 25/75-percentile envelope of the model evaluated at 512 parameter draws
 from the fitted parameters and their covariance (a bootstrap, since the
@@ -451,8 +452,8 @@ def draw_fit_2d(
     The solid line is the full model, the dashed line the linear
     extrapolation (both saturation terms at 0) and the dotted line the fit
     with only the plotted operation's saturation term at 0. The gap
-    markers split at the dotted line: the upper part is the native
-    cost of the plotted operation, the lower part the one of the held
+    markers split at the dotted line: the upper part is the absorbed
+    delay of the plotted operation, the lower part the one of the held
     operation.
 
     Args:

@@ -3,23 +3,30 @@
 SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
 SPDX-License-Identifier: MIT
 
-Each of the N allocation calls on the (serial, host-side) critical path takes
-its native cost c_a plus the imposed delay s, so
+With no imposed delay the measured runtime is the full calculation's real
+runtime with each allocator (the (0, 0) baseline); the delay arms study how the
+allocator interacts with the pipeline. Each of the N allocation calls on the
+critical path takes the imposed delay s, so at large delay
 
-    T(s) = W + A + N*s,   A = N*c_a (native allocation time)
+    T(s) = W + N*s,
 
-with W the runtime without any allocation cost. The native part is not needed
-for large sleeptimes (negligible against the imposed delay) but acts as a
-correction at small sleeptimes, so a sweep is fitted with
+with W the runtime at zero delay. The delay does not simply add: part of it is
+hidden by the parallel work that runs while the allocator spins, so the
+absorbed part fades over the sleeptime scale s0 and a sweep is fitted with
 
     T(s) = W + N*s + A*s0/(s+s0)             (allocation model)
 
-which reduces to the large-delay asymptote W + N*s for s >> s0 and to W + A for
-s -> 0. The parameters are (W, N, A, s0): baseline runtime, allocation calls
-per run, native allocation time, and the sleeptime scale over which the
-native cost fades. The fraction of runtime spent in allocations is
+which equals the baseline T0 = W + A for s -> 0 and approaches the asymptote
+W + N*s for s >> s0, where every call's delay is exposed. The parameters are
+(W, N, A, s0): baseline runtime, allocation calls per run, the total delay
+absorbed per run (A), and the sleeptime scale over which the absorption fades.
+The per-call absorbed slack is c = A/N. The ratio
 
-    f = A / (W + A)      (native allocation time / total time at zero delay)
+    f = A / (W + A)      (absorbed delay / total time at zero delay)
+
+is a convention-dependent slack ratio, not a runtime budget and not the native
+allocation cost (see analysis-review.md: the "A = native allocation time"
+reading is not supported by the data).
 
 The fit is `scipy.optimize.curve_fit` with bounds W>=0, N>=0, A>=0 and
 s0 in [0.05*s_min, 0.5*s_range], so the reported f is always in [0, 1). The
@@ -32,27 +39,28 @@ f (and to W, N, A, s0) as standard errors.
 
 When a sweep imposes a delay on both operations (the (malloc_delay,
 free_delay) combination runs of the delay matrix), each operation gets its own
-saturation term, i.e. the native cost of an operation only fades while its own
-imposed delay grows. Such a sweep is then fitted with the two-operation
+saturation term, i.e. the absorbed delay of an operation only fades while its
+own imposed delay grows. Such a sweep is then fitted with the two-operation
 (separable, no cross-term) model
 
     T(m, f) = W + N_m*m + N_f*f + A_m*m0/(m+m0) + A_f*f0/(f+f0)
 
-and the fractions of runtime spent in allocations and frees are
-reported separately: f_malloc = A_m/T0, f_free = A_f/T0, T0 = W + A_m + A_f.
+and the slack ratios f_malloc = A_m/T0, f_free = A_f/T0 (absorbed delay
+over zero-delay runtime, T0 = W + A_m + A_f) are reported separately.
 Groups whose runs vary only one of the two delays fall back to the 1-D model
 above, fitted on that delay.
 
 Several algorithms' sweeps of the same (setup, grid) scenario can be fit
 jointly with `fit_combined`: the baseline runtime W and the call counts
 N_malloc / N_free are algorithm-invariant and are fit once on the pooled
-data, while each algorithm keeps its own native costs (A_malloc, A_free)
+data, while each algorithm keeps its own absorbed delays (A_malloc, A_free)
 and fade scales (m0, f0), so every algorithm's curve is shared exactly
 where theory says it may differ between algorithms.
 
-`sleeptimes` are in nanoseconds, `runtimes` in seconds. If the native
-per-allocation cost c_a (ns) is known, pass it: A = N*c_a is then used and
-only (W, N, s0) are fitted.
+`sleeptimes` are in nanoseconds, `runtimes` in seconds. If an independently
+measured native per-call cost c_a (ns) is available, pass it: A = N*c_a is
+then used and only (W, N, s0) are fitted — the path to a native-cost
+reading, unused by default (no such microbenchmark exists yet).
 """
 
 from __future__ import annotations
@@ -129,8 +137,8 @@ def model_1d(s: np.ndarray, W: float, N: float, A: float, s0: float) -> np.ndarr
         s: the imposed delay in seconds.
         W: the baseline runtime (s).
         N: the allocation calls per run.
-        A: the native allocation time (s).
-        s0: the fade scale of the native correction (s).
+        A: the total imposed delay absorbed by parallel work per run (s).
+        s0: the sleeptime scale over which the absorption fades (s).
 
     Returns:
         np.ndarray: the model runtime in seconds.
@@ -312,27 +320,31 @@ def _uncertainties(p: np.ndarray, pcov: np.ndarray | None, f_of_p: Callable[[np.
 
 
 def _f_of_p_free(p: np.ndarray) -> float:
-    """Compute the fraction f = A/(W + A) of runtime spent in allocations, from the 1-D parameters p.
+    """Compute the slack ratio f = A/(W + A) (absorbed delay over the zero-delay runtime), from the 1-D parameters p.
 
     Args:
         p: the 1-D parameter vector (W, N, A, s0).
 
     Returns:
-        float: the fraction of runtime spent in allocations.
+        float: the slack ratio (absorbed delay / zero-delay runtime).
 
     """
     return p[2] / (p[0] + p[2]) if p[0] + p[2] > EPS_S else 0.0
 
 
 def _f_of_p_ca(p: np.ndarray, c: float) -> float:
-    """Compute the fraction of runtime spent in allocations, from the A = N*c constrained 1-D parameters p.
+    """Compute the slack ratio f = A/(W + A) from the A = N*c constrained 1-D parameters p.
+
+    With the c_a constraint, A is the native cost and f the true native
+    cost fraction; unconstrained, f is the convention-dependent slack
+    ratio (absorbed delay / zero-delay runtime).
 
     Args:
         p: the constrained 1-D parameter vector (W, N, s0).
         c: the native per-call cost (s).
 
     Returns:
-        float: the fraction of runtime spent in allocations.
+        float: the slack ratio (A / zero-delay runtime).
 
     """
     return p[1] * c / (p[0] + p[1] * c) if p[0] + p[1] * c > EPS_S else 0.0
@@ -415,7 +427,7 @@ def _fit_notes_1d(model: Model1d, guess: tuple[float, float, float, float], boun
         )
     if model.s0 >= bounds[1] * 0.999:
         notes.append(
-            "s0 reached the search cap: the native correction does not clearly "
+            "s0 reached the search cap: the absorption does not clearly "
             "fade within the sweep, so A and W (hence f) are weakly constrained"
         )
     return notes
@@ -563,12 +575,12 @@ def fit_1d(sleeptimes: pd.Series, runtimes: pd.Series, c_a: float | None = None)
             W_e, N_e, s0_e, f_e = _uncertainties(fit_params, pcov, lambda p: _f_of_p_ca(p, c))
             A_e = float("nan") if math.isnan(N_e) else N_e * c
         return {
-            "W": W,  # runtime without allocation cost (s)
+            "W": W,  # no-delay runtime (s)
             "N": N,  # allocation calls per run
-            "A": A,  # native allocation time (s)
-            "s0": s0,  # fade scale of the native correction (s)
+            "A": A,  # total imposed delay absorbed per run (s)
+            "s0": s0,  # fade scale of the absorption (s)
             "T0": T0,  # total runtime at zero delay (s)
-            "f": f,  # fraction of runtime spent in allocations
+            "f": f,  # slack ratio: absorbed delay / zero-delay runtime
             "W_err": W_e,
             "N_err": N_e,
             "A_err": A_e,
@@ -602,26 +614,30 @@ def fit_1d(sleeptimes: pd.Series, runtimes: pd.Series, c_a: float | None = None)
 
 
 def _f_of_m(p: np.ndarray) -> float:
-    """Compute the fraction of runtime spent in the malloc operation, from the 2-D parameters p.
+    """Compute the slack ratio f_malloc = A_m/(W + A_m + A_f), from the 2-D parameters p.
+
+    The malloc absorbed delay over the zero-delay runtime T0.
 
     Args:
         p: the 2-D parameter vector (W, N_m, N_f, A_m, A_f, m0, f0).
 
     Returns:
-        float: the fraction of runtime spent in allocations.
+        float: the slack ratio (absorbed delay / zero-delay runtime).
 
     """
     return p[3] / (p[0] + p[3] + p[4]) if p[0] + p[3] + p[4] > EPS_S else 0.0
 
 
 def _f_of_f(p: np.ndarray) -> float:
-    """Compute the fraction of runtime spent in the free operation, from the 2-D parameters p.
+    """Compute the slack ratio f_free = A_f/(W + A_m + A_f), from the 2-D parameters p.
+
+    The free absorbed delay over the zero-delay runtime T0.
 
     Args:
         p: the 2-D parameter vector (W, N_m, N_f, A_m, A_f, m0, f0).
 
     Returns:
-        float: the fraction of runtime spent in frees.
+        float: the slack ratio (absorbed delay / zero-delay runtime).
 
     """
     return p[4] / (p[0] + p[3] + p[4]) if p[0] + p[3] + p[4] > EPS_S else 0.0
@@ -754,12 +770,12 @@ def _fit_notes_2d(model: Model2d, guess: tuple[float, ...], bounds: tuple[float,
         notes.append("unconstrained fit wanted A_free<0; A_free constrained to 0 so f_free is floored at 0")
     if model.m0 >= hi_m * 0.999:
         notes.append(
-            "m0 reached the search cap: the native malloc cost does not clearly fade, so "
+            "m0 reached the search cap: the absorbed malloc delay does not clearly fade, so "
             "A_malloc and W (hence f_malloc) are weakly constrained"
         )
     if model.f0 >= hi_f * 0.999:
         notes.append(
-            "f0 reached the search cap: the native free cost does not clearly fade, so "
+            "f0 reached the search cap: the absorbed free delay does not clearly fade, so "
             "A_free and W (hence f_free) are weakly constrained"
         )
     return notes
@@ -854,16 +870,16 @@ def fit_2d(m_delays: pd.Series, f_delays: pd.Series, runtimes: pd.Series) -> dic
             W_e, Nm_e, Nf_e, Am_e, Af_e, m0_e, f0_e, f_malloc_e = _uncertainties(fit_params, pcov, _f_of_m)
             f_free_e = _uncertainties(fit_params, pcov, _f_of_f)[-1]
         return {
-            "W": float(model.W),  # runtime without any allocation or free cost (s)
+            "W": float(model.W),  # no-delay runtime (s)
             "N_m": float(model.N_m),  # allocation calls per run
             "N_f": float(model.N_f),  # free calls per run
-            "A_m": float(model.A_m),  # native allocation time (s)
-            "A_f": float(model.A_f),  # native free time (s)
+            "A_m": float(model.A_m),  # absorbed malloc delay per run (s)
+            "A_f": float(model.A_f),  # absorbed free delay per run (s)
             "m0": float("nan") if math.isnan(model.m0) else float(model.m0),  # malloc fade scale (s)
             "f0": float("nan") if math.isnan(model.f0) else float(model.f0),  # free fade scale (s)
             "T0": T0,  # total runtime at zero delay (s)
-            "f_malloc": f_malloc,  # fraction of runtime spent in allocations
-            "f_free": f_free,  # fraction of runtime spent in frees
+            "f_malloc": f_malloc,  # slack ratio: absorbed malloc delay / zero-delay runtime
+            "f_free": f_free,  # slack ratio: absorbed free delay / zero-delay runtime
             "W_err": W_e,
             "N_m_err": Nm_e,
             "N_f_err": Nf_e,
@@ -1205,11 +1221,11 @@ def _combined_initial_fades(
 
 
 def _term_seed(own: dict[str, float], name: str, fallback: float) -> float:
-    """One native-cost initial value: the individual fit's, 0-floored.
+    """One absorbed-delay initial value: the individual fit's, 0-floored.
 
     Args:
         own: the individual fit's parameters (seconds).
-        name: the cost's key ("A_m" or "A_f").
+        name: the delay's key ("A_m" or "A_f").
         fallback: the pooled least-squares value on absence or NaN.
 
     Returns:
@@ -1276,14 +1292,14 @@ def _fit_residual_terms(
 
 
 def _stage1_costs(kind: str, p_stage1: list[float]) -> list[tuple[float, ...]]:
-    """Return the pooled least-squares native costs, per algorithm block.
+    """Return the pooled least-squares absorbed delays, per algorithm block.
 
     Args:
         kind: "2d", "1d-malloc", or "1d-free".
         p_stage1: the stage-1 parameter vector.
 
     Returns:
-        list: per block, the (unfloored) native cost value(s).
+        list: per block, the (unfloored) absorbed delay value(s).
 
     """
     head, stride = _combined_layout(kind)
@@ -1527,14 +1543,14 @@ def _combined_corner_notes(
 ) -> list[str]:
     """Corner diagnostics of a combined fit, as in the individual fits.
 
-    A native cost the data wanted negative is floored at 0; a fade scale
-    at the search cap leaves its A (and W) weakly constrained.
+    An absorbed delay the data wanted negative is floored at 0; a fade
+    scale at the search cap leaves its A (and W) weakly constrained.
 
     Args:
         kind: "2d", "1d-malloc", or "1d-free".
         p: the fitted parameter vector.
         order: the pooled algorithms' order.
-        guess_A: per algorithm, the (unfloored) native-cost initial values.
+        guess_A: per algorithm, the (unfloored) absorbed-delay initial values.
         hi_b: the upper bounds, one entry per parameter.
 
     Returns:
@@ -1643,7 +1659,7 @@ def _combined_per_algorithm(
     order: list[str],
     errors: _CombinedErrors,
 ) -> dict[str, dict[str, float]]:
-    """Every pooled algorithm's native costs, fade scales, and fractions.
+    """Every pooled algorithm's absorbed delays, fade scales, and slack ratios.
 
     Args:
         kind: "2d", "1d-malloc", or "1d-free".
@@ -1653,8 +1669,8 @@ def _combined_per_algorithm(
         errors: the standard-error closures of the parameter vector.
 
     Returns:
-        dict: per algorithm, A_malloc/A_free (s), m0/f0 (s), the fractions of runtime
-        spent in the operations, and their standard errors (NaN where inapplicable).
+        dict: per algorithm, A_malloc/A_free (s), m0/f0 (s), the slack ratios
+        (absorbed delay / zero-delay runtime), and their standard errors (NaN where inapplicable).
 
     """
     head, stride = _combined_layout(kind)
@@ -1746,8 +1762,8 @@ def fit_combined(
 
     The shared parameters -- W (the baseline runtime) and the malloc/free
     call counts N_malloc and N_free -- are fit once on the pooled data of
-    every pooled algorithm, while each algorithm keeps its own native
-    costs (A_malloc, A_free) and fade scales (m0, f0): the two-operation
+    every pooled algorithm, while each algorithm keeps its own absorbed
+    delays (A_malloc, A_free) and fade scales (m0, f0): the two-operation
     allocation model of `model_2d` with a per-algorithm (A, s0) pair, or the
     1-D reduction when only one delay varies in the pooled data. The fit
     is staged -- a pooled least-squares solution for the shared
@@ -1766,8 +1782,8 @@ def fit_combined(
     Returns:
         dict: the model kind, the pooled algorithms' order, the shared
         parameters (W, N_malloc, N_free) with their standard errors, the
-        pooled r2, the per-algorithm native costs, fade scales, and
-        fractions of runtime spent in the operations with their standard errors, the warnings, and
+        pooled r2, the per-algorithm absorbed delays, fade scales, and
+        slack ratios (absorbed delay / zero-delay runtime) with their standard errors, the warnings, and
         the joint (fit_params, pcov) pair.
 
     """

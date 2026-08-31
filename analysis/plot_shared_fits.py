@@ -11,9 +11,10 @@ algorithm's individual fit (dot, error bar) against the value fitted once
 across the algorithms (dashed vertical with a plus marker); the A_malloc
 and A_free columns show, per algorithm, the individual value (open marker)
 and the value of the combined fit (filled marker), joined by a segment.
-Every A_* value is annotated with its fraction f -- the share of
-the zero-delay runtime T0 = W + A_malloc + A_free that the operation's
-native cost occupies (T0 is summed over the terms the row carries). The
+Every A_* value is annotated with its slack ratio f -- the absorbed
+delay as a share of the zero-delay runtime T0 = W + A_malloc + A_free
+(T0 is summed over the terms the row carries; f is a convention-dependent
+ratio, not a runtime budget). The
 x-axes are logarithmic. By default every machine gets its figure,
 `--machine` restricts the run to one.
 """
@@ -54,8 +55,8 @@ PANELS = (
     ("W", "shared", "W: shared runtime (s)"),
     ("N_malloc", "shared", "N_malloc: calls per run"),
     ("N_free", "shared", "N_free: calls per run"),
-    ("A_malloc", "compare", "A_malloc: native cost (s)"),
-    ("A_free", "compare", "A_free: native cost (s)"),
+    ("A_malloc", "compare", "A_malloc: absorbed delay (s)"),
+    ("A_free", "compare", "A_free: absorbed delay (s)"),
 )
 # One distinct marker per algorithm, in the file's algorithm order.
 MARKERS = ("o", "s", "^", "D")
@@ -210,10 +211,10 @@ def _draw_shared_panel(ax: plt.Axes, data: ForestData, field: str, *, first: boo
 
 
 def _op_fraction(row: pd.Series, field: str) -> float | None:
-    """Return the fraction f = A/T0 of one fits row's A_* value.
+    """Return the slack ratio f = A/T0 of one fits row's A_* value.
 
-    T0, the zero-delay runtime, is the sum of the W, A_malloc and A_free
-    terms the row carries.
+    f is the absorbed delay as a share of T0, the zero-delay runtime, the
+    sum of the W, A_malloc and A_free terms the row carries.
 
     Args:
         row: one row of the `fits` or `shared_fits` table.
@@ -231,10 +232,10 @@ def _op_fraction(row: pd.Series, field: str) -> float | None:
 
 
 def _fraction_text(fraction: float) -> str:
-    """Return one fraction's display label, e.g. `f=12.9%`.
+    """Return one slack ratio's display label, e.g. `f=12.9%`.
 
     Args:
-        fraction: the fraction of runtime spent in the operation, in [0, 1].
+        fraction: the slack ratio (absorbed delay over zero-delay runtime), in [0, 1].
 
     Returns:
         str: the label.
@@ -249,7 +250,7 @@ def _draw_compare_panel(ax: plt.Axes, data: ForestData, field: str, *, first: bo
     Each algorithm's individual value (open marker) is joined by a segment
     to the value of the combined fit (filled marker), each with its
     error bar and annotated above (individual) or below (combined) with
-    its fraction f.
+    its slack ratio f.
 
     Args:
         ax: the axis to fill.

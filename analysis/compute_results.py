@@ -17,10 +17,12 @@ that wants the current state selects `runs[runs["superseded"] == 0]`. The
 table is grouped by the short hardware name (e.g. `A30`, `V100`) the
 comparison charts have always used, and computed from
 
-- `group_stats`, `fits`, `baselines`: the group runtime descriptions,
-  the allocation-model fit (the per-fit parameter vector and covariance are stored
-  under `fits/cov/`) and the zero-delay runtime IQR of every group of the
-  sweep machines,
+- `group_stats`, `fits`, `baselines`, `absorption`: the group runtime
+  descriptions, the allocation-model fit (the per-fit parameter vector and
+  covariance are stored under `fits/cov/`), the zero-delay runtime IQR of
+  every group of the sweep machines, and the per-arm absorbed-delay slack
+  (the plateau deficit d and the per-call c = d/N, computed from the raw
+  runs: gauge-invariant, see analysis-review.md),
 - `foil` / `foil_pvalue` / `khi`: the statistics behind the FoilLCT bar
   chart and the KelvinHelmholtz violin chart (distributions, Kruskal
   p-values, relative runtimes), over the zero-delay runs of both
@@ -130,6 +132,19 @@ FITS_COLUMNS = [
     "f_free",
     "f_free_err",
     "note",
+]
+# One row per (group, arm): the data-pinned absorbed-delay slack. The plateau
+# deficit d and the per-call slack c = d/N are computed from the raw runs (the
+# baseline minus the large-delay line's intercept, over the large-delay slope),
+# so they are gauge-invariant and immune to the (W, A, s0) flat direction.
+ABSORPTION_COLUMNS = [
+    "machine",
+    *GROUP_KEYS,
+    "arm",
+    "n",
+    "N",
+    "d",
+    "c_us",
 ]
 # One row per (scenario, algorithm) of a combined (shared-parameter) fit;
 # the shared-parameter columns are repeated on every row of the scenario.
@@ -604,6 +619,78 @@ def fit_sweep(runs: pd.DataFrame, c_a: float | None = None) -> tuple[pd.DataFram
     return pd.DataFrame(rows)[FITS_COLUMNS], covs
 
 
+def _arm_absorption(x_ns: pd.Series, runtimes: pd.Series, baseline: float) -> dict:
+    """One arm's plateau deficit d and per-call slack c = d/N, from the raw data.
+
+    The large-delay line is anchored on the two largest delays; the plateau
+    deficit d = baseline - intercept is gauge-invariant, and c = d/N is the
+    per-call absorbed slack. Neither involves the fade scale, so both are
+    immune to the (W, A, s0) flat direction of the fits.
+
+    Args:
+        x_ns: the arm's delays in nanoseconds (the non-zero-delay values).
+        runtimes: the arm's runtimes in seconds.
+        baseline: the (0, 0) baseline runtime median in seconds.
+
+    Returns:
+        dict: n, N (calls per run), d (s), c_us (us per call); NaNs when the
+        arm has too few points to anchor the large-delay line.
+
+    """
+    x = np.asarray(x_ns, dtype=float) * 1e-9  # ns -> s
+    y = np.asarray(runtimes, dtype=float)
+    n = int(x.size)
+    if len(np.unique(x)) < 4:
+        return {"n": n, "N": np.nan, "d": np.nan, "c_us": np.nan}
+    order = np.argsort(x)
+    x, y = x[order], y[order]
+    ux = np.unique(x)
+    ymed = np.array([np.median(y[x == v]) for v in ux])
+    N = (ymed[-1] - ymed[-2]) / (ux[-1] - ux[-2])
+    b0 = ymed[-1] - N * ux[-1]
+    d = baseline - b0
+    c = d / N if N > 0 else float("nan")
+    return {
+        "n": n,
+        "N": float(N),
+        "d": float(d),
+        "c_us": float(c * 1e6) if np.isfinite(c) else float("nan"),
+    }
+
+
+def absorption_table(runs: pd.DataFrame) -> pd.DataFrame:
+    """Per-arm plateau deficit and per-call absorbed slack of every group.
+
+    For each (machine, setup, algorithm, grid) group and each arm (the
+    malloc-delay arm with free delay 0, the free-delay arm with malloc delay
+    0), the plateau deficit d and the per-call slack c = d/N are recorded from
+    the raw runs. These are the defensible Tier-2 quantities of the review:
+    the delay the pipeline absorbs, not the native allocation cost.
+
+    Args:
+        runs: the parsed runs table (the sweep machines).
+
+    Returns:
+        pd.DataFrame: the `absorption` table, one row per (group, arm).
+
+    """
+    if runs.empty:
+        return _empty_table(ABSORPTION_COLUMNS)
+    rows = []
+    for key, frame in runs.groupby(["machine", *GROUP_KEYS], dropna=False):
+        grp = frame.dropna(subset=[MALLOC_DELAY, FREE_DELAY, RUN_TIME])
+        m = np.asarray(grp[MALLOC_DELAY], dtype=float)
+        f = np.asarray(grp[FREE_DELAY], dtype=float)
+        t = np.asarray(grp[RUN_TIME], dtype=float)
+        base = (m == 0) & (f == 0)
+        baseline = float(np.median(t[base])) if base.any() else float("nan")
+        for arm, mask, xcol in (("malloc", (m > 0) & (f == 0), m), ("free", (m == 0) & (f > 0), f)):
+            row = {"machine": key[0], **dict(zip(GROUP_KEYS, key[1:], strict=True)), "arm": arm}
+            row.update(_arm_absorption(pd.Series(xcol[mask]), t[mask], baseline))
+            rows.append(row)
+    return pd.DataFrame(rows)[ABSORPTION_COLUMNS]
+
+
 def _shared_p0(row: pd.Series) -> dict[str, float]:
     """Return the individual fit's parameters in seconds, keyed for the combined fit.
 
@@ -640,7 +727,7 @@ def fit_sweep_combined(
 
     The shared parameters -- W and the malloc/free call counts -- are fit
     once on the pooled data of the scenario's algorithms, while each
-    algorithm keeps its own native costs and fade scales. Scenarios with
+    algorithm keeps its own absorbed delays and fade scales. Scenarios with
     fewer than two algorithms (or fewer than 3 pooled runs, or no varying
     delay) get no row. The individual fits' parameters seed the initial
     guess.
@@ -976,6 +1063,7 @@ def main(output: Path, configuration: str | None = None) -> None:
             "fits": _empty_table(FITS_COLUMNS),
             "shared_fits": _empty_table(SHARED_FITS_COLUMNS),
             "baselines": _empty_table(BASELINES_COLUMNS),
+            "absorption": _empty_table(ABSORPTION_COLUMNS),
             "foil": _empty_table(FOIL_COLUMNS),
             "foil_pvalue": _empty_table(FOIL_PVALUE_COLUMNS),
             "khi": _empty_table(KHI_COLUMNS),
@@ -989,6 +1077,7 @@ def main(output: Path, configuration: str | None = None) -> None:
             # cover the zero-delay runs of both sources.
             "group_stats": group_runtime_stats(analyzed),
             "baselines": baseline_stats(sweep_runs),
+            "absorption": absorption_table(analyzed),
             "foil": foil_stats(runs),
             "foil_pvalue": foil_pvalues(runs),
             "khi": khi_stats(runs),
