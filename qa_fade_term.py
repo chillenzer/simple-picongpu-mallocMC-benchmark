@@ -1,10 +1,18 @@
 """Q3: alternative fade terms for the allocation model, measured.
 
-The stored model fades the absorbed delay with the hyperbola A*s/(m+s).
-This script fits five alternatives with the same endpoints -- exponential,
-Lorentzian, power-law, truncated-linear and quadratic overlap -- to the
-same 12 groups and measures fit quality, identifiability, gauge structure,
-and the extrapolation each form makes beyond the data.
+This script is the record of the Q3 analysis: it fits six candidate fade
+terms with the same endpoints -- the hyperbola (the then-stored model), the
+exponential, Lorentzian, power-law, truncated-linear and quadratic overlap --
+to the same 12 groups and measures fit quality, identifiability, gauge
+structure, and the extrapolation each form makes beyond the data.
+
+NOTE: the recommendation of this analysis -- use the exponential -- has been
+implemented; the stored model now fades with the exponential A*exp(-m/s). The
+shape comparison (P3, P6, against a fresh hyperbola refit) is model-agnostic
+and still valid on re-run, but the "stored fit" columns (P2's baseline, P4's
+stored scale) assume the hyperbola was the stored model. The forward-looking,
+model-agnostic comparison figure is `analysis/plot_fade_models.py`
+(`figures/fade-models.pdf`).
 
 SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
 SPDX-License-Identifier: MIT

@@ -14,6 +14,15 @@ delay). Model: `T(m,f) = W + N_m·m + N_f·f + F_m(m) + F_f(f)` with the stored 
 groups, parts P1–P6). Output: `/workspace/qa-fade-term-output.txt`. Run with
 `/tmp/opencode/venv/bin/python /workspace/qa_fade_term.py` (deterministic, ~3 s).
 
+> **Status.** The recommendation in §6 was implemented: `analysis/allocation_model.py`
+> now fits and stores the **exponential** `A·exp(−m/s)` as the model's fade term, and
+> `output/results.h5` and all figures were regenerated with it. The candidate family
+> (H, E, L, T, Q) is a first-class part of the model (`allocation_model.FADE_SHAPES`),
+> and the forward-looking, model-agnostic comparison is
+> `analysis/plot_fade_models.py` → `figures/fade-models.pdf`. This document remains
+> the record of the Q3 analysis that drove the change (captured with the hyperbola
+> still stored).
+
 ---
 
 ## 0. Bottom line (answers first)

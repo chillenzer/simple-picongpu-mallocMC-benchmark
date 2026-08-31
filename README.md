@@ -62,9 +62,9 @@ the allocator spins — so the absorbed part fades over the sleeptime scale
 s0 and a sweep is fitted with the allocation model
 
 ```
-T(s)  = W + N*s + A*s0/(s+s0)                 (one delay)
-T(m,f) = W + N_m*m + N_f*f + A_m*m0/(m+m0)
-         + A_f*f0/(f+f0)                      (both delays)
+T(s)  = W + N*s + A*exp(-s/s0)                (one delay)
+T(m,f) = W + N_m*m + N_f*f + A_m*exp(-m/m0)
+         + A_f*exp(-f/f0)                     (both delays)
 ```
 
 which equals the baseline T0 = W + A (one delay; T0 = W + A_malloc +
@@ -72,7 +72,12 @@ A_free with both) at zero delay and approaches the asymptote W + N*s,
 where every call's delay is exposed. The fitted parameters are W
 (baseline runtime), N (calls per run; N_malloc / N_free per operation), A
 (the total delay absorbed per run; A_malloc / A_free per operation), and
-the fade scale s0 (m0, f0). The per-call absorbed slack c = A/N is how
+the fade scale s0 (m0, f0), the e-folding delay of the absorption. The
+exponential was chosen as the model's fade term from a family of
+candidates with the same endpoints (hyperbola, Lorentzian,
+truncated-linear, quadratic); the measured comparison is
+`figures/fade-models.pdf` (see *The method*, "The allocation model").
+The per-call absorbed slack c = A/N is how
 much imposed delay per call the pipeline hides before it reaches the
 runtime. The ratio f = A/T0 (f_malloc = A_malloc/T0, f_free = A_free/T0)
 is a convention-dependent slack ratio — absorbed delay over zero-delay
@@ -629,17 +634,23 @@ the frozen legacy table):
 - `figures/foil_lct.pdf` — the FoilLCT bar chart of the zero-delay runs:
   one bar per allocator (in the file's `algorithm_order`), median with
   IQR error bar; the Kruskal significance is in the `foil_pvalue` table.
-- `figures/kelvin_helmholtz.pdf` — the KelvinHelmholtz violin chart of
-  the zero-delay runs relative to the ScatterAlloc reference runtime, one
+- `figures/kelvin_helmholtz.pdf` — the KelvinHelmholtz violin chart of the
+  zero-delay runs relative to the ScatterAlloc reference runtime, one
   violin per allocator, one column per estimated particle memory.
+- `figures/fade-models.pdf` — the candidate fade-term comparison that
+  selects the model's fade shape: the candidate fade shapes g(u), every
+  candidate fitted to a focus group, the per-group shape effect (delta-SSR
+  against a fresh hyperbola refit), and the aggregate ranking that chooses
+  the exponential (see *The method*, "The allocation model").
 
 Notes:
 
 - The fits are bounded `scipy.optimize.curve_fit` of the 1-D model
-  `T(s) = W + N*s + A*s0/(s+s0)` (sweep on one delay) or the two-operation
-  model `T(m, f) = W + N_m*m + N_f*f + A_m*m0/(m+m0) + A_f*f0/(f+f0)`
-  (combination sweep); the full model, the bounds, and the diagonalization
-  caveats of the bootstrap are documented in `analysis/allocation_model.py`.
+  `T(s) = W + N*s + A*exp(-s/s0)` (sweep on one delay) or the two-operation
+  model `T(m, f) = W + N_m*m + N_f*f + A_m*exp(-m/m0) + A_f*exp(-f/f0)`
+  (combination sweep); the full model, the candidate fade family, the
+  bounds, and the diagonalization caveats of the bootstrap are documented
+  in `analysis/allocation_model.py`.
 - The combined fit reuses the two-operation model but fits it once over all
   algorithms of a (machine, example, grid) scenario together: W, N_malloc
   and N_free are shared across the algorithms while each keeps its own

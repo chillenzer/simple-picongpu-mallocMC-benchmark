@@ -14,6 +14,18 @@ runtime-budget split (W / A_malloc / A_free) and the fraction
 checks the stored model against the raw data, and verifies the model's gauge
 symmetry).
 
+> **Status note.** This review analysed the allocation model while its fade
+> term was the hyperbola `A·m0/(m+m0)`. On its recommendation and on the Q3
+> candidate comparison (`qa-fade-term.md`, `figures/fade-models.pdf`), the
+> model's fade term has since been upgraded to the **exponential**
+> `A·exp(-m/m0)`, which is now what `allocation_model.py` fits and stores.
+> The physics verdict below — the saturation terms measure delay hidden by
+> parallel slack, not a native allocation cost — is independent of the fade
+> shape and remains valid. The gauge discussion (Section 6) is specific to the
+> hyperbola: the exponential has a different gauge structure (it pins the fade
+> scale `s` as a gauge invariant rather than the product `A·s`; see
+> `qa-fade-term.py`, P5).
+
 ## Verdict
 
 The small-delay structure in the sweeps is real, and its mechanism is the

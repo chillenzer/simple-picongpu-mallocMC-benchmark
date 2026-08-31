@@ -523,7 +523,7 @@ summary: results
 	$(PY) analysis/summarize_results.py --results $(RESULTS)
 
 figures: figures-sweeps figures-shared \
-	$(FIGDIR)/foil_lct.pdf $(FIGDIR)/kelvin_helmholtz.pdf
+	$(FIGDIR)/foil_lct.pdf $(FIGDIR)/kelvin_helmholtz.pdf $(FIGDIR)/fade-models.pdf
 
 # The family targets run the plotting scripts unfiltered (all machines,
 # all scenarios), so they work even when figures/ does not exist yet.
@@ -538,6 +538,9 @@ $(FIGDIR)/foil_lct.pdf: results
 
 $(FIGDIR)/kelvin_helmholtz.pdf: results
 	$(PY) analysis/plot_kelvin_helmholtz.py --results $(RESULTS)
+
+$(FIGDIR)/fade-models.pdf: results
+	$(PY) analysis/plot_fade_models.py --results $(RESULTS)
 
 # Build a single figure by name: `make figures/sweeps-hal.pdf` or
 # `make figures/sweeps-shared-hal.pdf`.

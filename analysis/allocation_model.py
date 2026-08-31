@@ -14,7 +14,7 @@ with W the runtime at zero delay. The delay does not simply add: part of it is
 hidden by the parallel work that runs while the allocator spins, so the
 absorbed part fades over the sleeptime scale s0 and a sweep is fitted with
 
-    T(s) = W + N*s + A*s0/(s+s0)             (allocation model)
+    T(s) = W + N*s + A * g(s/s0)             (allocation model)
 
 which equals the baseline T0 = W + A for s -> 0 and approaches the asymptote
 W + N*s for s >> s0, where every call's delay is exposed. The parameters are
@@ -27,6 +27,18 @@ The per-call absorbed slack is c = A/N. The ratio
 is a convention-dependent slack ratio, not a runtime budget and not the native
 allocation cost (see analysis-review.md: the "A = native allocation time"
 reading is not supported by the data).
+
+The fade shape g is a normalized function of the reduced delay u = s/s0 with
+g(0) = 1 and g(inf) = 0, so that A is always the absorbed delay at zero delay.
+The candidate shapes are collected in `FADE_SHAPES` (hyperbola, exponential,
+lorentzian, truncated, quadratic) and the model is fit with any of them via
+the `fade` argument of `model_1d`, `model_2d`, `fit_1d`, `fit_2d` and
+`fit_combined`. The default and selected best shape is the exponential
+`g(u) = exp(-u)` (see qa-fade-term.md, Q3): among the two-parameter candidates
+it has the best mean fit, is smooth, has a finite total absorbed cost
+(integral over u is A*s0, vs the hyperbola's divergent A*s0/u tail), and pins
+its scale s0 as a gauge invariant. The hyperbola `g(u) = 1/(1+u)` -- the
+original working model -- is kept as a candidate for comparison.
 
 The fit is `scipy.optimize.curve_fit` with bounds W>=0, N>=0, A>=0 and
 s0 in [0.05*s_min, 0.5*s_range], so the reported f is always in [0, 1). The
@@ -43,10 +55,11 @@ saturation term, i.e. the absorbed delay of an operation only fades while its
 own imposed delay grows. Such a sweep is then fitted with the two-operation
 (separable, no cross-term) model
 
-    T(m, f) = W + N_m*m + N_f*f + A_m*m0/(m+m0) + A_f*f0/(f+f0)
+    T(m, f) = W + N_m*m + N_f*f + A_m*g(m/m0) + A_f*g(f/f0)
 
-and the slack ratios f_malloc = A_m/T0, f_free = A_f/T0 (absorbed delay
-over zero-delay runtime, T0 = W + A_m + A_f) are reported separately.
+(with the selected best shape, the exponential, g(u) = exp(-u)) and the
+slack ratios f_malloc = A_m/T0, f_free = A_f/T0 (absorbed delay over
+zero-delay runtime, T0 = W + A_m + A_f) are reported separately.
 Groups whose runs vary only one of the two delays fall back to the 1-D model
 above, fitted on that delay.
 
@@ -81,10 +94,113 @@ _INF = float("inf")
 EPS_S = 1e-12
 
 
-class Model1d(NamedTuple):
-    """Parameters of the 1-operation allocation model T(s) = W + N*s + A*s0/(s+s0).
+def _fade_hyperbola(u: np.ndarray) -> np.ndarray:
+    """Hyperbola fade shape g(u) = 1/(1+u) (the original working model).
 
-    The delay s is in seconds.
+    Args:
+        u: the reduced delay s/s0.
+
+    Returns:
+        np.ndarray: the fade shape, 1 at u = 0 and 0 for u -> inf.
+
+    """
+    return 1.0 / (1.0 + u)
+
+
+def _fade_exponential(u: np.ndarray) -> np.ndarray:
+    """Exponential fade shape g(u) = exp(-u) (the selected best model).
+
+    Args:
+        u: the reduced delay s/s0.
+
+    Returns:
+        np.ndarray: the fade shape, 1 at u = 0 and 0 for u -> inf.
+
+    """
+    return np.exp(-u)
+
+
+def _fade_lorentzian(u: np.ndarray) -> np.ndarray:
+    """Lorentzian fade shape g(u) = 1/(1+u^2).
+
+    Args:
+        u: the reduced delay s/s0.
+
+    Returns:
+        np.ndarray: the fade shape, 1 at u = 0 and 0 for u -> inf.
+
+    """
+    return 1.0 / (1.0 + u * u)
+
+
+def _fade_truncated(u: np.ndarray) -> np.ndarray:
+    """Truncated-linear fade shape g(u) = max(1-u, 0) (the overlap null model).
+
+    Args:
+        u: the reduced delay s/s0.
+
+    Returns:
+        np.ndarray: the fade shape, 1 at u = 0 and 0 for u >= 1.
+
+    """
+    return np.maximum(1.0 - u, 0.0)
+
+
+def _fade_quadratic(u: np.ndarray) -> np.ndarray:
+    """Quadratic-overlap fade shape g(u) = max(1-u, 0)^2.
+
+    Args:
+        u: the reduced delay s/s0.
+
+    Returns:
+        np.ndarray: the fade shape, 1 at u = 0 and 0 for u >= 1.
+
+    """
+    return np.maximum(1.0 - u, 0.0) ** 2
+
+
+#: The candidate fade shapes g(u) of the allocation model, keyed by name.
+#: Each satisfies g(0) = 1 and g(u -> inf) = 0, so the model term A*g(s/s0)
+#: is the absorbed delay fading from A at zero delay to 0 at large delay.
+#: The power-law candidate (three parameters, A, s0, k) is not a member of
+#: this two-parameter family; it is fit only by the comparison tooling.
+FADE_SHAPES: dict[str, Callable[[np.ndarray], np.ndarray]] = {
+    "hyperbola": _fade_hyperbola,
+    "exponential": _fade_exponential,
+    "lorentzian": _fade_lorentzian,
+    "truncated": _fade_truncated,
+    "quadratic": _fade_quadratic,
+}
+
+#: The selected best fade shape, and the default of every fit and model call.
+BEST_FADE = "exponential"
+
+
+def _fade(name: str) -> Callable[[np.ndarray], np.ndarray]:
+    """Return the normalized fade shape function of one candidate by name.
+
+    Args:
+        name: the fade key, a member of `FADE_SHAPES`.
+
+    Returns:
+        Callable: the fade shape g(u).
+
+    Raises:
+        ValueError: if the name is not a known fade shape.
+
+    """
+    try:
+        return FADE_SHAPES[name]
+    except KeyError:
+        msg = f"unknown fade {name!r} (available: {', '.join(FADE_SHAPES)})"
+        raise ValueError(msg) from None
+
+
+class Model1d(NamedTuple):
+    """Parameters of the 1-operation allocation model T(s) = W + N*s + A*g(s/s0).
+
+    The delay s is in seconds and g is the candidate fade shape (default the
+    exponential, g(u) = exp(-u); see the module docstring and `FADE_SHAPES`).
     """
 
     W: float
@@ -109,12 +225,14 @@ class FitSetup(NamedTuple):
     """Inputs precomputed for the constrained 1-D fit of one sweep.
 
     `bounds` is the (lo_b, hi_b) search range of s0, `guess` the robust
-    grid solution (W, N, A, s0), and `eps` the floor for the initial guess.
+    grid solution (W, N, A, s0), `eps` the floor for the initial guess, and
+    `fade` the fade shape name the fit uses.
     """
 
     bounds: tuple[float, float]
     guess: tuple[float, float, float, float]
     eps: float
+    fade: str = BEST_FADE
 
 
 class ConstrainedFit(NamedTuple):
@@ -130,8 +248,10 @@ class ConstrainedFit(NamedTuple):
     notes: list[str]
 
 
-def model_1d(s: np.ndarray, W: float, N: float, A: float, s0: float) -> np.ndarray:
-    """Evaluate the 1-operation allocation model T(s) = W + N*s + A*s0/(s+s0).
+def model_1d(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
+    s: np.ndarray, W: float, N: float, A: float, s0: float, fade: str = BEST_FADE
+) -> np.ndarray:
+    """Evaluate the 1-operation allocation model T(s) = W + N*s + A*g(s/s0).
 
     Args:
         s: the imposed delay in seconds.
@@ -139,31 +259,40 @@ def model_1d(s: np.ndarray, W: float, N: float, A: float, s0: float) -> np.ndarr
         N: the allocation calls per run.
         A: the total imposed delay absorbed by parallel work per run (s).
         s0: the sleeptime scale over which the absorption fades (s).
+        fade: the fade shape name (a member of `FADE_SHAPES`); defaults to
+        the selected best shape, the exponential.
 
     Returns:
         np.ndarray: the model runtime in seconds.
 
     """
-    return W + N * s + A * s0 / (s + s0)
+    return W + N * s + A * _fade(fade)(s / s0)
 
 
-def model_2d(m: np.ndarray, f: np.ndarray, p: Sequence[float]) -> np.ndarray:
+def model_2d(m: np.ndarray, f: np.ndarray, p: Sequence[float], fade: str = BEST_FADE) -> np.ndarray:
     """Evaluate the 2-operation allocation model, the delays m (malloc) and f (free) in seconds.
+
+    The model is T(m, f) = W + N_m*m + N_f*f + A_m*g(m/m0) + A_f*g(f/f0).
 
     Args:
         m: the malloc delays in seconds.
         f: the free delays in seconds.
         p: the parameters (W, N_m, N_f, A_m, A_f, m0, f0).
+        fade: the fade shape name (a member of `FADE_SHAPES`); defaults to
+        the selected best shape, the exponential.
 
     Returns:
         np.ndarray: the model runtime in seconds.
 
     """
     W, N_m, N_f, A_m, A_f, m0, f0 = p
-    return W + N_m * m + N_f * f + A_m * m0 / (m + m0) + A_f * f0 / (f + f0)
+    shape = _fade(fade)
+    return W + N_m * m + N_f * f + A_m * shape(m / m0) + A_f * shape(f / f0)
 
 
-def model_c_a(s: np.ndarray, W: float, N: float, s0: float, c: float) -> np.ndarray:
+def model_c_a(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
+    s: np.ndarray, W: float, N: float, s0: float, c: float, fade: str = BEST_FADE
+) -> np.ndarray:
     """Evaluate the 1-D model with the A = N*c constraint, c in seconds.
 
     Args:
@@ -172,13 +301,15 @@ def model_c_a(s: np.ndarray, W: float, N: float, s0: float, c: float) -> np.ndar
         N: the allocation calls per run.
         s0: the fade scale of the native correction (s).
         c: the native per-call cost (s), so that A = N*c.
+        fade: the fade shape name (a member of `FADE_SHAPES`); defaults to
+        the selected best shape, the exponential.
 
     Returns:
         np.ndarray: the model runtime in seconds.
 
     """
     A = N * c
-    return W + N * s + A * s0 / (s + s0)
+    return W + N * s + A * _fade(fade)(s / s0)
 
 
 _BOOTSTRAP_N = 512
@@ -252,7 +383,7 @@ def _fit_lsq(h: np.ndarray, s: np.ndarray, t: np.ndarray) -> tuple[float, float,
     """Least squares for t = W + N*s + A*h.
 
     Args:
-        h: the saturation factor h = s0/(s+s0), one value per point.
+        h: the fade shape column h = g(s/s0), one value per point.
         s: the sleeptimes in seconds.
         t: the runtimes in seconds.
 
@@ -265,7 +396,9 @@ def _fit_lsq(h: np.ndarray, s: np.ndarray, t: np.ndarray) -> tuple[float, float,
     return (*[float(v) for v in sol], float(np.sum(res**2)))
 
 
-def _grid_guess(s: np.ndarray, t: np.ndarray, lo: float, hi: float) -> tuple[float, float, float, float]:
+def _grid_guess(
+    s: np.ndarray, t: np.ndarray, lo: float, hi: float, fade: str = BEST_FADE
+) -> tuple[float, float, float, float]:
     """Robust unconstrained solution: linear in (W, N, A) for each s0 on a log grid.
 
     Args:
@@ -273,15 +406,17 @@ def _grid_guess(s: np.ndarray, t: np.ndarray, lo: float, hi: float) -> tuple[flo
         t: the runtimes in seconds.
         lo: the search-range lower bound of s0 (s).
         hi: the search-range upper bound of s0 (s).
+        fade: the fade shape name (a member of `FADE_SHAPES`).
 
     Returns:
         tuple[float, float, float, float]: W, N, A, and the best s0 from the log grid.
 
     """
+    shape = _fade(fade)
     hi_g = max(float(hi), lo * 1.5)
     best = None
     for s0 in np.logspace(np.log10(lo), np.log10(hi_g), 60):
-        W, N, A, ss_res = _fit_lsq(s0 / (s + s0), s, t)
+        W, N, A, ss_res = _fit_lsq(shape(s / s0), s, t)
         if best is None or ss_res < best[0]:
             best = (ss_res, s0, W, N, A)
     _, s0, W, N, A = best
@@ -350,25 +485,26 @@ def _f_of_p_ca(p: np.ndarray, c: float) -> float:
     return p[1] * c / (p[0] + p[1] * c) if p[0] + p[1] * c > EPS_S else 0.0
 
 
-def _fit_setup_1d(s: np.ndarray, t: np.ndarray) -> FitSetup:
+def _fit_setup_1d(s: np.ndarray, t: np.ndarray, fade: str = BEST_FADE) -> FitSetup:
     """Precompute the s0 bounds, robust initial guess, and guess floor of a 1-D fit.
 
     Args:
         s: sorted sleeptimes in seconds.
         t: the runtimes in seconds.
+        fade: the fade shape name (a member of `FADE_SHAPES`).
 
     Returns:
-        FitSetup: the (lo_b, hi_b) bounds, the grid guess, and eps.
+        FitSetup: the (lo_b, hi_b) bounds, the grid guess, eps, and the fade.
 
     """
     s_min_pos = s[s > 0].min() if np.any(s > 0) else s.max()
     lo = max(0.05 * s_min_pos, EPS_S)
     hi = 0.5 * (s.max() - s.min())
-    guess = _grid_guess(s, t, lo, hi)  # robust, unconstrained (linear in W, N, A per s0)
+    guess = _grid_guess(s, t, lo, hi, fade)  # robust, unconstrained (linear in W, N, A per s0)
     eps = 1e-9 * max(1.0, float(np.max(np.abs(t))))
     lo_b = max(lo, EPS_S)
     hi_b = max(hi, lo_b * 1.5)
-    return FitSetup(bounds=(lo_b, hi_b), guess=guess, eps=eps)
+    return FitSetup(bounds=(lo_b, hi_b), guess=guess, eps=eps, fade=fade)
 
 
 def _p0_1d(guess: tuple[float, float, float, float], eps: float, bounds: tuple[float, float]) -> list[float]:
@@ -496,7 +632,7 @@ def _fit_constrained_1d(
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", OptimizeWarning)
             popt, pcov = curve_fit(
-                model_1d,
+                lambda qq, W, N, A, s0: model_1d(qq, W, N, A, s0, fade=setup.fade),
                 s,
                 t,
                 p0=p0,
@@ -510,7 +646,7 @@ def _fit_constrained_1d(
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", OptimizeWarning)
         popt, pcov = curve_fit(
-            lambda qq, W, N, s0: model_c_a(qq, W, N, s0, c),
+            lambda qq, W, N, s0: model_c_a(qq, W, N, s0, c, fade=setup.fade),
             s,
             t,
             p0=p0,
@@ -522,13 +658,15 @@ def _fit_constrained_1d(
     return ConstrainedFit(model, pcov, list(popt), _fit_notes_1d(model, setup.guess, setup.bounds))
 
 
-def fit_1d(sleeptimes: pd.Series, runtimes: pd.Series, c_a: float | None = None) -> dict:
+def fit_1d(sleeptimes: pd.Series, runtimes: pd.Series, c_a: float | None = None, fade: str = BEST_FADE) -> dict:
     """Fit one sleeptime sweep to the constrained allocation model.
 
     Args:
         sleeptimes: the imposed delays in nanoseconds.
         runtimes: the runtimes in seconds.
         c_a: the A = N*c constraint in nanoseconds, or None for the full model.
+        fade: the fade shape name (a member of `FADE_SHAPES`); defaults to
+        the selected best shape, the exponential.
 
     Returns:
         dict: W, N, A, s0, T0, f, r2 plus their standard errors (W_err, N_err,
@@ -556,7 +694,7 @@ def fit_1d(sleeptimes: pd.Series, runtimes: pd.Series, c_a: float | None = None)
         model: Model1d, pcov: np.ndarray | None, fit_params: list[float] | None, note: str | None = None
     ) -> dict:
         W, N, A, s0 = model.W, model.N, model.A, model.s0
-        pred = model_1d(s, W, N, A, s0)
+        pred = model_1d(s, W, N, A, s0, fade=fade)
         r2 = 1.0 - float(np.sum((t - pred) ** 2)) / ss_tot if ss_tot > 0 else float("nan")
         if N <= 0:
             notes.append("non-positive slope: no allocation cost visible in this sweep")
@@ -597,7 +735,7 @@ def fit_1d(sleeptimes: pd.Series, runtimes: pd.Series, c_a: float | None = None)
 
     if s.size == 3:
         return _fit_3_points(s, t, finish)
-    setup = _fit_setup_1d(s, t)
+    setup = _fit_setup_1d(s, t, fade)
     try:
         cf = _fit_constrained_1d(s, t, c_a, setup)
         notes.extend(cf.notes)
@@ -663,12 +801,13 @@ def _fit_bounds_2d(m: np.ndarray, f: np.ndarray) -> tuple[float, float, float, f
     return lo_m, hi_m, lo_f, hi_f
 
 
-def _grid_row_2d(
+def _grid_row_2d(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
     m: np.ndarray,
     f: np.ndarray,
     t: np.ndarray,
     m0: float,
     bounds: tuple[float, float, float, float],
+    fade: str = BEST_FADE,
 ) -> tuple[float, ...]:
     """Best f0 of the 2-D grid search at a fixed m0.
 
@@ -678,14 +817,16 @@ def _grid_row_2d(
         t: the runtimes in seconds.
         m0: the fixed malloc fade scale in seconds.
         bounds: the (lo_m, hi_m, lo_f, hi_f) search ranges.
+        fade: the fade shape name (a member of `FADE_SHAPES`).
 
     Returns:
         tuple[float, ...]: (ss_res, W, N_m, N_f, A_m, A_f, m0, f0) of the best row.
 
     """
+    shape = _fade(fade)
     best = None
     for f0 in np.logspace(np.log10(bounds[2]), np.log10(bounds[3]), 25):
-        X = np.vstack([np.ones_like(m), m, f, m0 / (m + m0), f0 / (f + f0)]).T
+        X = np.vstack([np.ones_like(m), m, f, shape(m / m0), shape(f / f0)]).T
         sol, *_ = np.linalg.lstsq(X, t, rcond=None)
         ss_res = float(np.sum((t - X @ sol) ** 2))
         if best is None or ss_res < best[0]:
@@ -698,6 +839,7 @@ def _grid_guess_2d(
     sweep: tuple[np.ndarray, np.ndarray],
     t: np.ndarray,
     bounds: tuple[float, float, float, float],
+    fade: str = BEST_FADE,
 ) -> tuple[float, ...]:
     """Robust unconstrained 2-D solution, linear in (W, N_m, N_f, A_m, A_f) per (m0, f0).
 
@@ -705,6 +847,7 @@ def _grid_guess_2d(
         sweep: the (m, f) delay arrays in seconds.
         t: the runtimes in seconds.
         bounds: the (lo_m, hi_m, lo_f, hi_f) search ranges.
+        fade: the fade shape name (a member of `FADE_SHAPES`).
 
     Returns:
         tuple[float, ...]: W, N_m, N_f, A_m, A_f, m0, f0 minimizing the residual.
@@ -713,7 +856,7 @@ def _grid_guess_2d(
     m, f = sweep
     best = None
     for m0 in np.logspace(np.log10(bounds[0]), np.log10(bounds[1]), 25):
-        row = _grid_row_2d(m, f, t, float(m0), bounds)
+        row = _grid_row_2d(m, f, t, float(m0), bounds, fade)
         if best is None or row[0] < best[0]:
             best = row
     _ss_res, W, N_m, N_f, A_m, A_f, m0, f0 = best
@@ -786,6 +929,7 @@ def _fit_constrained_2d(
     t: np.ndarray,
     bounds: tuple[float, float, float, float],
     guess: tuple[float, ...],
+    fade: str = BEST_FADE,
 ) -> ConstrainedFit:
     """Run curve_fit for a 2-D sweep.
 
@@ -794,6 +938,7 @@ def _fit_constrained_2d(
         t: the runtimes in seconds.
         bounds: the (lo_m, hi_m, lo_f, hi_f) search ranges.
         guess: the robust grid solution (W, N_m, N_f, A_m, A_f, m0, f0).
+        fade: the fade shape name (a member of `FADE_SHAPES`).
 
     Returns:
         ConstrainedFit: the fitted model, its covariance, and corner notes.
@@ -805,7 +950,9 @@ def _fit_constrained_2d(
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", OptimizeWarning)
         popt, pcov = curve_fit(
-            lambda pf, W, N_m, N_f, A_m, A_f, m0, f0: model_2d(pf[0], pf[1], (W, N_m, N_f, A_m, A_f, m0, f0)),
+            lambda pf, W, N_m, N_f, A_m, A_f, m0, f0: model_2d(
+                pf[0], pf[1], (W, N_m, N_f, A_m, A_f, m0, f0), fade=fade
+            ),
             (m, f),
             t,
             p0=p0,
@@ -819,15 +966,17 @@ def _fit_constrained_2d(
     return ConstrainedFit(model, pcov, list(popt), _fit_notes_2d(model, guess, bounds))
 
 
-def fit_2d(m_delays: pd.Series, f_delays: pd.Series, runtimes: pd.Series) -> dict:
+def fit_2d(m_delays: pd.Series, f_delays: pd.Series, runtimes: pd.Series, fade: str = BEST_FADE) -> dict:
     """Fit one (malloc, free) delay combination sweep to the two-operation allocation model.
 
-    The model is T(m, f) = W + N_m*m + N_f*f + A_m*m0/(m+m0) + A_f*f0/(f+f0).
+    The model is T(m, f) = W + N_m*m + N_f*f + A_m*g(m/m0) + A_f*g(f/f0).
 
     Args:
         m_delays: the malloc delays in nanoseconds.
         f_delays: the free delays in nanoseconds.
         runtimes: the runtimes in seconds.
+        fade: the fade shape name (a member of `FADE_SHAPES`); defaults to
+        the selected best shape, the exponential.
 
     Returns:
         dict: W, N_m, N_f, A_m, A_f, m0, f0, T0, f_malloc, f_free, r2 plus
@@ -853,7 +1002,7 @@ def fit_2d(m_delays: pd.Series, f_delays: pd.Series, runtimes: pd.Series) -> dic
     def finish(
         model: Model2d, pcov: np.ndarray | None, fit_params: list[float] | None, note: str | None = None
     ) -> dict:
-        pred = model_2d(m, f, (model.W, model.N_m, model.N_f, model.A_m, model.A_f, model.m0, model.f0))
+        pred = model_2d(m, f, (model.W, model.N_m, model.N_f, model.A_m, model.A_f, model.m0, model.f0), fade=fade)
         r2 = 1.0 - float(np.sum((t - pred) ** 2)) / ss_tot if ss_tot > 0 else float("nan")
         if model.N_m <= 0:
             notes.append("non-positive malloc slope: no allocation cost visible for the malloc delays")
@@ -900,9 +1049,9 @@ def fit_2d(m_delays: pd.Series, f_delays: pd.Series, runtimes: pd.Series) -> dic
 
     sweep = (m, f)
     bounds = _fit_bounds_2d(m, f)
-    guess = _grid_guess_2d(sweep, t, bounds)
+    guess = _grid_guess_2d(sweep, t, bounds, fade)
     try:
-        cf = _fit_constrained_2d(sweep, t, bounds, guess)
+        cf = _fit_constrained_2d(sweep, t, bounds, guess, fade)
         notes.extend(cf.notes)
         return finish(cf.model, cf.pcov, cf.fit_params)
     except (RuntimeError, ValueError) as err:
@@ -976,7 +1125,9 @@ def _combined_bounds(kind: str, n: int, m: np.ndarray, f: np.ndarray) -> tuple[l
     return lo_b, hi_b
 
 
-def _combined_predict(kind: str, x: tuple | np.ndarray, p: np.ndarray, indicators: list[np.ndarray]) -> np.ndarray:
+def _combined_predict(
+    kind: str, x: tuple | np.ndarray, p: np.ndarray, indicators: list[np.ndarray], fade: str = BEST_FADE
+) -> np.ndarray:
     """Evaluate the combined model at the pooled points.
 
     Args:
@@ -986,23 +1137,25 @@ def _combined_predict(kind: str, x: tuple | np.ndarray, p: np.ndarray, indicator
         (A_malloc, A_free, m0, f0) block per algorithm ("2d") or one
         (A, s0) block ("1d-*"), in the pooled algorithms' order.
         indicators: per-algorithm 0/1 indicator arrays of the pooled points.
+        fade: the fade shape name (a member of `FADE_SHAPES`).
 
     Returns:
         np.ndarray: the model runtimes in seconds.
 
     """
+    shape = _fade(fade)
     if kind == "2d":
         m, f = x
         t = p[0] + p[1] * m + p[2] * f
         for k, ind in enumerate(indicators):
             A_m, A_f, m0, f0 = p[3 + 4 * k : 7 + 4 * k]
-            t += ind * (A_m * m0 / (m + m0) + A_f * f0 / (f + f0))
+            t += ind * (A_m * shape(m / m0) + A_f * shape(f / f0))
         return t
     s = x
     t = p[0] + p[1] * s
     for k, ind in enumerate(indicators):
         A, s0 = p[2 + 2 * k : 4 + 2 * k]
-        t += ind * (A * s0 / (s + s0))
+        t += ind * (A * shape(s / s0))
     return t
 
 
@@ -1043,6 +1196,7 @@ def _combined_design(
     x: tuple | np.ndarray,
     indicators: list[np.ndarray],
     fades: list[tuple],
+    fade: str = BEST_FADE,
 ) -> np.ndarray:
     """Design matrix of the combined model with the fade scales held fixed.
 
@@ -1052,11 +1206,13 @@ def _combined_design(
         indicators: per-algorithm 0/1 indicator arrays.
         fades: per algorithm, the fixed fade scale(s) in seconds --
         (m0, f0) for "2d", (s0,) for "1d-*".
+        fade: the fade shape name (a member of `FADE_SHAPES`).
 
     Returns:
         np.ndarray: the design matrix, one column per fitted coefficient.
 
     """
+    shape = _fade(fade)
     if kind == "2d":
         m, f = x
         columns: list[np.ndarray] = [np.ones_like(m), m, f]
@@ -1066,11 +1222,11 @@ def _combined_design(
     for ind, fl in zip(indicators, fades, strict=True):
         if kind == "2d":
             m0, f0 = fl
-            columns.append(m0 / (m + m0) * ind)
-            columns.append(f0 / (f + f0) * ind)
+            columns.append(shape(m / m0) * ind)
+            columns.append(shape(f / f0) * ind)
         else:
             (s0,) = fl
-            columns.append(s0 / (s + s0) * ind)
+            columns.append(shape(s / s0) * ind)
     return np.vstack(columns).T
 
 
@@ -1097,12 +1253,13 @@ def _robust_combined_vector(kind: str, sol: np.ndarray, fades: list[tuple]) -> l
     return p
 
 
-def _combined_robust(
+def _combined_robust(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
     kind: str,
     x: tuple | np.ndarray,
     t: np.ndarray,
     indicators: list[np.ndarray],
     fades: list[tuple],
+    fade: str = BEST_FADE,
 ) -> tuple[float, list[float]]:
     """Least squares of the combined model with the fade scales held fixed.
 
@@ -1112,19 +1269,20 @@ def _combined_robust(
         t: the runtimes in seconds.
         indicators: per-algorithm 0/1 indicator arrays.
         fades: per algorithm, the fixed fade scale(s) in seconds.
+        fade: the fade shape name (a member of `FADE_SHAPES`).
 
     Returns:
         tuple: (the residual sum of squares, the full parameter vector
         with the fixed fades inserted).
 
     """
-    matrix = _combined_design(kind, x, indicators, fades)
+    matrix = _combined_design(kind, x, indicators, fades, fade)
     sol, *_ = np.linalg.lstsq(matrix, t, rcond=None)
     ss_res = float(np.sum((t - matrix @ sol) ** 2))
     return ss_res, _robust_combined_vector(kind, sol, fades)
 
 
-def _own_guess(kind: str, m_a: np.ndarray, f_a: np.ndarray, t_a: np.ndarray) -> dict[str, float]:
+def _own_guess(kind: str, m_a: np.ndarray, f_a: np.ndarray, t_a: np.ndarray, fade: str = BEST_FADE) -> dict[str, float]:
     """Robust grid solution of one algorithm's own sweep.
 
     Args:
@@ -1132,6 +1290,7 @@ def _own_guess(kind: str, m_a: np.ndarray, f_a: np.ndarray, t_a: np.ndarray) -> 
         m_a: the algorithm's malloc delays in seconds.
         f_a: the algorithm's free delays in seconds.
         t_a: the algorithm's runtimes in seconds.
+        fade: the fade shape name (a member of `FADE_SHAPES`).
 
     Returns:
         dict: W, N_m, N_f, A_m, A_f, m0, f0 in seconds; the inapplicable
@@ -1144,16 +1303,16 @@ def _own_guess(kind: str, m_a: np.ndarray, f_a: np.ndarray, t_a: np.ndarray) -> 
     if t_a.size < 3:
         return out
     if kind == "2d":
-        values = _grid_guess_2d((m_a, f_a), t_a, _fit_bounds_2d(m_a, f_a))
+        values = _grid_guess_2d((m_a, f_a), t_a, _fit_bounds_2d(m_a, f_a), fade)
         out.update(dict(zip(("W", "N_m", "N_f", "A_m", "A_f", "m0", "f0"), values, strict=True)))
         return out
     if kind == "1d-malloc":
         lo_m, hi_m, _lo_f, _hi_f = _fit_bounds_2d(m_a, f_a)
-        W, N, A, s0 = _grid_guess(m_a, t_a, max(lo_m, EPS_S), hi_m)
+        W, N, A, s0 = _grid_guess(m_a, t_a, max(lo_m, EPS_S), hi_m, fade)
         out.update({"W": W, "N_m": N, "A_m": A, "m0": s0})
         return out
     _lo_m, _hi_m, lo_f, hi_f = _fit_bounds_2d(m_a, f_a)
-    W, N, A, s0 = _grid_guess(f_a, t_a, lo_f, hi_f)
+    W, N, A, s0 = _grid_guess(f_a, t_a, lo_f, hi_f, fade)
     out.update({"W": W, "N_f": N, "A_f": A, "f0": s0})
     return out
 
@@ -1206,7 +1365,7 @@ def _combined_initial_fades(
     head = _combined_layout(prep.kind)[0]
     for a in prep.order:
         own = p0_map.get(a, {})
-        sub = _own_guess(prep.kind, prep.m[prep.alg == a], prep.f[prep.alg == a], prep.t[prep.alg == a])
+        sub = _own_guess(prep.kind, prep.m[prep.alg == a], prep.f[prep.alg == a], prep.t[prep.alg == a], prep.fade)
         if prep.kind == "2d":
             fades.append(
                 (
@@ -1243,12 +1402,13 @@ def _term_seed(own: dict[str, float], name: str, fallback: float) -> float:
     return max(0.0, value)
 
 
-def _fit_residual_terms(
+def _fit_residual_terms(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
     kind: str,
     data: tuple | np.ndarray,
     r: np.ndarray,
     p0: tuple[float, ...],
     bounds: tuple[float, ...],
+    fade: str = BEST_FADE,
 ) -> tuple[list[float] | None, str | None]:
     """Fit one algorithm's saturation terms on the shared-parameter residuals.
 
@@ -1259,17 +1419,19 @@ def _fit_residual_terms(
         r: the residuals after the shared parameters are subtracted (s).
         p0: the initial (A..., s0...) values, in model order.
         bounds: the fade-scale search ranges.
+        fade: the fade shape name (a member of `FADE_SHAPES`).
 
     Returns:
         tuple: (the fitted values, None), or (None, the error message) on
         non-convergence.
 
     """
+    shape = _fade(fade)
     if kind == "2d":
 
         def model_2d(x: tuple | np.ndarray, A_m: float, m0: float, A_f: float, f0: float) -> np.ndarray:
             mm, ff = x
-            return A_m * m0 / (mm + m0) + A_f * f0 / (ff + f0)
+            return A_m * shape(mm / m0) + A_f * shape(ff / f0)
 
         model = model_2d
         lo = [0.0, bounds[0], 0.0, bounds[2]]
@@ -1277,7 +1439,7 @@ def _fit_residual_terms(
     else:
 
         def model_1d(sx: np.ndarray, A: float, s0: float) -> np.ndarray:
-            return A * s0 / (sx + s0)
+            return A * shape(sx / s0)
 
         model = model_1d
         lo = [0.0, bounds[0]]
@@ -1353,11 +1515,14 @@ def _combined_stage2(
                 prep.t[idx] - W - p_stage1[1] * prep.m[idx] - p_stage1[2] * prep.f[idx],
                 p0,
                 prep.fade_bounds,
+                prep.fade,
             )
         else:
             s = prep.m[idx] if kind == "1d-malloc" else prep.f[idx]
             p0 = (_term_seed(own, "A_m" if kind == "1d-malloc" else "A_f", p[base]), fades[k][0])
-            fitted, err = _fit_residual_terms(kind, s, prep.t[idx] - W - p_stage1[1] * s, p0, prep.fade_bounds)
+            fitted, err = _fit_residual_terms(
+                kind, s, prep.t[idx] - W - p_stage1[1] * s, p0, prep.fade_bounds, prep.fade
+            )
         if fitted is None:
             p[base] = max(0.0, p[base])
             if kind == "2d":
@@ -1456,14 +1621,16 @@ class _CombinedPrep(NamedTuple):
     xdata: tuple | np.ndarray  # the delay data for curve_fit
     fade_bounds: tuple[float, ...]  # the (lo, hi) range of each fade scale
     model: Callable[..., np.ndarray]  # the curve_fit model function
+    fade: str  # the fade shape name (a member of `FADE_SHAPES`)
 
 
-def _combined_fun(kind: str, indicators: list[np.ndarray]) -> Callable[..., np.ndarray]:
+def _combined_fun(kind: str, indicators: list[np.ndarray], fade: str = BEST_FADE) -> Callable[..., np.ndarray]:
     """Return the curve_fit model function of one combined fit.
 
     Args:
         kind: "2d", "1d-malloc", or "1d-free".
         indicators: per-algorithm 0/1 indicator arrays.
+        fade: the fade shape name (a member of `FADE_SHAPES`).
 
     Returns:
         Callable[..., np.ndarray]: the model runtime of the pooled points
@@ -1472,18 +1639,19 @@ def _combined_fun(kind: str, indicators: list[np.ndarray]) -> Callable[..., np.n
     """
 
     def model(x: tuple | np.ndarray, *params: float) -> np.ndarray:
-        return _combined_predict(kind, x, np.asarray(params, dtype=float), indicators)
+        return _combined_predict(kind, x, np.asarray(params, dtype=float), indicators, fade)
 
     return model
 
 
-def _combined_prepare(sweep: CombinedSweep, order: Sequence[str] | None) -> _CombinedPrep:
+def _combined_prepare(sweep: CombinedSweep, order: Sequence[str] | None, fade: str = BEST_FADE) -> _CombinedPrep:
     """Validate and prepare the pooled data of one combined fit.
 
     Args:
         sweep: the pooled sweep data (every algorithm of one scenario).
         order: the pooled algorithms' order, or None for first
         appearance.
+        fade: the fade shape name (a member of `FADE_SHAPES`).
 
     Returns:
         _CombinedPrep: the seconds-converted arrays, the normalized
@@ -1530,7 +1698,8 @@ def _combined_prepare(sweep: CombinedSweep, order: Sequence[str] | None) -> _Com
         (lo_b[head + 2], hi_b[head + 2], lo_b[head + 3], hi_b[head + 3])
         if kind == "2d"
         else (lo_b[head + 1], hi_b[head + 1]),
-        _combined_fun(kind, indicators),
+        _combined_fun(kind, indicators, fade),
+        fade,
     )
 
 
@@ -1757,6 +1926,7 @@ def fit_combined(
     sweep: CombinedSweep,
     order: Sequence[str] | None = None,
     p0: dict[str, dict[str, float]] | None = None,
+    fade: str = BEST_FADE,
 ) -> dict:
     """Fit one (machine, setup, grid) scenario over all of its algorithms.
 
@@ -1778,6 +1948,8 @@ def fit_combined(
         N_f, A_m, A_f, m0, f0) in seconds as the initial guess; missing
         values fall back to a robust grid guess on the algorithm's own
         data.
+        fade: the fade shape name (a member of `FADE_SHAPES`); defaults to
+        the selected best shape, the exponential.
 
     Returns:
         dict: the model kind, the pooled algorithms' order, the shared
@@ -1787,9 +1959,9 @@ def fit_combined(
         the joint (fit_params, pcov) pair.
 
     """
-    prep = _combined_prepare(sweep, order)
+    prep = _combined_prepare(sweep, order, fade)
     fades = _combined_initial_fades(prep, p0 or {})
-    _ss_res, p_stage1 = _combined_robust(prep.kind, prep.xdata, prep.t, prep.indicators, fades)
+    _ss_res, p_stage1 = _combined_robust(prep.kind, prep.xdata, prep.t, prep.indicators, fades, prep.fade)
     p_stage2, stage_notes = _combined_stage2(prep, p_stage1, p0 or {}, fades)
     fit_params, pcov, opt_notes = _combined_optimize(
         prep, _clip_shared(prep.kind, p_stage2, prep.eps), _clip_shared(prep.kind, p_stage2, 0.0)
@@ -1797,7 +1969,9 @@ def fit_combined(
     notes = stage_notes + opt_notes
     p = np.asarray(fit_params, dtype=float)
     r2 = (
-        1.0 - float(np.sum((prep.t - _combined_predict(prep.kind, prep.xdata, p, prep.indicators)) ** 2)) / prep.ss_tot
+        1.0
+        - float(np.sum((prep.t - _combined_predict(prep.kind, prep.xdata, p, prep.indicators, prep.fade)) ** 2))
+        / prep.ss_tot
         if prep.ss_tot > 0
         else float("nan")
     )
