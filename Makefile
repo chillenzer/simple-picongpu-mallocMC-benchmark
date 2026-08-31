@@ -228,9 +228,10 @@ endif
 endif
 
 .PHONY: all build check clean distclean results summary figures \
-	figures-sweeps figures-shared picongpu-src mallocmc-src microbench-src \
-	env-check env runs full clean-runs legacy-results legacy-verify \
-	microbench-results microbench-verify rocrate crate-zip sweep-status
+	figures-sweeps figures-shared figures-microbench picongpu-src \
+	mallocmc-src microbench-src env-check env runs full clean-runs \
+	legacy-results legacy-verify microbench-results microbench-verify \
+	rocrate crate-zip sweep-status
 
 # --- per (example, algorithm) harness targets ------------------------------
 
@@ -522,7 +523,7 @@ results:
 summary: results
 	$(PY) analysis/summarize_results.py --results $(RESULTS)
 
-figures: figures-sweeps figures-shared \
+figures: figures-sweeps figures-shared figures-microbench \
 	$(FIGDIR)/foil_lct.pdf $(FIGDIR)/kelvin_helmholtz.pdf $(FIGDIR)/fade-models.pdf
 
 # The family targets run the plotting scripts unfiltered (all machines,
@@ -532,6 +533,23 @@ figures-sweeps: results
 
 figures-shared: results
 	$(PY) analysis/plot_shared_fits.py --results $(RESULTS)
+
+# The microbenchmark figures: the allocation-cost figures (from the frozen
+# table in results.h5) and the diagnostic figures (from the suite's raw CSVs
+# under microbench.data). The microbench data is an optional source, so this
+# target is skipped when it is absent (a fresh checkout without the machine
+# data) instead of failing like the PIConGPU figures; when it is present it
+# freezes the raw CSVs and rebuilds results.h5 so the figures are current.
+figures-microbench:
+	@DATA=$$($(PY) config.py get microbench.data); \
+	if [ -n "$$DATA" ] && [ -d "$$DATA" ]; then \
+	  $(PY) analysis/make_microbench.py && \
+	  $(PY) analysis/compute_results.py --output $(RESULTS) && \
+	  $(PY) analysis/plot_microbench.py --results $(RESULTS) && \
+	  $(PY) analysis/plot_microbench_misc.py; \
+	else \
+	  echo "microbench: no data under $$DATA; skipping the microbenchmark figures."; \
+	fi
 
 $(FIGDIR)/foil_lct.pdf: results
 	$(PY) analysis/plot_foil_lct.py --results $(RESULTS)
