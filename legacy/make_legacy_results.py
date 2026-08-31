@@ -726,6 +726,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.check:
         return verify(args.output)
+    if not LOGS_DIR.is_dir() or not any(path.is_dir() for path in LOGS_DIR.iterdir()):
+        print(f"legacy: no logs under {LOGS_DIR}; nothing to freeze", file=sys.stderr)
+        return 0
     runs, manifest, excluded = collect()
     attrs = {
         "created_utc": datetime.now(UTC).isoformat(timespec="seconds"),

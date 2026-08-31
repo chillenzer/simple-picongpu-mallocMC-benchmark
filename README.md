@@ -167,25 +167,34 @@ git-ignored; the derived artifacts are rebuilt from it by `make`.
   `legacy/` scripts and docs.
 - **On the machines (never committed)**: the run logs in each machine's
   output directory (`output/<machine>-sleeptimes/`, incl. its `sessions/`
-  folder of session logs), the run stamps (`run-stamps/`), and the frozen
-  legacy data (`legacy/logs/`, `legacy/legacy_results.h5`). The legacy
-  data is the piece a fresh checkout must obtain for the comparison
-  figures: copy `legacy/logs/` from a machine that still holds the
-  historical `output/` tree (or run `move_legacy_logs.sh` there), then
-  `make legacy-results` builds the frozen table and `make legacy-verify`
-  checks it (the full procedure is in `legacy/README.md`).
+  folder of session logs), the run stamps (`run-stamps/`), the frozen
+  legacy data (`legacy/logs/`, `legacy/legacy_results.h5`), and the
+  microbenchmark data (the memmansurvey allocation-test CSVs under
+  `microbenchmarks/data/`, frozen into
+  `microbenchmarks/microbench_results.h5`). The legacy data is the piece a
+  fresh checkout must obtain for the comparison figures: copy
+  `legacy/logs/` from a machine that still holds the historical `output/`
+  tree (or run `move_legacy_logs.sh` there), then `make legacy-results`
+  builds the frozen table and `make legacy-verify` checks it (the full
+  procedure is in `legacy/README.md`); `make microbench-results` and
+  `make microbench-verify` do the same for the microbenchmark CSVs.
 - **Derived (never committed, rebuilt by `make`)**: `output/results.h5`,
   the `figures/` PDFs, `ro-crate-metadata.json`, and
   `ro-crate.crate.zip`; `make clean` removes them.
 
 On a fresh checkout without the machine data, `make` still runs end to
-end: the sweep tables (`group_stats`, `fits`, `baselines`) come out empty
-for the sweep machines, and the FoilLCT / KelvinHelmholtz figures and
-their statistics are computed from the frozen legacy table alone. The
-archived-but-excluded legacy runs (the `hal-sleeptimes-nanosleep`
-experiment, outside the benchmark matrix) are parsed but attributed to
-the empty hardware name and dropped by the analysis, which records the
-exclusion in the results file's attributes.
+end: each step skips its absent data instead of failing. The freezes
+(`make freeze`) skip a source whose raw data is absent; `results` computes
+the tables from whatever frozen tables exist; and each figure family
+(`make figures-picongpu`, `make figures-microbench`) skips when its data is
+absent, so `make figures` produces only the figures its data supports.
+With the legacy data present, the sweep tables (`group_stats`, `fits`,
+`baselines`) come out for the sweep machines and the FoilLCT /
+KelvinHelmholtz figures and their statistics are computed from the frozen
+legacy table. The archived-but-excluded legacy runs (the
+`hal-sleeptimes-nanosleep` experiment, outside the benchmark matrix) are
+parsed but attributed to the empty hardware name and dropped by the
+analysis, which records the exclusion in the results file's attributes.
 
 ## Running the benchmark
 
@@ -476,23 +485,26 @@ empty):
   summarised in *The method*; the module docstring is the reference.
 - `analysis/compute_results.py` — the single "numbers" entry point: parses
   the sweep machines' run logs (the `machines` table of `config.json`) and
-  the legacy runs (from the frozen `legacy/legacy_results.h5`, required —
-  build it with `make legacy-results`), all grouped by their short
-   hardware name, and computes the group runtime statistics, the
-   performance-model fits of every (machine, example, algorithm, grid) sweep
-   (with the parameter covariances), the combined (shared-parameter) fit of
-   every (machine, example, grid) scenario spanned by at least two
-   algorithms, the zero-delay baselines (sweep machines), the per-arm
-   absorbed-delay slack (the plateau deficit d and the per-call c = d/N),
-   and the FoilLCT/KelvinHelmholtz figure statistics (all zero-delay runs,
-   per short hardware name); writes everything to `output/results.h5`
-   (*Analysis*) and prints nothing.
+  the legacy runs (from the frozen `legacy/legacy_results.h5`, when it is
+  present — build it with `make legacy-results`), all grouped by their short
+  hardware name, and copies the microbenchmark allocation-cost tables (from
+  the frozen `microbenchmarks/microbench_results.h5`, when it is present —
+  build it with `make microbench-results`); then computes the group runtime
+  statistics, the performance-model fits of every (machine, example,
+  algorithm, grid) sweep (with the parameter covariances), the combined
+  (shared-parameter) fit of every (machine, example, grid) scenario spanned
+  by at least two algorithms, the zero-delay baselines (sweep machines), the
+  per-arm absorbed-delay slack (the plateau deficit d and the per-call
+  c = d/N), and the FoilLCT/KelvinHelmholtz figure statistics (all
+  zero-delay runs, per short hardware name); writes everything to
+  `output/results.h5` (*Analysis*) and prints nothing.
 - `analysis/summarize_results.py` — prints the summary tables from
   `output/results.h5` (group statistics, fits, the combined fit vs the
   individual fits per scenario, the slack-ratio summary (f = A/T0, the
   absorbed delay over the zero-delay runtime), the per-arm absorbed-delay
-  slack (d, c = d/N), the No-delay runtimes table, the figure
-  statistics; `--raw` adds the parsed runs).
+  slack (d, c = d/N), the No-delay runtimes table, the figure statistics,
+  and the three microbenchmark allocation-cost tables (native, mixed
+  workload, thread scaling); `--raw` adds the parsed runs).
 - `analysis/plot_sweeps.py` — one delay-sweep figure per sweep machine
   (`figures/sweeps-<machine>.pdf`: one row per algorithm, the malloc and
   free delay sweeps side by side, all axes sharing the x- and y-axes,
@@ -509,6 +521,14 @@ empty):
 - `analysis/plot_kelvin_helmholtz.py` — the KelvinHelmholtz violin chart of
   the zero-delay runs relative to the ScatterAlloc reference
   (`figures/kelvin_helmholtz.pdf`).
+- `analysis/plot_fade_models.py` — the performance-model fade-term
+  comparison figure (`figures/fade-models.pdf`).
+- `analysis/plot_microbench.py` — the microbenchmark allocation-cost figures
+  (the native, mixed-workload, and thread-scaling costs, plus the allocator
+  legend; from the frozen tables in `output/results.h5`).
+- `analysis/plot_microbench_misc.py` — the microbenchmark diagnostic figures
+  (the allocator utilisation and the allocation-graph figures; from the
+  suite's raw CSVs under `microbenchmarks/data/`).
 - `build/` — created by the Makefile; one CMake project per (example,
   algorithm).
 
@@ -522,10 +542,13 @@ figures*, joined by the single HDF5 file `output/results.h5`:
   new format, one `# metadata:` JSON line per log; the group statistics,
   the performance-model fits and the zero-delay baselines are computed for
   these) and the frozen legacy table `legacy/legacy_results.h5` (the
-  pre-redesign logs, read grouped by their short hardware name). All runs
-  are grouped by that short hardware name (`A30`, `V100`, ...; the
-  FoilLCT / KelvinHelmholtz figure statistics cover the zero-delay runs of
-  both sources). It prints nothing. Every row of the `runs` table carries
+  pre-redesign logs, read grouped by their short hardware name; both are
+  optional, and the analysis runs without either), and copies the
+  microbenchmark allocation-cost tables from the frozen
+  `microbenchmarks/microbench_results.h5` (optional). All runs are grouped
+  by that short hardware name (`A30`, `V100`, ...; the FoilLCT /
+  KelvinHelmholtz figure statistics cover the zero-delay runs of both
+  sources). It prints nothing. Every row of the `runs` table carries
   the timing metrics and the provenance of the log the run came from
   (tabulated below); a row whose log comes from an older vintage of the
   same identity carries `superseded = 1`, derived from the run stamps
@@ -550,15 +573,29 @@ figures*, joined by the single HDF5 file `output/results.h5`:
   (`figures/sweeps-<machine>.pdf`, `--machine` for one machine),
   `plot_shared_fits.py` (`figures/sweeps-shared-<machine>.pdf`, `--machine`
   for one machine), `plot_foil_lct.py` (`figures/foil_lct.pdf`),
-  `plot_kelvin_helmholtz.py` (`figures/kelvin_helmholtz.pdf`).
+  `plot_kelvin_helmholtz.py` (`figures/kelvin_helmholtz.pdf`),
+  `plot_fade_models.py` (`figures/fade-models.pdf`), and the microbenchmark
+  figures: `plot_microbench.py` (the allocation-cost figures, from the frozen
+  table in `results.h5`) and `plot_microbench_misc.py` (the diagnostic
+  figures, from the suite's raw CSVs).
 
 The simplest way to run the whole thing (or any single figure) is the
 `Makefile`:
 
 ```
 make                      # all figures + the summary tables
-make results              # only output/results.h5, from the run logs
+make freeze               # freeze the raw sources (the PIConGPU legacy logs
+                          #   and the microbenchmark CSVs) into their frozen
+                          #   tables; a source with no data is skipped
+make freeze-verify        # check the frozen tables against their raw data
+make results              # only output/results.h5, from the run logs and the
+                          #   frozen tables (a separate step: run `make freeze`
+                          #   first to refresh the frozen tables)
 make summary              # only the summary tables
+make figures              # all figures (PIConGPU + microbench); a family
+                          #   whose data is absent is skipped
+make figures-picongpu     # only the PIConGPU figures
+make figures-microbench   # only the microbenchmark figures
 make figures/foil_lct.pdf # one figure by file name (also:
 make figures/sweeps-hal.pdf # figures/sweeps-<machine>.pdf,
 make figures/sweeps-shared-hal.pdf # figures/sweeps-shared-<machine>.pdf
@@ -642,6 +679,17 @@ the frozen legacy table):
   candidate fitted to a focus group, the per-group shape effect (delta-SSR
   against a fresh hyperbola refit), and the aggregate ranking that chooses
   the exponential (see *The method*, "The performance model").
+- `figures/microbench-allocation.pdf`, `microbench-allocation-mixed.pdf`,
+  `microbench-allocation-scaling.pdf` — the microbenchmark's native
+  per-call allocation costs (by allocation size, by size range, and by
+  thread count at each fixed size), one panel per allocator/operation
+  (from the frozen tables in `output/results.h5`).
+- `figures/microbench-legend.pdf` — the allocator legend for the
+  microbenchmark figures (the colour/marker each allocator uses).
+- `figures/microbench-utilisation.pdf`, `microbench-graph.pdf` — the
+  microbenchmark diagnostic figures (the per-allocator utilisation over the
+  allocation sizes, and the allocation-graph figure; from the suite's raw
+  CSVs under `microbenchmarks/data/`).
 
 Notes:
 
@@ -811,6 +859,11 @@ pre-commit run --all-files  # or just commit; the hooks check the staged files
   the frozen legacy table was not built (`make legacy-results`, *Where the
   data lives*); a sweep machine contributes only if it ran its (0, 0)
   baseline.
+- The microbenchmark figures are missing: the microbenchmark CSVs were not
+  frozen (`make microbench-results`, *Where the data lives*) — the
+  allocation-cost figures come from the frozen table (so they also need
+  `make results` after the freeze) and the diagnostic figures from the raw
+  CSVs under `microbenchmarks/data/`.
 - The analysis picks up the wrong Python package versions: use the locked
   environment (`make env`) or export `PYTHONNOUSERSITE=1` (*Reproducing
   the analysis*).

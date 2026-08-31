@@ -108,8 +108,8 @@ def main(*, show: bool = False, results: Path = RESULTS) -> int:
         algorithms = algorithm_order(file)
     khi_runs = runs[no_delay_mask(runs)]
     if not len(khi_runs[khi_runs["setup"] == "KelvinHelmholtz"]):
-        print("no zero-delay KelvinHelmholtz runs in the results file", file=sys.stderr)
-        return 1
+        print("no zero-delay KelvinHelmholtz runs in the results file; nothing to draw", file=sys.stderr)
+        return 0
     FIGURES.mkdir(exist_ok=True)
     fig = make_figure(runs, khi, algorithms)
     fig.savefig(FIGURES / "kelvin_helmholtz.pdf")

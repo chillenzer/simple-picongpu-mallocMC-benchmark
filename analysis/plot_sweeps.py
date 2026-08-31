@@ -922,6 +922,9 @@ def main(*, machine: str | None = None, show: bool = False, results: Path = RESU
             )
             return 1
         machines = [machine]
+    if not machines:
+        print("no delay-injected runs in the results file; nothing to draw", file=sys.stderr)
+        return 0
     FIGURES.mkdir(exist_ok=True)
     for m in machines:
         data = MachineData(

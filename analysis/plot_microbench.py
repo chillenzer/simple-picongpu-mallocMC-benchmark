@@ -302,8 +302,8 @@ def main(*, show: bool = False, results: Path = RESULTS) -> int:
     with file:
         tables = {name: (read_table(file, name) if name in file else pd.DataFrame()) for name in TABLE_NAMES}
     if all(table.empty for table in tables.values()):
-        print("no microbenchmark alloc_cost tables in the results file", file=sys.stderr)
-        return 1
+        print("no microbenchmark alloc_cost tables in the results file; nothing to draw", file=sys.stderr)
+        return 0
     FIGURES.mkdir(exist_ok=True)
     for fig, name in build_figures(tables):
         save_figure(fig, name)

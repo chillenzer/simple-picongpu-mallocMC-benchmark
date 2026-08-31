@@ -87,8 +87,8 @@ def main(*, show: bool = False, results: Path = RESULTS) -> int:
         algorithms = algorithm_order(file)
     foil = runs[no_delay_mask(runs)]
     if not len(foil[foil["setup"] == "FoilLCT"]):
-        print("no zero-delay FoilLCT runs in the results file", file=sys.stderr)
-        return 1
+        print("no zero-delay FoilLCT runs in the results file; nothing to draw", file=sys.stderr)
+        return 0
     FIGURES.mkdir(exist_ok=True)
     fig = make_figure(runs, algorithms)
     fig.savefig(FIGURES / "foil_lct.pdf")

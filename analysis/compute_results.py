@@ -1014,30 +1014,28 @@ def _git_commit() -> str:
 
 
 def _legacy_inputs() -> dict[str, Any]:
-    """Read the pre-redesign runs from the frozen table (the single legacy source).
+    """Read the pre-redesign runs from the frozen table (the legacy source).
 
-    Args:
-        None.
+    The source is optional: when the frozen table (legacy/legacy_results.h5)
+    is absent, an empty frame is returned and the analysis runs without the
+    pre-redesign runs (a fresh checkout without the machine data).
 
     Returns:
         dict: `frame` (the frozen runs, already tagged with `machine` and
-        `hardware`), `excluded_sources` (directory -> reason),
-        `excluded_runs` (the number of archived rows marked excluded), and
-        `source` (the source-list label).
-
-    Raises:
-        SystemExit: with an actionable message if the frozen table is missing.
+        `hardware`, or an empty frame when the table is absent),
+        `excluded_sources` (directory -> reason), `excluded_runs` (the number
+        of archived rows marked excluded), and `source` (the source-list
+        label, "none" when the table is absent).
 
     """
     if not LEGACY_H5.is_file():
         print(
-            "error: legacy/legacy_results.h5 not found. The analysis reads the "
-            "pre-redesign runs from this frozen table; build it from the "
-            "archived logs (under legacy/logs/, created by "
-            "legacy/move_legacy_logs.sh) with `make legacy-results`.",
+            "note: legacy/legacy_results.h5 not found; the analysis runs without the "
+            "pre-redesign runs. Build it from the archived logs (under legacy/logs/, "
+            "created by legacy/move_legacy_logs.sh) with `make legacy-results`.",
             file=sys.stderr,
         )
-        raise SystemExit(1)
+        return {"frame": pd.DataFrame(), "excluded_sources": {}, "excluded_runs": 0, "source": "none"}
     frame, attrs = read_legacy_h5(LEGACY_H5)
     excluded_runs = 0 if frame.empty else int(frame["hardware"].eq("").sum())
     return {
@@ -1142,7 +1140,8 @@ def main(output: Path, configuration: str | None = None) -> None:
             analyzed, tables["fits"], [str(algorithm) for algorithm in config.get("algorithms", [])]
         )
     source_parts = [f"{label}: {sweep[label]['dir']}" for label in sweep if sweep[label]["dir"].is_dir()]
-    source_parts.append(legacy_input["source"])
+    if legacy_input["source"] != "none":
+        source_parts.append(legacy_input["source"])
     attrs = {
         "created_utc": datetime.now(UTC).isoformat(timespec="seconds"),
         "git_commit": _git_commit(),

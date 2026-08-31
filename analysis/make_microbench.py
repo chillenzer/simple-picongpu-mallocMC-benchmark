@@ -444,11 +444,11 @@ def main(argv: list[str] | None = None) -> int:
     tables, manifest, runs, protocol, missing = collect()
     if manifest and all(table.empty for table in tables.values()):
         print("microbench: the perf CSVs hold no numeric result rows; nothing to freeze", file=sys.stderr)
-        return 1
+        return 0
     if not manifest:
         data = repo_root() / microbench.get("data", "")
         print(f"microbench: no perf CSVs under {data}; nothing to freeze", file=sys.stderr)
-        return 1
+        return 0
     attrs = {
         "created_utc": datetime.now(UTC).isoformat(timespec="seconds"),
         "git_commit": _git_commit(),

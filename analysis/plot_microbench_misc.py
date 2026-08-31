@@ -305,7 +305,7 @@ def main(*, show: bool = False, data: Path | None = None) -> int:
     jobids = _jobids()
     if not any(_results_dir(data, jobid).is_dir() for jobid in jobids):
         print(f"no microbenchmark data under {data}; nothing to draw", file=sys.stderr)
-        return 1
+        return 0
     FIGURES.mkdir(exist_ok=True)
     utilisation = plot_utilisation(data, jobids)
     utilisation.tight_layout()
