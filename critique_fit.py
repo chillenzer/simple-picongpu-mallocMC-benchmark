@@ -14,9 +14,17 @@ Prints four blocks:
   2. multi-modality of the flagged group: SSR/r2 of the stored fit, of a
      fresh refit from the same documented grid initial guess, and of the
      linear null, on the identical data;
-  3. the implied native cost per call c_a = A/N per group;
-  4. per-arm offsets above the large-delay line (aggregated to per-delay
-     medians): the near-constant part vs the fading part of the deviation.
+   3. the implied native cost per call c_a = A/N per group;
+   4. the baseline-anchored view: E(s) = T(s) - T(0) - N*s per arm, the
+      plateau deficit d = T(0) - (large-delay line intercept) = the total
+      delay absorbed by parallel work, and d/N = the absorbable slack per
+      call. This is the test of the "the delay is hidden because allocation
+      is not the bottleneck" hypothesis;
+   5. the model-consistent decomposition: on the malloc arm
+      T(m,0) -> W + A_free + N_malloc*m as m -> inf, so the data pin
+      A_malloc = d_m, A_free = d_f, W = T(0) - d_m - d_f directly; this
+      block compares the stored fit to those data-pinned values and prints
+      the stored model's max residual against the raw data.
 """
 
 from __future__ import annotations
@@ -200,6 +208,41 @@ def arm_offset(m, f, t):
     return out
 
 
+def arm_anchored(m, f, t, t00):
+    """Per arm, anchored at the measured zero-delay runtime t00:
+    E(s) = T(s) - t00 - N*s (the excess over the nominal line through the
+    baseline), the plateau deficit d = t00 - (line intercept), and the local
+    slope between the two smallest delays relative to N (the large-delay slope).
+    Hiding of the small delay shows up as E < 0 and slope_small < N."""
+    out = {}
+    for tag, arm, xcol in (
+        ("malloc", (m > 0) & (f == 0), m),
+        ("free", (m == 0) & (f > 0), f),
+    ):
+        x = xcol[arm]
+        y = t[arm]
+        if len(np.unique(x)) < 4:
+            out[tag] = None
+            continue
+        ux = np.unique(x)
+        ymed = np.array([np.median(y[x == v]) for v in ux])
+        N = (ymed[-1] - ymed[-2]) / (ux[-1] - ux[-2])
+        b0 = ymed[-1] - N * ux[-1]
+        d = t00 - b0  # baseline minus large-delay line intercept (s)
+        E = ymed - t00 - N * ux  # excess above the nominal line from the baseline
+        slope_sm = (ymed[1] - ymed[0]) / (ux[1] - ux[0])
+        out[tag] = {
+            "d": float(d),
+            "E0": float(E[0]),
+            "Emid": float(E[len(ux) // 2]),
+            "Emax": float(E[-1]),
+            "s_sm_over_N": float(slope_sm / N),
+            "N": float(N),
+            "d_per_call_us": float(d / N * 1e6) if N > 0 else float("nan"),
+        }
+    return out
+
+
 def arm_profile(m, f, t):
     """Per arm: full per-delay-median offset profile above the two-largest-delay
     line. Returns (offsets, delays) per arm."""
@@ -256,6 +299,7 @@ def main():
     rows = []
     multimod = None
     seed_results: dict[str, list] = {}
+    anchored_results: dict[str, tuple] = {}
     for i, row in fits.iterrows():
         key = (row["machine"], row["setup"], row["algorithm"], row["x"], row["y"], row["z"])
         sub = group_of(runs, key)
@@ -362,6 +406,27 @@ def main():
             }
         )
         seed_results[rows[-1]["group"]] = seeds
+        anchored = arm_anchored(m, fv, t, base00)
+        anchored_results[rows[-1]["group"]] = anchored
+        # model-consistent decomposition pinned by the data:
+        # T(m,0) -> W + A_free + N_malloc*m  =>  A_malloc = d_m (the plateau)
+        # T(0,f) -> W + A_malloc + N_free*f  =>  A_free   = d_f
+        # so the data fix (W, A_malloc, A_free) = (T0 - d_m - d_f, d_m, d_f).
+        dm = anchored["malloc"]["d"] if anchored["malloc"] else float("nan")
+        df_ = anchored["free"]["d"] if anchored["free"] else float("nan")
+        W_pin = base00 - dm - df_
+        resid_stored = np.abs(model_full(m, fv, *stored) - t)
+        rows[-1]["Am_stored"] = float(row["A_malloc"])
+        rows[-1]["Af_stored"] = float(row["A_free"])
+        rows[-1]["d_m"] = dm
+        rows[-1]["d_f"] = df_
+        rows[-1]["W_pin"] = W_pin
+        rows[-1]["dW"] = float(row["W"]) - W_pin
+        rows[-1]["dAm"] = float(row["A_malloc"]) - dm
+        rows[-1]["dAf"] = float(row["A_free"]) - df_
+        rows[-1]["f_m_pin%"] = 100 * dm / base00 if base00 > EPS_S else float("nan")
+        rows[-1]["f_f_pin%"] = 100 * df_ / base00 if base00 > EPS_S else float("nan")
+        rows[-1]["maxres_stored"] = float(resid_stored.max())
         # keep the flagged group's multi-modality numbers
         if row["note"] and isinstance(row["note"], bytes) and row["note"]:
             r2_stored = 1 - ssr_stored / ss_tot
@@ -457,6 +522,29 @@ def main():
                 continue
             Am, Af, fm, ff, m0s, f0s = vals
             print(f"  {name:7s}  A_malloc={Am:8.3f} s  A_free={Af:8.4f} s  f_malloc={100*fm:5.2f}%  f_free={100*ff:5.2f}%  (m0={m0s*1e9:.3g} ns, f0={f0s*1e9:.3g} ns)")
+    print()
+    print("=== 4. baseline-anchored view: is the small delay hidden by parallel work? ===")
+    print("E(s) = T(s) - T(0) - N*s, anchored at the measured zero-delay median; N = large-delay slope.")
+    print("d = T(0) - intercept of the large-delay line = plateau of the deficit; d/N = hideable slack per call.")
+    print("s_sm/N = slope between the two smallest delays divided by N: <1 => the delay increment is")
+    print("partially hidden (the runtime does not rise by N*s); >1 => the delay is amplified.")
+    for g, anchored in anchored_results.items():
+        for tag, a_ in (("malloc", anchored["malloc"]), ("free", anchored["free"])):
+            if a_ is None:
+                continue
+            print(f"\n{g} {tag}: N={a_['N']:.4g}  d={a_['d']:+8.2f} s ({a_['d_per_call_us']:+.3f} us per call)")
+            print(f"    E(small)={a_['E0']:+8.2f} s   E(mid)={a_['Emid']:+8.2f} s   E(large)={a_['Emax']:+8.2f} s   s_sm/N={a_['s_sm_over_N']:+.3f}")
+    print()
+    print("=== 5. stored fit vs the data-pinned (model-consistent) decomposition ===")
+    print("The model's own asymptotes make A_malloc = d_m and A_free = d_f (the measured")
+    print("plateaus of block 4), W = T0 - d_m - d_f: three quantities the data fix directly.")
+    print("dW/dAm/dAf: stored value minus the data-pinned value (s). f_*_pin: d/T0.")
+    pin = df[["group", "W", "dW", "Am_stored", "dAm", "Af_stored", "dAf", "f_m%", "f_m_pin%", "f_f%", "f_f_pin%", "maxres_stored"]]
+    for c in ("W", "dW", "Am_stored", "dAm", "Af_stored", "dAf"):
+        pin[c] = df[c].map(lambda v: f"{v:+.2f}" if c.startswith("d") else f"{v:.2f}")
+    for c in ("f_m%", "f_m_pin%", "f_f%", "f_f_pin%", "maxres_stored"):
+        pin[c] = df[c].map(lambda v: f"{v:.2f}")
+    print(pin.to_string(index=False))
 
 
 if __name__ == "__main__":
