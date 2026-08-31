@@ -30,8 +30,11 @@ on), the per-allocator CSVs under
 `data/results-<jobid>/tests/alloc_tests/results/<performance|mixed_performance|scaling>/`,
 one row per x value and the five statistics (mean, std-dev, min, max, median).
 A run whose directory is absent is skipped with a note (a partial freeze is
-legitimate); a line that is not a numeric result row (the suite's timeout
-marker) is dropped.
+legitimate); a line that is not a numeric result row is dropped. The drop
+causes are counted per file: the suite's timeout marker ("Ran longer than")
+marks a timed-out x value, a bare ``<x>,`` line marks a crashed x value (the
+executable never appended its five statistics), and anything else is
+"other" (see the `dropped` attribute below).
 
 Output: the frozen file (the `microbench.frozen` path of `config.json`) with
 
@@ -39,7 +42,10 @@ Output: the frozen file (the `microbench.frozen` path of `config.json`) with
   allocator, operation, x value) with the per-operation statistics,
 - file attributes: created_utc, git_commit, sources (one SHA-256 per input
   file), runs (jobid -> hardware), protocol (per (jobid, test): the file
-  count and the operations), missing (the run directories that were absent).
+  count and the operations), missing (the run directories that were absent),
+  dropped (JSON, per "<jobid>/<test>/<file>" that lost x values: the drop
+  counts by cause, {"timeout", "crash", "other", "missing"}, where missing
+  is their sum).
 
 Usage:
     python3 analysis/make_microbench.py           # `make microbench-results`
@@ -74,6 +80,9 @@ STAT_COLUMNS = {
     "median": "median_ms",
 }
 STAT_COLUMN_NAMES = list(STAT_COLUMNS.values())
+# The categories of a dropped (non-result) CSV line, in the order the
+# `dropped` attribute's per-file counts are recorded.
+DROP_CATEGORIES = ("timeout", "crash", "other")
 # The columns every frozen table carries to identify a row (set at freeze).
 IDENTITY_COLUMNS = ("jobid", "hardware", "allocator", "operation")
 ALLOC_COST_COLUMNS = ["jobid", "hardware", "allocator", "operation", "size_bytes", *STAT_COLUMN_NAMES]
@@ -179,7 +188,7 @@ def _is_result_row(line: str) -> bool:
 
     The x value may be an integer (a size or a thread count) or a range
     ("lo-hi"); only the trailing statistics must be numeric. This drops the
-    suite's timeout marker lines.
+    non-result lines (the suite's timeout marker and the crashed bare lines).
 
     Args:
         line: the CSV line to test.
@@ -211,6 +220,30 @@ def _is_number(text: str) -> bool:
     return True
 
 
+def _classify_drop(line: str) -> str | None:
+    """Classify a dropped CSV line: a timeout marker, a crash, or other.
+
+    A line is dropped when it is not a numeric result row. The suite writes
+    a timeout marker ("Ran longer than") when an x value did not finish in
+    time, and a bare ``<x>,`` line (fewer than the five statistics) when the
+    executable crashed before appending them.
+
+    Args:
+        line: the non-empty CSV line to classify.
+
+    Returns:
+        str | None: "timeout", "crash", or "other", or None for a result row.
+
+    """
+    if _is_result_row(line):
+        return None
+    if "Ran longer than" in line or "----->" in line:
+        return "timeout"
+    if len(line.split(",")) < 1 + len(STAT_COLUMN_NAMES):
+        return "crash"
+    return "other"
+
+
 def _test_files(job_dir: Path, spec: dict) -> Iterator[tuple[Path, str, str, int]]:
     """Yield the job's per-allocator CSVs of one test, in sorted name order.
 
@@ -231,11 +264,12 @@ def _test_files(job_dir: Path, spec: dict) -> Iterator[tuple[Path, str, str, int
             yield path, match["operation"], match["allocator"], int(match["num"])
 
 
-def _parse_perf_csv(path: Path, spec: dict, num: int) -> pd.DataFrame:
+def _parse_perf_csv(path: Path, spec: dict, num: int) -> tuple[pd.DataFrame, dict[str, int]]:
     """Parse one per-allocator perf CSV into its statistics rows.
 
-    Lines that are not numeric result rows (the suite's timeout marker) are
-    dropped, so a timed-out x value simply has no row.
+    Lines that are not numeric result rows are dropped, so a missing x value
+    (a timeout or a crash) simply has no row; the dropped lines are counted
+    by category (see `_classify_drop`) and returned alongside the rows.
 
     Args:
         path: the CSV to parse.
@@ -244,15 +278,27 @@ def _parse_perf_csv(path: Path, spec: dict, num: int) -> pd.DataFrame:
         scaling test, frozen as `num_bytes`).
 
     Returns:
-        pd.DataFrame: one row per x value, the table's non-identity columns.
+        tuple: (one row per x value, the table's non-identity columns, and
+        the dropped line counts by category, empty when nothing was
+        dropped).
 
     """
     x_header, x_column, x_dtype = spec["x_header"], spec["x_column"], spec["x_dtype"]
     data_cols = [column for column in spec["columns"] if column not in IDENTITY_COLUMNS]
     lines = path.read_text(encoding="utf-8").splitlines()
     if not lines or not lines[0].startswith(x_header):
-        return pd.DataFrame(columns=data_cols)
-    text = "\n".join([lines[0]] + [line for line in lines[1:] if _is_result_row(line)])
+        return pd.DataFrame(columns=data_cols), {}
+    kept: list[str] = []
+    dropped: dict[str, int] = {}
+    for line in lines[1:]:
+        if not line:
+            continue
+        category = _classify_drop(line)
+        if category is None:
+            kept.append(line)
+        else:
+            dropped[category] = dropped.get(category, 0) + 1
+    text = "\n".join([lines[0], *kept])
     data = pd.read_csv(StringIO(text), skipinitialspace=True)
     data = data.rename(columns={x_header: x_column, **STAT_COLUMNS})
     for column in data_cols:
@@ -260,7 +306,24 @@ def _parse_perf_csv(path: Path, spec: dict, num: int) -> pd.DataFrame:
             data[column] = data[column].astype(x_dtype)
         elif column == "num_bytes":
             data[column] = num
-    return data[data_cols]
+    return data[data_cols], dropped
+
+
+def _record_drop(dropped_map: dict[str, dict[str, int]], key: str, dropped: dict[str, int]) -> None:
+    """Record one file's dropped line counts in the drop map.
+
+    Args:
+        dropped_map: the drop map to update (in place).
+        key: the file's "<jobid>/<test>/<file name>" key.
+        dropped: the file's dropped line counts by category.
+
+    """
+    if not dropped:
+        return
+    counts = dict.fromkeys(DROP_CATEGORIES, 0)
+    counts.update(dropped)
+    counts["missing"] = sum(dropped.values())
+    dropped_map[key] = counts
 
 
 def _git_commit() -> str:
@@ -294,7 +357,9 @@ def _empty_table(name: str) -> pd.DataFrame:
     return pd.DataFrame(columns=TEST_BY_NAME[name]["columns"])
 
 
-def collect() -> tuple[dict[str, pd.DataFrame], list[str], dict[int, str], dict[str, dict], list[int]]:
+def collect() -> tuple[
+    dict[str, pd.DataFrame], list[str], dict[int, str], dict[str, dict], list[int], dict[str, dict[str, int]]
+]:
     """Parse every configured run's perf CSVs into the frozen tables.
 
     Returns:
@@ -302,7 +367,9 @@ def collect() -> tuple[dict[str, pd.DataFrame], list[str], dict[int, str], dict[
         "results-<jobid>/<relative path>:sha256" entry per file, in the frozen
         tables' order), the runs map (jobid -> hardware, the frozen subset),
         the protocol map ("jobid/test" -> {files, operations}), the jobids
-        whose directory was absent or held no perf CSVs).
+        whose directory was absent or held no perf CSVs, and the drop map
+        ("jobid/test/file" -> {timeout, crash, other, missing} for every file
+        that lost at least one x value).
 
     """
     data_dir = repo_root() / load_config().get("microbench", {}).get("data", "")
@@ -311,6 +378,7 @@ def collect() -> tuple[dict[str, pd.DataFrame], list[str], dict[int, str], dict[
     runs: dict[int, str] = {}
     protocol: dict[str, dict] = {}
     missing: list[int] = []
+    dropped_map: dict[str, dict[str, int]] = {}
     for jobid, hardware in _run_entries():
         job_dir = data_dir / f"results-{jobid}"
         if not job_dir.is_dir():
@@ -326,7 +394,8 @@ def collect() -> tuple[dict[str, pd.DataFrame], list[str], dict[int, str], dict[
             frozen_any = True
             tframes: list[pd.DataFrame] = []
             for path, operation, allocator, num in files:
-                rows = _parse_perf_csv(path, spec, num)
+                rows, dropped = _parse_perf_csv(path, spec, num)
+                _record_drop(dropped_map, f"{jobid}/{spec['subdir']}/{path.name}", dropped)
                 if rows.empty:
                     continue
                 manifest.append(f"results-{jobid}/{path.relative_to(job_dir)}:{_sha256(path)}")
@@ -348,7 +417,7 @@ def collect() -> tuple[dict[str, pd.DataFrame], list[str], dict[int, str], dict[
     tables = {
         name: (pd.concat(chunk, ignore_index=True) if chunk else _empty_table(name)) for name, chunk in frames.items()
     }
-    return tables, manifest, runs, protocol, missing
+    return tables, manifest, runs, protocol, missing, dropped_map
 
 
 def read_tables(path: Path) -> tuple[dict[str, pd.DataFrame], dict[str, str]]:
@@ -383,7 +452,10 @@ def verify(output: Path) -> int:
     if not output.is_file():
         print(f"no frozen file at {output}; run `make microbench-results` first", file=sys.stderr)
         return 1
-    tables, manifest, runs, protocol, _missing = collect()
+    # The `dropped` attribute is derived from the same CSVs the tables are
+    # reparsed from, so it is not compared (it could only differ if the drop
+    # classification itself drifted, which the table comparison covers).
+    tables, manifest, runs, protocol, _missing, _dropped = collect()
     stored, attrs = read_tables(output)
     problems = []
     if str(attrs.get("sources", "")) != "; ".join(manifest):
@@ -441,7 +513,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.check:
         return verify(args.output)
-    tables, manifest, runs, protocol, missing = collect()
+    tables, manifest, runs, protocol, missing, dropped = collect()
     if manifest and all(table.empty for table in tables.values()):
         print("microbench: the perf CSVs hold no numeric result rows; nothing to freeze", file=sys.stderr)
         return 0
@@ -456,6 +528,7 @@ def main(argv: list[str] | None = None) -> int:
         "runs": json.dumps({str(key): value for key, value in runs.items()}, sort_keys=True),
         "protocol": json.dumps(protocol, sort_keys=True),
         "missing": json.dumps(missing, sort_keys=True),
+        "dropped": json.dumps(dropped, sort_keys=True),
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     write_results(args.output, tables, attrs)

@@ -231,7 +231,7 @@ endif
 	figures-picongpu figures-sweeps figures-shared figures-microbench \
 	picongpu-src mallocmc-src microbench-src env-check env runs full \
 	clean-runs freeze freeze-verify \
-	legacy-results legacy-verify microbench-results microbench-verify \
+	legacy-results legacy-verify microbench-results microbench-verify microbench-audit \
 	rocrate crate-zip sweep-status
 
 # --- per (example, algorithm) harness targets ------------------------------
@@ -517,6 +517,14 @@ microbench-results:
 
 microbench-verify:
 	$(PY) analysis/make_microbench.py --check
+
+# Audit the raw microbenchmark CSVs for missing x-values and their causes
+# (the per-allocator files whose rows the freeze drops: a timeout marker, a
+# crashed partial line, or an absent file), reading the raw data directory
+# from the microbench section of config.json and printing a per-file report
+# plus a grand total.
+microbench-audit:
+	$(PY) analysis/audit_microbench.py
 
 # Freeze every raw source (the PIConGPU legacy logs and the microbenchmark
 # CSVs) into its frozen table. The freezes are separate steps from `results`;
