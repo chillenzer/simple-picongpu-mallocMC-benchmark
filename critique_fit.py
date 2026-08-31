@@ -1,4 +1,4 @@
-"""Re-analysis of the allocation-model fits in output/results.h5.
+"""Re-analysis of the performance-model fits in output/results.h5.
 
 SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
 SPDX-License-Identifier: MIT
@@ -79,7 +79,7 @@ def read_table(f: h5py.File, grp: str) -> pd.DataFrame:
 
 
 def model_full(m: np.ndarray, f: np.ndarray, p: Sequence[float]) -> np.ndarray:
-    """Evaluate the full two-operation allocation model (7 parameters).
+    """Evaluate the full two-operation performance model (7 parameters).
 
     Args:
         m: the malloc delays in seconds.
@@ -244,7 +244,7 @@ def _grid_cell(m: np.ndarray, f: np.ndarray, t: np.ndarray, m0: float, f0: float
 
 
 def grid_guess(m: np.ndarray, f: np.ndarray, t: np.ndarray, bounds: tuple[float, float, float, float]) -> list[float]:
-    """Return the stored pipeline's robust initial guess (allocation_model._grid_guess_2d).
+    """Return the stored pipeline's robust initial guess (performance_model._grid_guess_2d).
 
     Args:
         m: the malloc delays in seconds.

@@ -12,7 +12,7 @@ device allocator: the **FlatterScatter**, **ScatterAlloc** and
 free delay) combinations — nanosecond delays imposed at run time on every
 allocation and every free request — to study the impact of allocation and
 free latency on simulation runtime (the injection mechanism and the
-allocation model are documented in *The method*).
+performance model are documented in *The method*).
 
 The sections are ordered for the reader: *The method* (what is measured
 and what the numbers mean), *What is benchmarked* (what was run), *Where
@@ -23,7 +23,7 @@ run, change, and analyze the benchmark. *Where to look* indexes the goals.
 
 | You want to ...                         | Read                                              | Open first                          |
 |-----------------------------------------|---------------------------------------------------|-------------------------------------|
-| verify the measurement and the model    | *The method*                                      | `analysis/allocation_model.py`      |
+| verify the measurement and the model    | *The method*                                      | `analysis/performance_model.py`      |
 | understand the KHI small-delay anomaly  | `khi-humps.md`                                    | `analysis/diagnose_humps.py`        |
 | reproduce the numbers and figures       | *Where the data lives*, *Reproducing the analysis* | `make env`, then `make`            |
 | run the benchmark, or add a machine     | *Running the benchmark*                           | the `machines` table of `config.json` |
@@ -50,7 +50,7 @@ on the 64-bit device global timer injected at the top of
 turned out too weak and produced step-like sweeps, so the busy-wait
 replaced it.
 
-**The allocation model.** With no imposed delay the measured runtime is
+**The performance model.** With no imposed delay the measured runtime is
 the simulation's real runtime with each allocator — the `(0, 0)`
 baseline — and that end-to-end runtime is the benchmark's headline
 algorithm comparison. The delay arms characterize how the allocator
@@ -59,7 +59,7 @@ takes the imposed delay s, so at large delay the runtime is the straight
 line `T = W + N*s` (W the no-delay runtime). The delay does not simply
 add, though — part of it is hidden by the parallel work that runs while
 the allocator spins — so the absorbed part fades over the sleeptime scale
-s0 and a sweep is fitted with the allocation model
+s0 and a sweep is fitted with the performance model
 
 ```
 T(s)  = W + N*s + A*exp(-s/s0)                (one delay)
@@ -76,7 +76,7 @@ the fade scale s0 (m0, f0), the e-folding delay of the absorption. The
 exponential was chosen as the model's fade term from a family of
 candidates with the same endpoints (hyperbola, Lorentzian,
 truncated-linear, quadratic); the measured comparison is
-`figures/fade-models.pdf` (see *The method*, "The allocation model").
+`figures/fade-models.pdf` (see *The method*, "The performance model").
 The per-call absorbed slack c = A/N is how
 much imposed delay per call the pipeline hides before it reaches the
 runtime. The ratio f = A/T0 (f_malloc = A_malloc/T0, f_free = A_free/T0)
@@ -94,7 +94,7 @@ independently measured native per-call cost c_a (ns) is available, the
 fit can be constrained to A = N*c_a and fit (W, N, s0) only — the path to
 a native-cost reading; it is unused by default, as no such microbenchmark
 exists yet. The model, the bounds, and the bootstrap's caveats are
-documented in the `analysis/allocation_model.py` module docstring, which
+documented in the `analysis/performance_model.py` module docstring, which
 is the single source of truth for the model.
 
 **Why the sweep is shaped like this.** The delay arms run a log grid from
@@ -469,7 +469,7 @@ empty):
   table read/write, the per-fit covariance groups, and the schema helpers
   (grid/scenario labels, the no-delay mask, the particle-memory model);
   the single source of truth for the runs' column names.
-- `analysis/allocation_model.py` — the allocation model, its constrained
+- `analysis/performance_model.py` — the performance model, its constrained
   1-D/2-operation fits (plus the combined fit that shares W and the
   malloc/free call counts across a scenario's algorithms while each keeps
   its own saturation terms), and the bootstrap sleeve. The model is
@@ -479,7 +479,7 @@ empty):
   the legacy runs (from the frozen `legacy/legacy_results.h5`, required —
   build it with `make legacy-results`), all grouped by their short
    hardware name, and computes the group runtime statistics, the
-   allocation-model fits of every (machine, example, algorithm, grid) sweep
+   performance-model fits of every (machine, example, algorithm, grid) sweep
    (with the parameter covariances), the combined (shared-parameter) fit of
    every (machine, example, grid) scenario spanned by at least two
    algorithms, the zero-delay baselines (sweep machines), the per-arm
@@ -520,7 +520,7 @@ figures*, joined by the single HDF5 file `output/results.h5`:
 - `compute_results.py` parses the run logs of the two sources they live
   in: the sweep machines of the `machines` table of `config.json` (the
   new format, one `# metadata:` JSON line per log; the group statistics,
-  the allocation-model fits and the zero-delay baselines are computed for
+  the performance-model fits and the zero-delay baselines are computed for
   these) and the frozen legacy table `legacy/legacy_results.h5` (the
   pre-redesign logs, read grouped by their short hardware name). All runs
   are grouped by that short hardware name (`A30`, `V100`, ...; the
@@ -584,7 +584,7 @@ to their row:
 | `group_stats` | per (machine, setup, algorithm, grid, delays): the runtime's count, mean, std, min, p25, p50, p75, max |
 | `baselines`   | the zero-delay (0, 0) runtime IQR per group (sweep machines)                                      |
 | `absorption`  | the per-arm absorbed-delay slack, one row per (group, arm): the plateau deficit `d` (s) and the per-call `c = d/N` (µs), from the raw runs (gauge-invariant) |
-| `fits`        | the allocation-model fits, one row per group (+ the `fits/cov/<machine>/<setup>/<algorithm>/<grid>/` subgroups) |
+| `fits`        | the performance-model fits, one row per group (+ the `fits/cov/<machine>/<setup>/<algorithm>/<grid>/` subgroups) |
 | `shared_fits` | the combined (shared-parameter) fits, one row per (scenario, algorithm) (+ the `shared_fit_cov/<machine>/<setup>/<grid>/` subgroups) |
 | `foil`        | the FoilLCT bar chart's distributions over the zero-delay runs, per hardware                      |
 | `foil_pvalue` | the Kruskal p-values behind the FoilLCT chart, per hardware                                        |
@@ -641,7 +641,7 @@ the frozen legacy table):
   selects the model's fade shape: the candidate fade shapes g(u), every
   candidate fitted to a focus group, the per-group shape effect (delta-SSR
   against a fresh hyperbola refit), and the aggregate ranking that chooses
-  the exponential (see *The method*, "The allocation model").
+  the exponential (see *The method*, "The performance model").
 
 Notes:
 
@@ -650,7 +650,7 @@ Notes:
   model `T(m, f) = W + N_m*m + N_f*f + A_m*exp(-m/m0) + A_f*exp(-f/f0)`
   (combination sweep); the full model, the candidate fade family, the
   bounds, and the diagonalization caveats of the bootstrap are documented
-  in `analysis/allocation_model.py`.
+  in `analysis/performance_model.py`.
 - The combined fit reuses the two-operation model but fits it once over all
   algorithms of a (machine, example, grid) scenario together: W, N_malloc
   and N_free are shared across the algorithms while each keeps its own

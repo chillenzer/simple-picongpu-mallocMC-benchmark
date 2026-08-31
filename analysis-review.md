@@ -5,7 +5,7 @@ SPDX-License-Identifier: MIT
 
 # f is not an allocation fraction: the saturation terms measure hidden delay
 
-**Subject:** `analysis/allocation_model.py` — the model
+**Subject:** `analysis/performance_model.py` — the model
 `T(m,f) = W + N_m·m + N_f·f + A_m·m0/(m+m0) + A_f·f0/(f+f0)` that produces the
 runtime-budget split (W / A_malloc / A_free) and the fraction
 `f = A/T0` shown in the sweep figures.
@@ -14,11 +14,11 @@ runtime-budget split (W / A_malloc / A_free) and the fraction
 checks the stored model against the raw data, and verifies the model's gauge
 symmetry).
 
-> **Status note.** This review analysed the allocation model while its fade
+> **Status note.** This review analysed the performance model while its fade
 > term was the hyperbola `A·m0/(m+m0)`. On its recommendation and on the Q3
 > candidate comparison (`qa-fade-term.md`, `figures/fade-models.pdf`), the
 > model's fade term has since been upgraded to the **exponential**
-> `A·exp(-m/m0)`, which is now what `allocation_model.py` fits and stores.
+> `A·exp(-m/m0)`, which is now what `performance_model.py` fits and stores.
 > The physics verdict below — the saturation terms measure delay hidden by
 > parallel slack, not a native allocation cost — is independent of the fade
 > shape and remains valid. The gauge discussion (Section 6) is specific to the
@@ -68,9 +68,9 @@ exactly
     T(s) = W + N·c_a + N·s = W + A + N·s,   A = N·c_a, a constant.
 
 The README (README:53–63) derives this straight line, and only then says the
-sweep is "fitted with the allocation model" — the hyperbolic variant — as a
+sweep is "fitted with the performance model" — the hyperbolic variant — as a
 fitting convenience. The same structure is in the module docstring
-(`allocation_model.py:9–15`). Nothing in the experiment makes the native
+(`performance_model.py:9–15`). Nothing in the experiment makes the native
 per-call cost depend on s: a 10 s busy-wait does not make malloc 20 %
 cheaper. Commit `c52b7c1` concedes it: the saturating term "stands in for the
 constant native allocation cost A" and bears "no relation beyond the shared
@@ -168,7 +168,7 @@ What the model does not capture, anchored at the baseline:
   *split* is not: it sits up to 64 s from the pinned values, and the
   parameter covariance has condition number 1e11–1e14 in 11 of 12 groups
   (infinite in the 12th); the module's own bootstrap admits "the parameters
-  are nearly degenerate" (`allocation_model.py:218`).
+  are nearly degenerate" (`performance_model.py:218`).
 - Profile likelihood: in rosi KHI 256×128×128 every A_malloc = 0 … 14 s costs
   ≤ 1σ² extra SSR (f_malloc = 0 … 6.5 % equally good; stored 4.75 %, pinned
   17.7 %).
@@ -200,7 +200,7 @@ it. The runtime-budget percentages (e.g. FoilLCT A30: 78.9/14.0/7.1; V100:
   which minimum the solver fell into.
 - Bounds: s0 ∈ [0.05·s_min, 0.5·s_range] "keep the Amdahl fraction f in
   [0,1), land s0 at the unconstrained optimum" (commit `da3063f`;
-  `allocation_model.py:24–28`: the cap exists "to keep it (and A)
+  `performance_model.py:24–28`: the cap exists "to keep it (and A)
   identifiable"). When the data want A < 0, the code silently floors f at 0.
 
 ## 5. The validation was circular
@@ -445,7 +445,7 @@ clearly-labelled, convention-dependent slack ratio.
 
 ## References and reproduction
 
-- `analysis/allocation_model.py:1–31` (model, bounds), `:218` (degeneracy),
+- `analysis/performance_model.py:1–31` (model, bounds), `:218` (degeneracy),
   `:394–421` (A<0 / s0-at-cap diagnostics)
 - README:11–12, 37–46 (per-call delay injection), 53–76 (line derived first)
 - Commits: `c94766d` (synthetic validation), `da3063f` (bounds, f-floor),

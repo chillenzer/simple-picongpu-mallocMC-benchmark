@@ -1,4 +1,4 @@
-"""Q3: alternative fade terms for the allocation model, measured.
+"""Q3: alternative fade terms for the performance model, measured.
 
 This script is the record of the Q3 analysis: it fits six candidate fade
 terms with the same endpoints -- the hyperbola (the then-stored model), the

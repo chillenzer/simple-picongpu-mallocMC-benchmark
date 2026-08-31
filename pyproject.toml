@@ -26,7 +26,7 @@ ignore = [
     "E2",
     "COM",
     # not a fit for this codebase:
-    "N",  # W, N, A, s0 are allocation-model parameter names
+    "N",  # W, N, A, s0 are performance-model parameter names
     "T20",  # print() is the output of these scripts
     "INP",  # analysis/ holds standalone CLI scripts, not an importable package
     # self-documenting counts (len < 2, size < 3, ndim == 2) dominate this

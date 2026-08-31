@@ -1,4 +1,4 @@
-"""Q1: the flat direction of the allocation-model fit.
+"""Q1: the flat direction of the performance-model fit.
 
 Characterization, the one-fewer-parameter question, and the options.
 
@@ -61,7 +61,7 @@ def read_table(f: h5py.File, grp: str) -> pd.DataFrame:
 
 
 def model_full(m: np.ndarray, f: np.ndarray, p: Sequence[float]) -> np.ndarray:
-    """Evaluate the two-operation allocation model at the packed parameters.
+    """Evaluate the two-operation performance model at the packed parameters.
 
     T = W + N_m*m + N_f*f + A_m*m0/(m+m0) + A_f*f0/(f+f0).
 
@@ -623,7 +623,7 @@ def part2(groups: list[dict]) -> None:
 
 
 def model_1d_at(s: np.ndarray, W: float, N: float, A: float, s0: float) -> np.ndarray:
-    """Evaluate the 1-D allocation model T(s) = W + N*s + A*s0/(s+s0).
+    """Evaluate the 1-D performance model T(s) = W + N*s + A*s0/(s+s0).
 
     Args:
         s: the delays in seconds.

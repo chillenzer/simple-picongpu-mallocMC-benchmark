@@ -1,4 +1,4 @@
-"""Per-machine forest figures of the shared-parameter (combined) allocation-model fits.
+"""Per-machine forest figures of the shared-parameter (combined) performance-model fits.
 
 SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
 SPDX-License-Identifier: MIT

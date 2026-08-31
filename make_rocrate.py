@@ -89,7 +89,7 @@ STEPS = [
     "analysis/compute_results.py",
     "analysis/run_logs.py",
     "analysis/results_io.py",
-    "analysis/allocation_model.py",
+    "analysis/performance_model.py",
     "analysis/summarize_results.py",
     "analysis/plot_sweeps.py",
     "analysis/plot_shared_fits.py",

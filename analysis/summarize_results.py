@@ -7,7 +7,7 @@ Reads `output/results.h5` (the output of `compute_results.py`) and
 prints the total run count with its superseded share
 (`Runs: N (M superseded)`) and, when any, the excluded archived runs;
 then the summary tables: per machine, the parsed runs (with `--raw`) and
-the group runtime statistics; the allocation-model fit tables, a
+the group runtime statistics; the performance-model fit tables, a
 comparison of the shared-parameter (combined) fits against the individual
 fits, the slack-ratio summary (f = A/T0, the absorbed delay over the
 zero-delay runtime — a convention-dependent ratio, not a runtime budget),

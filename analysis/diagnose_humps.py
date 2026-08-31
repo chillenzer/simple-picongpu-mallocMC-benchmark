@@ -17,7 +17,7 @@ Everything is computed without fitted parameters: the per-delay excess
 E(s) = median(s) - baseline - N*s uses only the per-delay runtime medians,
 the (0, 0) baseline median, and the large-delay slope N (the line through
 the two largest delays). The diagnosis is therefore immune to the
-(W, A, s0) flat direction of the allocation-model fits.
+(W, A, s0) flat direction of the performance-model fits.
 
 Prints the sections of the diagnosis (A: the per-arm overview with flags,
 B: the hump arms' per-delay excess, C: every run's excess at the hump

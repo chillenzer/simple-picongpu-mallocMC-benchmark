@@ -1,4 +1,4 @@
-"""The allocation model and its constrained fits.
+"""The performance model and its constrained fits.
 
 SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
 SPDX-License-Identifier: MIT
@@ -14,7 +14,7 @@ with W the runtime at zero delay. The delay does not simply add: part of it is
 hidden by the parallel work that runs while the allocator spins, so the
 absorbed part fades over the sleeptime scale s0 and a sweep is fitted with
 
-    T(s) = W + N*s + A * g(s/s0)             (allocation model)
+    T(s) = W + N*s + A * g(s/s0)             (performance model)
 
 which equals the baseline T0 = W + A for s -> 0 and approaches the asymptote
 W + N*s for s >> s0, where every call's delay is exposed. The parameters are
@@ -159,7 +159,7 @@ def _fade_quadratic(u: np.ndarray) -> np.ndarray:
     return np.maximum(1.0 - u, 0.0) ** 2
 
 
-#: The candidate fade shapes g(u) of the allocation model, keyed by name.
+#: The candidate fade shapes g(u) of the performance model, keyed by name.
 #: Each satisfies g(0) = 1 and g(u -> inf) = 0, so the model term A*g(s/s0)
 #: is the absorbed delay fading from A at zero delay to 0 at large delay.
 #: The power-law candidate (three parameters, A, s0, k) is not a member of
@@ -197,7 +197,7 @@ def _fade(name: str) -> Callable[[np.ndarray], np.ndarray]:
 
 
 class Model1d(NamedTuple):
-    """Parameters of the 1-operation allocation model T(s) = W + N*s + A*g(s/s0).
+    """Parameters of the 1-operation performance model T(s) = W + N*s + A*g(s/s0).
 
     The delay s is in seconds and g is the candidate fade shape (default the
     exponential, g(u) = exp(-u); see the module docstring and `FADE_SHAPES`).
@@ -210,7 +210,7 @@ class Model1d(NamedTuple):
 
 
 class Model2d(NamedTuple):
-    """Parameters of the 2-operation allocation model, the delays in seconds."""
+    """Parameters of the 2-operation performance model, the delays in seconds."""
 
     W: float
     N_m: float
@@ -251,7 +251,7 @@ class ConstrainedFit(NamedTuple):
 def model_1d(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
     s: np.ndarray, W: float, N: float, A: float, s0: float, fade: str = BEST_FADE
 ) -> np.ndarray:
-    """Evaluate the 1-operation allocation model T(s) = W + N*s + A*g(s/s0).
+    """Evaluate the 1-operation performance model T(s) = W + N*s + A*g(s/s0).
 
     Args:
         s: the imposed delay in seconds.
@@ -270,7 +270,7 @@ def model_1d(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
 
 
 def model_2d(m: np.ndarray, f: np.ndarray, p: Sequence[float], fade: str = BEST_FADE) -> np.ndarray:
-    """Evaluate the 2-operation allocation model, the delays m (malloc) and f (free) in seconds.
+    """Evaluate the 2-operation performance model, the delays m (malloc) and f (free) in seconds.
 
     The model is T(m, f) = W + N_m*m + N_f*f + A_m*g(m/m0) + A_f*g(f/f0).
 
@@ -659,7 +659,7 @@ def _fit_constrained_1d(
 
 
 def fit_1d(sleeptimes: pd.Series, runtimes: pd.Series, c_a: float | None = None, fade: str = BEST_FADE) -> dict:
-    """Fit one sleeptime sweep to the constrained allocation model.
+    """Fit one sleeptime sweep to the constrained performance model.
 
     Args:
         sleeptimes: the imposed delays in nanoseconds.
@@ -967,7 +967,7 @@ def _fit_constrained_2d(
 
 
 def fit_2d(m_delays: pd.Series, f_delays: pd.Series, runtimes: pd.Series, fade: str = BEST_FADE) -> dict:
-    """Fit one (malloc, free) delay combination sweep to the two-operation allocation model.
+    """Fit one (malloc, free) delay combination sweep to the two-operation performance model.
 
     The model is T(m, f) = W + N_m*m + N_f*f + A_m*g(m/m0) + A_f*g(f/f0).
 
@@ -1934,7 +1934,7 @@ def fit_combined(
     call counts N_malloc and N_free -- are fit once on the pooled data of
     every pooled algorithm, while each algorithm keeps its own absorbed
     delays (A_malloc, A_free) and fade scales (m0, f0): the two-operation
-    allocation model of `model_2d` with a per-algorithm (A, s0) pair, or the
+    performance model of `model_2d` with a per-algorithm (A, s0) pair, or the
     1-D reduction when only one delay varies in the pooled data. The fit
     is staged -- a pooled least-squares solution for the shared
     parameters, a per-algorithm fit of the saturation terms on the pooled

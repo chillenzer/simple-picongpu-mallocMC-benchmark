@@ -25,7 +25,7 @@ table is grouped by the short hardware name (e.g. `A30`, `V100`) the
 comparison charts have always used, and computed from
 
 - `group_stats`, `fits`, `baselines`, `absorption`: the group runtime
-  descriptions, the allocation-model fit (the per-fit parameter vector and
+  descriptions, the performance-model fit (the per-fit parameter vector and
   covariance are stored under `fits/cov/`), the zero-delay runtime IQR of
   every group of the sweep machines, and the per-arm absorbed-delay slack
   (the plateau deficit d and the per-call c = d/N, computed from the raw
@@ -56,9 +56,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import allocation_model
 import numpy as np
 import pandas as pd
+import performance_model
 from make_microbench import ALLOC_COST_COLUMNS
 from results_io import (
     RESULTS,
@@ -482,7 +482,7 @@ def _fit_cov(res: dict) -> tuple | None:
     """Extract the fitted parameter vector and its covariance for the bootstrap sleeves.
 
     Args:
-        res: the result of `allocation_model.fit_1d` / `allocation_model.fit_2d`.
+        res: the result of `performance_model.fit_1d` / `performance_model.fit_2d`.
 
     Returns:
         tuple | None: (fit_params, pcov) for the bootstrap sleeves, or None
@@ -509,7 +509,7 @@ def fit_one_group(m: pd.Series, f: pd.Series, runtimes: pd.Series, c_a: float | 
 
     """
     if m.nunique() >= 2 and f.nunique() >= 2:
-        res = allocation_model.fit_2d(m, f, runtimes)
+        res = performance_model.fit_2d(m, f, runtimes)
         return {
             "model": "2d",
             "W": res["W"],
@@ -534,7 +534,7 @@ def fit_one_group(m: pd.Series, f: pd.Series, runtimes: pd.Series, c_a: float | 
     if m.nunique() >= 2 or f.nunique() >= 2:
         varying = "malloc" if m.nunique() >= 2 else "free"
         delays = m if varying == "malloc" else f
-        res = allocation_model.fit_1d(delays, runtimes, c_a=c_a)
+        res = performance_model.fit_1d(delays, runtimes, c_a=c_a)
         row = {
             "model": f"1d-{varying}",
             "W": res["W"],
@@ -576,8 +576,8 @@ def fit_sweep(runs: pd.DataFrame, c_a: float | None = None) -> tuple[pd.DataFram
     """Fit every (machine, setup, algorithm, grid) group of a runs table.
 
     Groups whose runs span both the malloc and the free delay are fitted
-    with the two-operation model of `allocation_model.fit_2d`; groups spanning only
-    one delay fall back to the 1-D model of `allocation_model.fit_1d` on that delay.
+    with the two-operation model of `performance_model.fit_2d`; groups spanning only
+    one delay fall back to the 1-D model of `performance_model.fit_1d` on that delay.
 
     Args:
         runs: the parsed runs table.
@@ -775,8 +775,8 @@ def fit_sweep_combined(
             row = indexed.get((machine, a, scenario))
             if row is not None:
                 p0[a] = _shared_p0(row)
-        res = allocation_model.fit_combined(
-            allocation_model.CombinedSweep(grp[MALLOC_DELAY], grp[FREE_DELAY], grp[RUN_TIME], grp["algorithm"]),
+        res = performance_model.fit_combined(
+            performance_model.CombinedSweep(grp[MALLOC_DELAY], grp[FREE_DELAY], grp[RUN_TIME], grp["algorithm"]),
             order=order,
             p0=p0 or None,
         )

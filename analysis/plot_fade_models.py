@@ -1,16 +1,16 @@
-"""Comparison figure of the allocation model's candidate fade shapes.
+"""Comparison figure of the performance model's candidate fade shapes.
 
 SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
 SPDX-License-Identifier: MIT
 
 Reads `output/results.h5` (the output of `compute_results.py`) and draws one
 figure (`figures/fade-models.pdf`) that showcases the candidate fade shapes of
-the allocation model and the measured result of choosing the exponential (see
+the performance model and the measured result of choosing the exponential (see
 qa-fade-term.md, Q3). The model is
 
     T = W + N_m*m + N_f*f + A_m*g(m/m0) + A_f*g(f/f0),
 
-where `g` is one of the candidate fade shapes in `allocation_model.FADE_SHAPES`
+where `g` is one of the candidate fade shapes in `performance_model.FADE_SHAPES`
 (each normalised so that g(0) = 1 and g(u -> inf) = 0). The four panels:
 
   (a) the candidate fade shapes g(u) against the reduced delay u = s/s0, so
@@ -43,12 +43,12 @@ import warnings
 from collections.abc import Callable
 from pathlib import Path
 
-import allocation_model
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from allocation_model import BEST_FADE, EPS_S, FADE_SHAPES
+import performance_model
+from performance_model import BEST_FADE, EPS_S, FADE_SHAPES
 from results_io import RESULTS, RUN_TIME, load_results, read_table
 from run_logs import FREE_DELAY, GROUP_KEYS, MALLOC_DELAY
 from scipy.optimize import OptimizeWarning, curve_fit
@@ -58,7 +58,7 @@ mpl.use("pdf")
 FIGURES = Path("figures")
 
 # The candidate fade shapes, in display order. The exponential is the selected
-# best model (allocation_model.BEST_FADE) and is highlighted throughout.
+# best model (performance_model.BEST_FADE) and is highlighted throughout.
 CANDIDATES = ("hyperbola", "exponential", "lorentzian", "truncated", "quadratic")
 LABELS = {
     "hyperbola": "H  hyperbola  A s0/(s+s0)",
@@ -326,8 +326,8 @@ def _malloc_curve(entry: dict, params: np.ndarray, fade: str) -> tuple[np.ndarra
     grid = np.geomspace(max(m_min, 1e-5), 1.5 * float(entry["m"].max()), 200)
     held = np.zeros_like(grid)
     if params.size == 7:
-        return grid, allocation_model.model_2d(grid, held, params, fade=fade)
-    return grid, allocation_model.model_1d(grid, params[0], params[1], params[2], params[3], fade=fade)
+        return grid, performance_model.model_2d(grid, held, params, fade=fade)
+    return grid, performance_model.model_1d(grid, params[0], params[1], params[2], params[3], fade=fade)
 
 
 def _panel_shapes(ax: plt.Axes) -> None:
@@ -503,7 +503,7 @@ def main(*, show: bool = False, results: Path = RESULTS) -> int:
         return 1
     fits, deltas = _fit_all(entries)
     fig, axes = plt.subplots(2, 2, figsize=(12.0, 9.0), layout="constrained")
-    fig.suptitle("Allocation-model fade terms: the candidate family and the measured choice of the exponential")
+    fig.suptitle("Performance-model fade terms: the candidate family and the measured choice of the exponential")
     _panel_shapes(axes[0, 0])
     _panel_fit(axes[0, 1], entries, fits)
     _panel_per_group(axes[1, 0], entries, deltas)
