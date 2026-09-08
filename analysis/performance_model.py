@@ -25,8 +25,9 @@ The per-call absorbed slack is c = A/N. The ratio
     f = A / (W + A)      (absorbed delay / total time at zero delay)
 
 is a convention-dependent slack ratio, not a runtime budget and not the native
-allocation cost (see analysis-review.md: the "A = native allocation time"
-reading is not supported by the data).
+allocation cost: A measures pipeline slack (the delay hidden by in-flight
+work), so f is reported as a slack share, and a separate, independently
+measured native cost supplies the allocation-cost reading.
 
 The fade shape g is a normalized function of the reduced delay u = s/s0 with
 g(0) = 1 and g(inf) = 0, so that A is always the absorbed delay at zero delay.
@@ -34,7 +35,7 @@ The candidate shapes are collected in `FADE_SHAPES` (hyperbola, exponential,
 lorentzian, truncated, quadratic) and the model is fit with any of them via
 the `fade` argument of `model_1d`, `model_2d`, `fit_1d`, `fit_2d` and
 `fit_combined`. The default and selected best shape is the exponential
-`g(u) = exp(-u)` (see qa-fade-term.md, Q3): among the two-parameter candidates
+`g(u) = exp(-u)`: among the two-parameter candidates
 it has the best mean fit, is smooth, has a finite total absorbed cost
 (integral over u is A*s0, vs the hyperbola's divergent A*s0/u tail), and pins
 its scale s0 as a gauge invariant. The hyperbola `g(u) = 1/(1+u)` -- the

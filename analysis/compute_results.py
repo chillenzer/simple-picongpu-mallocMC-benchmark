@@ -29,7 +29,7 @@ comparison charts have always used, and computed from
   covariance are stored under `fits/cov/`), the zero-delay runtime IQR of
   every group of the sweep machines, and the per-arm absorbed-delay slack
   (the plateau deficit d and the per-call c = d/N, computed from the raw
-  runs: gauge-invariant, see analysis-review.md),
+  runs; both are gauge-invariant),
 - `foil` / `foil_pvalue` / `khi`: the statistics behind the FoilLCT bar
   chart and the KelvinHelmholtz violin chart (distributions, Kruskal
   p-values, relative runtimes), over the zero-delay runs of both

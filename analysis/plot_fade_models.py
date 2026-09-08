@@ -5,8 +5,7 @@ SPDX-License-Identifier: MIT
 
 Reads `output/results.h5` (the output of `compute_results.py`) and draws one
 figure (`figures/fade-models.pdf`) that showcases the candidate fade shapes of
-the performance model and the measured result of choosing the exponential (see
-qa-fade-term.md, Q3). The model is
+the performance model and the measured result of choosing the exponential. The model is
 
     T = W + N_m*m + N_f*f + A_m*g(m/m0) + A_f*g(f/f0),
 

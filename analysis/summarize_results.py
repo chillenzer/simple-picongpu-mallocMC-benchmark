@@ -53,7 +53,7 @@ def print_fraction_summary(fits: pd.DataFrame) -> None:
 
     f is the absorbed delay as a share of the zero-delay runtime T0 — a
     convention-dependent ratio, not a runtime budget and not the native
-    allocation cost (analysis-review.md).
+    allocation cost.
 
     Args:
         fits: the fits table of the results file.

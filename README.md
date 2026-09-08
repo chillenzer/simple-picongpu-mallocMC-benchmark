@@ -24,7 +24,7 @@ run, change, and analyze the benchmark. *Where to look* indexes the goals.
 | You want to ...                         | Read                                              | Open first                          |
 |-----------------------------------------|---------------------------------------------------|-------------------------------------|
 | verify the measurement and the model    | *The method*                                      | `analysis/performance_model.py`      |
-| understand the KHI small-delay anomaly  | `khi-humps.md`                                    | `analysis/diagnose_humps.py`        |
+| understand the small-delay KHI anomaly  | *Limitations*                                     | `figures/kelvin_helmholtz.pdf`       |
 | reproduce the numbers and figures       | *Where the data lives*, *Reproducing the analysis* | `make env`, then `make`            |
 | run the benchmark, or add a machine     | *Running the benchmark*                           | the `machines` table of `config.json` |
 | extend the benchmark                    | *Changing what is benchmarked*                    | `config.json`                       |
@@ -76,14 +76,14 @@ the fade scale s0 (m0, f0), the e-folding delay of the absorption. The
 exponential was chosen as the model's fade term from a family of
 candidates with the same endpoints (hyperbola, Lorentzian,
 truncated-linear, quadratic); the measured comparison is
-`figures/fade-models.pdf` (see *The method*, "The performance model").
-The per-call absorbed slack c = A/N is how
+`figures/fade-models.pdf`. The per-call absorbed slack c = A/N is how
 much imposed delay per call the pipeline hides before it reaches the
 runtime. The ratio f = A/T0 (f_malloc = A_malloc/T0, f_free = A_free/T0)
 is a convention-dependent slack ratio — absorbed delay over zero-delay
-runtime — not a runtime budget and not the native allocation cost; see
-`analysis-review.md` for why the "A = native allocation time" reading is
-not supported.
+runtime — not a runtime budget and not the native allocation cost: the
+absorbed delay A measures the pipeline's slack, and a run with more
+in-flight work has a larger f even if the allocator's native cost is
+unchanged.
 
 The fit is a bounded `scipy.optimize.curve_fit` (W, N, A >= 0, s0 in
 [0.05*s_min, 0.5*s_range]) with a robust linear solution over a log-s0
@@ -680,10 +680,15 @@ the frozen legacy table):
   zero-delay runs relative to the ScatterAlloc reference runtime, one
   violin per allocator, one column per estimated particle memory.
 - `figures/fade-models.pdf` — the candidate fade-term comparison that
-  selects the model's fade shape: the candidate fade shapes g(u), every
-  candidate fitted to a focus group, the per-group shape effect (delta-SSR
-  against a fresh hyperbola refit), and the aggregate ranking that chooses
-  the exponential (see *The method*, "The performance model").
+  selects the model's fade shape: the candidate fade shapes g(u), the
+  per-group shape effect (delta-SSR) against a reference fit of the base
+  shape, and the aggregate ranking that chooses the exponential (see
+  *The method*, "The performance model").
+- `figures/native-cost.pdf` — the absorbed-slack vs native-cost comparison:
+  one panel per operation, each fitted group plotted as (native per-call
+  cost `c_a`, absorbed slack `A/N`) in µs per call, with the `A/N = c_a`
+  reference line (from the `fits` table and the frozen microbenchmark cost;
+  skipped with a note when no matching cost exists).
 - `figures/microbench-allocation.pdf`, `microbench-allocation-mixed.pdf`,
   `microbench-allocation-scaling.pdf` — the microbenchmark's native
   per-call allocation costs (by allocation size, by size range, and by
@@ -731,6 +736,44 @@ Notes:
 - The figure row order is the `algorithms` list of `config.json` (recorded
   in the results file); the hardware display order of the comparison figures
   is fixed in `analysis/results_io.py`.
+
+## Limitations
+
+The reported quantities and their scope are defined in *The method*; this
+section records the known limitations of the data and of the reporting.
+
+- **The small-delay anomaly on the hal KelvinHelmholtz runs.** At imposed
+  delays below roughly 10 ms, the KelvinHelmholtz runs on the `hal` machine
+  (all three grids, both allocators) rise *above* the nominal
+  baseline-plus-stall line, by up to ~4 % of the total runtime (a
+  small-delay amplification hump, present in essentially every run of a
+  delay cell). Its mechanism is not yet understood. Two consequences: those
+  points are not described by the model's absorption term, and
+  delay-sweep statements about the KHI allocation behaviour should be made
+  from the large-delay asymptote rather than the small-delay points.
+- **Arms without delay absorption.** A few arms show the opposite of
+  absorption — their large-delay line extrapolates *above* the baseline
+  (the free arms of rosi FoilLCT and rosi KHI 128^3, and the hal KHI 128^3
+  ScatterAlloc arms) — and one hal FoilLCT free arm is non-monotonic. These
+  arms are excluded from the absorption summary and flagged in the results
+  file.
+- **Slow-fade rosi KelvinHelmholtz arms.** On `rosi` the absorption fades
+  over tens of milliseconds, beyond the measured delay range; there the
+  plateau deficit is an extrapolation with a larger error.
+- **The allocator comparison is conditional.** The relative per-call slack
+  `Δc = Δ(d/N)` between two allocators is well defined and reported, but it
+  equals a *relative native cost* only if the pipeline's hiding capacity is
+  the same for both allocators — an assumption the data do not measure.
+  Under it, the ranking differs between the two larger KHI grids; the data
+  alone do not settle the ranking.
+- **An absolute per-call allocation cost is not measured by the sweep.**
+  The per-call absorbed slack `c = d/N` is the pipeline's hiding capacity,
+  not the native cost; the native per-call cost comes from the independent
+  microbenchmark (`c_a`, and the `A = N*c_a` fit — *The method*), which is
+  currently measured on the A100 only.
+- **The raw data are not in this repository.** The benchmark data lives on
+  the HPC machines and in the released archive; *Where the data lives*
+  describes what a fresh checkout can and cannot produce.
 
 ## Reproducing the analysis
 
