@@ -1,3 +1,6 @@
+# ARCHIVED: hyperbola-era model-review analysis, superseded by
+# analysis/performance_model.py; not part of the published pipeline and not
+# maintained. See analysis/archive/README.md. Restored with notes-pre-publish.
 """Re-analysis of the performance-model fits in output/results.h5.
 
 SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf

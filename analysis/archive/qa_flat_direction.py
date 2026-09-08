@@ -1,3 +1,6 @@
+# ARCHIVED: hyperbola-era model-review analysis, superseded by
+# analysis/performance_model.py; not part of the published pipeline and not
+# maintained. See analysis/archive/README.md. Restored with notes-pre-publish.
 """Q1: the flat direction of the performance-model fit.
 
 Characterization, the one-fewer-parameter question, and the options.

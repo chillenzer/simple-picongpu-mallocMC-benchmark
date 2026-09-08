@@ -1,3 +1,6 @@
+# ARCHIVED: pre-publish model-review diagnosis, superseded by the published
+# analysis; not part of the published pipeline and not maintained. See
+# analysis/archive/README.md. Restored with notes-pre-publish.
 """Diagnose the KelvinHelmholtz small-delay amplification humps from the raw runs.
 
 SPDX-FileCopyrightText: 2024-2026 Institute of Radiation Physics, Helmholtz-Zentrum Dresden-Rossendorf
@@ -5,7 +8,7 @@ SPDX-License-Identifier: MIT
 
 Reads `output/results.h5` (the output of `compute_results.py`) and
 characterizes the two anomalies of the delay-sweep arms, model-free from
-the raw run runtimes (the companion document is `khi-humps.md`):
+the raw run runtimes (the archived companion document is `notes/working/khi-humps.md`):
 
 - the **hump** arms, whose runtime at the smallest imposed delay rises
   *above* the (0, 0) baseline plus the nominal N*s stall sum (amplification:

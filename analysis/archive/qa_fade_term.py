@@ -1,3 +1,7 @@
+# ARCHIVED: model-review analysis from before the fade-term switch; the
+# published model (analysis/performance_model.py) now uses the exponential.
+# Not part of the published pipeline and not maintained. See
+# analysis/archive/README.md. Restored with notes-pre-publish.
 """Q3: alternative fade terms for the performance model, measured.
 
 This script is the record of the Q3 analysis: it fits six candidate fade

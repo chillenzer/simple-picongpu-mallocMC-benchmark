@@ -1,3 +1,6 @@
+# ARCHIVED: hyperbola-era model-review analysis, superseded by
+# analysis/performance_model.py; not part of the published pipeline and not
+# maintained. See analysis/archive/README.md. Restored with notes-pre-publish.
 """Q2 analysis of whether the delay is 'hidden by parallel work'.
 
 What do the plateau deficit d and the fade scale measure, and can we read off

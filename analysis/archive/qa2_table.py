@@ -1,3 +1,6 @@
+# ARCHIVED: hyperbola-era model-review analysis, superseded by
+# analysis/performance_model.py; not part of the published pipeline and not
+# maintained. See analysis/archive/README.md. Restored with notes-pre-publish.
 """Refined per-arm table for the report.
 
 Parametric-bootstrap errors that stay valid for single-replicate delay cells
