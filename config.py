@@ -132,7 +132,9 @@ def _check_run_matrix(data: dict, errors: list[str]) -> None:
 
     The phase-1 arm subset (`delays.arms.initial`) and the optional joint
     grid (`delays.joint.values`) must be subsets of the arm ladder, so that
-    every combination of a phase is a combination of the full design.
+    every combination of a phase is a combination of the full design. All of
+    the ladder, the subset, and the joint grid may be empty, in which case a
+    phase is baseline-only.
 
     Args:
         data: the parsed configuration.
@@ -147,13 +149,13 @@ def _check_run_matrix(data: dict, errors: list[str]) -> None:
     if not _is_int_list(baseline) or len(baseline) != 2:
         errors.append("delays.baseline: must be a list of two integers (malloc, free)")
     arms = _walk(data, "delays.arms.values")
-    if not _is_int_list(arms):
-        errors.append("delays.arms.values: must be a non-empty list of integers (nanoseconds)")
+    if not _is_int_list(arms, non_empty=False):
+        errors.append("delays.arms.values: must be a list of integers (nanoseconds)")
         return
     arm_set = set(arms)
     initial = _walk(data, "delays.arms.initial")
-    if initial is not None and (not _is_int_list(initial) or not set(initial) <= arm_set):
-        errors.append("delays.arms.initial: must be a non-empty subset of delays.arms.values")
+    if initial is not None and (not _is_int_list(initial, non_empty=False) or not set(initial) <= arm_set):
+        errors.append("delays.arms.initial: must be a subset of delays.arms.values (optional, may be empty)")
     joint = _walk(data, "delays.joint.values")
     if joint is not None and (not _is_int_list(joint, non_empty=False) or not set(joint) <= arm_set):
         errors.append("delays.joint.values: must be a subset of delays.arms.values (optional, may be empty)")
