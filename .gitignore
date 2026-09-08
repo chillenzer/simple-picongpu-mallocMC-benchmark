@@ -26,5 +26,10 @@ microbenchmarks/microbench_results.h5
 # local patch artifacts
 *.patch
 
+# local working notes (quarantined internal notes from before the
+# publish cleanup; the publish-prep history/tag notes-pre-publish holds
+# their last committed versions)
+/notes/
+
 # local data artifacts (machine data kept out of the repository)
 /tmp.zip
