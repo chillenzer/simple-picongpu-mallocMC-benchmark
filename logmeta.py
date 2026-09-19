@@ -11,8 +11,8 @@ header:
     # metadata: {"schema": 1, "kind": "run", ...}
 
 The `run` mode carries everything that is known at run time: the run
-context (example, algorithm, imposed delays, the repetition, the
-flags-file line and a short hash of it), the host, the user the run
+context (example, algorithm, imposed delays, the repetition, the grid run's
+flag line and a short hash of it), the host, the user the run
 happens as (and the user's ORCID iD, when the runner has exported
 $ORCID) and the repository state, the dependency pins of
 `config.json`, the sha256 of the binary used, the build facts of the
@@ -356,30 +356,6 @@ def _build_block(binary: str) -> str | dict[str, str]:
     }
 
 
-def _flag_lines(flags: Path) -> list[str] | None:
-    r"""Read the lines of a flags file.
-
-    The line split mirrors the `read -r line` loop of `run_folder.sh`
-    (one line per `\n`, a trailing newline not producing an empty line),
-    so the line numbers stay in step between the two.
-
-    Args:
-        flags: the path of the flags file.
-
-    Returns:
-        list | None: the lines, or `None` when the file cannot be read.
-
-    """
-    try:
-        text = flags.read_bytes().decode("utf-8", errors="replace")
-    except OSError:
-        return None
-    lines = text.split("\n")
-    if lines and not lines[-1]:
-        lines.pop()
-    return lines
-
-
 def _run_block(args: argparse.Namespace) -> dict[str, object]:
     """Return the block describing this grid run.
 
@@ -388,29 +364,22 @@ def _run_block(args: argparse.Namespace) -> dict[str, object]:
 
     Returns:
         dict: the run context (example, algorithm, imposed delays, the
-            repetition), the flags-file line number, the line count, a
-            short hash of the line, and the line itself.
+            repetition), the grid run's flag line (one of the example's
+            structured flag_lines, serialized), the number of flag lines in
+            the example, a short hash of the line, and the line itself.
 
     """
-    block: dict[str, object] = {
+    line = args.flag_line
+    return {
         "setup": args.example,
         "algorithm": args.algorithm,
         "delays": [args.malloc_delay, args.free_delay],
         "rep": args.rep,
         "repeats": args.repeats,
-        "line": args.line,
-        "lines_total": UNAVAILABLE,
-        "flag_sha": UNAVAILABLE,
-        "command": UNAVAILABLE,
+        "lines_total": args.lines_total,
+        "flag_sha": hashlib.sha256(line.encode("utf-8")).hexdigest()[:8],
+        "command": line,
     }
-    lines = _flag_lines(Path(args.flags))
-    if lines is not None:
-        block["lines_total"] = len(lines)
-        if 1 <= args.line <= len(lines):
-            line = lines[args.line - 1]
-            block["command"] = line
-            block["flag_sha"] = hashlib.sha256(line.encode("utf-8")).hexdigest()[:8]
-    return block
 
 
 def _metadata(kind: str, machine: str, extra: dict[str, object]) -> dict[str, object]:
@@ -462,8 +431,8 @@ def main() -> int:
     run.add_argument("--algorithm", required=True)
     run.add_argument("--malloc-delay", type=int, required=True)
     run.add_argument("--free-delay", type=int, required=True)
-    run.add_argument("--line", type=int, required=True)
-    run.add_argument("--flags", required=True)
+    run.add_argument("--flag-line", required=True)
+    run.add_argument("--lines-total", type=int, required=True)
     run.add_argument("--binary", required=True)
 
     setup = subcommands.add_parser("setup", help="the metadata line of a session log")

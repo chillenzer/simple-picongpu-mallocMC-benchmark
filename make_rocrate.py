@@ -15,7 +15,7 @@ rebuilt from its ground truth on every invocation:
 - The benchmark runs as provenance (the Process Run profile): one
   `CreateAction` per grid-run log of the sweep machines' output
   directories, reading the log's self-describing `# metadata:` line —
-  instrument the built binary, object the flags/config/parameter/
+  instrument the built binary, object the config/parameter/
   profile files, `environment` the imposed delays and the slurm job,
   agent the run's user, result the log. Runs are append-only, so every
   vintage of a re-run is described; the one whose identity's run stamp
@@ -813,14 +813,6 @@ def _add_harness_files(crate: Crate) -> None:
         "(examples, algorithms, delay sweep, dependency pins, build flags, machines)",
     )
     add_file(crate, "README.md", encoding="text/markdown", about="./")
-    if Path("flags").is_dir():
-        for flags in sorted(Path("flags").glob("*.flags")):
-            add_file(
-                crate,
-                str(flags),
-                encoding="text/plain",
-                description=f"one picongpu command line per run (the {flags.stem} example)",
-            )
     if Path("param").is_dir():
         for param_file in sorted(Path("param").rglob("*.param")):
             add_file(crate, str(param_file), description="parameter overlay for the build (mallocMC configuration)")
@@ -1225,11 +1217,7 @@ def run_action(crate: Crate, label: str, metadata: dict, relpath: str) -> tuple[
         "description": f"{_command_line(run, name)}; vintage: {vintage_text(state, run_stamp_path(label, match))}",
         "actionStatus": ref("https://schema.org/CompletedActionStatus"),
         "instrument": ref(binary_id),
-        "object": [
-            ref(item)
-            for item in ("config.json", f"flags/{example}.flags", f"param/{algorithm}/mallocMC.param")
-            if Path(item).is_file()
-        ],
+        "object": [ref(item) for item in ("config.json", f"param/{algorithm}/mallocMC.param") if Path(item).is_file()],
         "result": ref(relpath),
     }
     start_time = metadata.get("ts")

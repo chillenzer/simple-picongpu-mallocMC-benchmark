@@ -11,11 +11,20 @@ values:
     python3 config.py list examples
     python3 config.py list run-matrix [initial|arms]
     python3 config.py check
+    python3 config.py flag-lines <Example>
 
-`check` validates the structure and the file references (flag files,
-parameter files, profiles, the microbenchmark paths) so that a typo fails
-fast with a clear message instead of a silently wrong benchmark run. Run
-it from the repository root.
+`check` validates the structure and the file references (parameter files,
+profiles, the microbenchmark paths) so that a typo fails fast with a clear
+message instead of a silently wrong benchmark run. Run it from the
+repository root.
+
+The example's picongpu command lines are stored as structured `flag_lines`
+(entries of `examples`): one JSON object per command line, the keys in
+command-line order, a value a scalar or a list of positive integers.
+`flag-lines` (and the build) reconstruct the exact command lines from them:
+a one-letter key serializes to its short form (-d), any longer key to its
+long form (--periodic), a scalar to a single token, a list to a
+space-joined token; `config.py` is the sole authority for the format.
 """
 
 from __future__ import annotations
@@ -127,8 +136,123 @@ def _is_int_list(value: object, *, non_empty: bool = True) -> bool:
     return not non_empty or bool(value)
 
 
-def _check_run_matrix(data: dict, errors: list[str]) -> None:
-    """Validate examples, algorithms, and the delay sweep.
+def _is_int_or_nonneg_int_list(value: object, *, non_empty: bool = True) -> bool:
+    """Whether `value` is an integer or a list of non-negative integers (optionally non-empty list).
+
+    A zero is a legitimate option value (a dimension that is not periodic,
+    a zero size); the guard is against booleans, negatives, and empty lists.
+
+    Args:
+        value: the value to test.
+        non_empty: whether an empty list is acceptable.
+
+    Returns:
+        bool: whether `value` fits.
+
+    """
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value >= 0
+    if isinstance(value, list):
+        return all(isinstance(item, int) and not isinstance(item, bool) and item >= 0 for item in value) and (
+            not non_empty or bool(value)
+        )
+    return False
+
+
+def flag_lines(definition: dict) -> list[str]:
+    """Serialize the `flag_lines` of one example into picongpu command lines.
+
+    One JSON object is one command line: the keys in insertion order become
+    the options in command-line order. A one-letter key serializes to its
+    short form (`d` -> `-d`), any longer key to its long form
+    (`periodic` -> `--periodic`); a scalar value is a single token, a list a
+    space-joined run of tokens.
+
+    Args:
+        definition: the example's `flag_lines` list (a list of mappings).
+
+    Returns:
+        list: one command line (a string) per entry.
+
+    """
+    lines = []
+    for entry in definition:
+        tokens = []
+        for key, value in entry.items():
+            tokens.append("-" + key if len(key) == 1 else "--" + key)
+            values = value if isinstance(value, list) else [value]
+            tokens.extend(str(item) for item in values)
+        lines.append(" ".join(tokens))
+    return lines
+
+
+def _check_flag_lines(flag_lines: list[object], dotted: str, errors: list[str]) -> None:
+    """Validate one example's `flag_lines` list.
+
+    Args:
+        flag_lines: the `flag_lines` value (checked here).
+        dotted: the dotted path of the example (for the error messages).
+        errors: accumulates the problems found.
+
+    """
+    for line_index, line in enumerate(flag_lines):
+        line_dotted = f"{dotted}.flag_lines[{line_index}]"
+        if not isinstance(line, dict) or not line:
+            errors.append(f"{line_dotted}: each line must be a non-empty option mapping")
+            continue
+        for key, value in line.items():
+            if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z]+", key):
+                errors.append(f"{line_dotted}: option keys must be [A-Za-z]+ strings")
+            if not _is_int_or_nonneg_int_list(value, non_empty=True):
+                errors.append(f"{line_dotted}.{key}: must be a non-negative integer or a non-empty list of them")
+
+
+def _check_examples(data: dict, errors: list[str]) -> None:
+    """Validate the `examples` list (name + flag_lines per example).
+
+    Args:
+        data: the parsed configuration.
+        errors: accumulates the problems found.
+
+    """
+    examples = _walk(data, "examples")
+    if not isinstance(examples, list) or not examples:
+        errors.append("examples: must be a non-empty list of {name, flag_lines}")
+        return
+    names = set()
+    for index, example in enumerate(examples):
+        dotted = f"examples[{index}]"
+        if not isinstance(example, dict):
+            errors.append(f"{dotted}: each example must be a {{name, flag_lines}} mapping")
+            continue
+        name = example.get("name")
+        if not isinstance(name, str) or not name:
+            errors.append(f"{dotted}.name: must be a non-empty string")
+        elif name in names:
+            errors.append(f"{dotted}.name: example name '{name}' is not unique")
+        else:
+            names.add(name)
+        flag_lines_ = example.get("flag_lines")
+        if not isinstance(flag_lines_, list) or not flag_lines_:
+            errors.append(f"{dotted}.flag_lines: must be a non-empty list of option mappings")
+        else:
+            _check_flag_lines(flag_lines_, dotted, errors)
+
+
+def _check_algorithms(data: dict, errors: list[str]) -> None:
+    """Validate the `algorithms` list.
+
+    Args:
+        data: the parsed configuration.
+        errors: accumulates the problems found.
+
+    """
+    if not _is_str_list(_walk(data, "algorithms")):
+        errors.append("algorithms: must be a non-empty list of strings")
+
+
+def _check_delays(data: dict, errors: list[str]) -> None:
+    """Validate the delay sweep (optional; absent means baseline-only).
 
     The phase-1 arm subset (`delays.arms.initial`) and the optional joint
     grid (`delays.joint.values`) must be subsets of the arm ladder, so that
@@ -141,14 +265,18 @@ def _check_run_matrix(data: dict, errors: list[str]) -> None:
         errors: accumulates the problems found.
 
     """
-    for dotted in ("examples", "algorithms"):
-        if _is_str_list(_walk(data, dotted)):
-            continue
-        errors.append(f"{dotted}: must be a non-empty list of strings")
-    baseline = _walk(data, "delays.baseline")
+    delays = _walk(data, "delays")
+    if delays is None:
+        return
+    if not isinstance(delays, dict):
+        errors.append("delays: must be a mapping (or be omitted for a baseline-only run)")
+        return
+    baseline = delays.get("baseline", [0, 0])
     if not _is_int_list(baseline) or len(baseline) != 2:
         errors.append("delays.baseline: must be a list of two integers (malloc, free)")
     arms = _walk(data, "delays.arms.values")
+    if arms is None:
+        return
     if not _is_int_list(arms, non_empty=False):
         errors.append("delays.arms.values: must be a list of integers (nanoseconds)")
         return
@@ -340,21 +468,19 @@ def _check_microbench_runs(runs: object, errors: list[str]) -> None:
 
 
 def _check_benchmark_files(data: dict, errors: list[str]) -> None:
-    """Validate the per-example flag files and per-algorithm parameter files.
+    """Validate the per-algorithm parameter files.
 
-    A missing file means the benchmark would run with the wrong (or no)
-    configuration, so it is a configuration error.
+    A missing file means the benchmark would build with the wrong (or no)
+    allocator configuration, so it is a configuration error. The example's
+    picongpu command lines come from config.json itself (the structured
+    `flag_lines`, validated in `_check_examples`), so there is no flag file
+    to check.
 
     Args:
         data: the parsed configuration.
         errors: accumulates the problems found.
 
     """
-    examples = _walk(data, "examples")
-    if isinstance(examples, list):
-        for example in examples:
-            if isinstance(example, str):
-                _missing_file(Path("flags") / f"{example}.flags", "examples", errors)
     algorithms = _walk(data, "algorithms")
     if isinstance(algorithms, list):
         for algorithm in algorithms:
@@ -390,12 +516,14 @@ def _run_matrix(data: dict, phase: str = "arms") -> list[str]:
     if phase not in SWEEP_PHASES:
         msg = f"unknown sweep phase '{phase}' (expected initial or arms)"
         raise ValueError(msg)
-    baseline = data["delays"]["baseline"]
-    arms_spec = data["delays"]["arms"]
-    arms = arms_spec.get("initial", arms_spec["values"]) if phase == "initial" else arms_spec["values"]
-    joint = []
-    if phase == "arms":
-        joint = data["delays"].get("joint", {}).get("values", []) or []
+    delays = data.get("delays")
+    if not isinstance(delays, dict):
+        # An absent `delays` section is baseline-only: the (0, 0) pair only.
+        return ["0_0"]
+    baseline = delays.get("baseline", [0, 0])
+    arms_spec = delays.get("arms") or {}
+    arms = arms_spec.get("initial", arms_spec.get("values", [])) if phase == "initial" else arms_spec.get("values", [])
+    joint = (delays.get("joint") or {}).get("values", []) or [] if phase == "arms" else []
     combinations = [f"{baseline[0]}_{baseline[1]}"]
     for delay in arms:
         combinations += [f"{delay}_0", f"0_{delay}"]
@@ -411,7 +539,9 @@ def _cmd_check() -> None:
     """
     data = _load()
     errors: list[str] = []
-    _check_run_matrix(data, errors)
+    _check_examples(data, errors)
+    _check_algorithms(data, errors)
+    _check_delays(data, errors)
     _check_build(data, errors)
     _check_machines(data, errors)
     _check_microbench(data, errors)
@@ -453,6 +583,59 @@ def _print_list(value: object, dotted: str) -> None:
         print(item)
 
 
+def _cmd_flag_lines(rest: list[str]) -> None:
+    """Print the serialized picongpu command lines of one example.
+
+    Args:
+        rest: the command line arguments after the "flag-lines" subcommand.
+
+    """
+    if len(rest) != 1:
+        _fail("usage: config.py flag-lines <Example>")
+    name = rest[0]
+    data = _load()
+    for example in data["examples"]:
+        if isinstance(example, dict) and example.get("name") == name:
+            for line in flag_lines(example["flag_lines"]):
+                print(line)
+            return
+    _fail(f"example '{name}' not found")
+
+
+def _dispatch_key(command: str, rest: list[str]) -> None:
+    """Dispatch one `get` or `list` over a dotted key path to its own output.
+
+    `run-matrix` and the examples list (objects now) have special printers;
+    everything else is a scalar (`get`) or a list of scalars (`list`).
+
+    Args:
+        command: the subcommand ("get" or "list").
+        rest: the command line arguments after the subcommand.
+
+    """
+    if rest and rest[0] == "run-matrix":
+        if command != "list":
+            _fail("'run-matrix' is a list, not a scalar key")
+        _cmd_list_run_matrix(rest)
+        return
+    if len(rest) != 1:
+        _fail(f"usage: config.py {command} <dotted.key>")
+    dotted = rest[0]
+    value = _lookup(_load(), dotted)
+    if dotted == "examples":
+        # The examples are objects; `list examples` prints the names only
+        # (the Makefile's contract) and `get` is not for a list of objects.
+        if command == "get":
+            _fail("'examples' is a list of objects; use `list examples`")
+        for example in value:
+            print(example["name"] if isinstance(example, dict) else example)
+        return
+    if command == "get":
+        _print_scalar(value, dotted)
+    else:
+        _print_list(value, dotted)
+
+
 def _cmd_list_run_matrix(rest: list[str]) -> None:
     """Print the run matrix of one sweep phase, one combination per line.
 
@@ -478,27 +661,19 @@ def main() -> int:
     """
     args = sys.argv[1:]
     if not args:
-        _fail("usage: config.py {get|list|check} [dotted.key]")
+        _fail("usage: config.py {get|list|check|flag-lines} ...")
     command, rest = args[0], args[1:]
     if command == "check":
         if rest:
             _fail("usage: config.py check")
         _cmd_check()
         return 0
-    if command not in {"get", "list"}:
-        _fail(f"unknown command '{command}' (expected get, list or check)")
-    if rest and rest[0] == "run-matrix":
-        if command != "list":
-            _fail("'run-matrix' is a list, not a scalar key")
-        _cmd_list_run_matrix(rest)
+    if command == "flag-lines":
+        _cmd_flag_lines(rest)
         return 0
-    if len(rest) != 1:
-        _fail(f"usage: config.py {command} <dotted.key>")
-    value = _lookup(_load(), rest[0])
-    if command == "get":
-        _print_scalar(value, rest[0])
-    else:
-        _print_list(value, rest[0])
+    if command not in {"get", "list"}:
+        _fail(f"unknown command '{command}' (expected get, list, flag-lines or check)")
+    _dispatch_key(command, rest)
     return 0
 
 

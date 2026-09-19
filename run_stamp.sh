@@ -4,13 +4,14 @@
 # SPDX-License-Identifier: MIT
 
 # Worker of the Makefile run targets. One invocation is one run: the
-# example's whole flags file once, from the matching build, with one (malloc
-# delay, free delay) combination in the environment.
+# example's whole flag lines once (the structured flag_lines of config.json,
+# serialized by `config.py flag-lines`), from the matching build, with one
+# (malloc delay, free delay) combination in the environment.
 #
 #   run_stamp.sh <machine> <repeats> <example> <algorithm> <malloc-ns> <free-ns> <rep>
 #
 # The run is recorded in one self-contained log per grid run (one line of
-# the flags file) in the machine's output directory:
+# the example's flag lines) in the machine's output directory:
 #
 #   <outdir>/run_<machine>_<Ex>_<Algo>_m<M>_f<F>_r<rep>_<line-sha8>_<time>.txt
 #
@@ -20,7 +21,7 @@
 #
 # Runs are append-only: re-running a (combination, repetition) writes a new
 # vintage of the logs next to the older ones, nothing is removed, and the
-# new logs' metadata (the commit, the binary's sha256, the flags line) is
+# new logs' metadata (the commit, the binary's sha256, the flag line) is
 # what tells the vintages apart in the analysis. Its success is stamped in
 # run-stamps/<machine>/<example>/<algorithm>/<malloc>_<free>/rep-<rep>.stamp
 # (content: one log path per line), which therefore also points to the
@@ -49,14 +50,12 @@ fi
 
 PROFILE=$(python3 config.py get "machines.${MACHINE}.profile")
 OUTDIR=$(python3 config.py get "machines.${MACHINE}.output")
-FLAGSFILE="flags/${EXAMPLE}.flags"
 
 mkdir -p "$OUTDIR"
 PREFIX="run_${MACHINE}_${EXAMPLE}_${ALGORITHM}_m${MALLOC_DELAY}_f${FREE_DELAY}_r${REP}_"
 
-# One log per grid run (one line of the flags file); the line numbers
-# mirror run_folder.sh's loop over the same file.
-mapfile -t LINES <"$FLAGSFILE"
+# One log per grid run (one line of the example's flag lines).
+mapfile -t LINES < <(python3 config.py flag-lines "$EXAMPLE")
 TOTAL=${#LINES[@]}
 LOGS=()
 
@@ -81,10 +80,11 @@ for i in "${!LINES[@]}"; do
     python3 logmeta.py run --machine "$MACHINE" --repeats "$REPEATS" --rep "$REP" \
       --example "$EXAMPLE" --algorithm "$ALGORITHM" \
       --malloc-delay "$MALLOC_DELAY" --free-delay "$FREE_DELAY" \
-      --line "$LINE_NO" --flags "$FLAGSFILE" --binary "$BIN"
+      --flag-line "${LINES[i]}" --lines-total "$TOTAL" \
+      --binary "$BIN"
     echo
   } >"$LOG"
-  bash run_folder.sh "build/${EXAMPLE}/${ALGORITHM}" "$FLAGSFILE" "$PROFILE" "$MALLOC_DELAY" "$FREE_DELAY" "$LINE_NO" >>"$LOG" 2>&1
+  bash run_folder.sh "build/${EXAMPLE}/${ALGORITHM}" "$PROFILE" "$MALLOC_DELAY" "$FREE_DELAY" "${LINES[i]}" >>"$LOG" 2>&1
 done
 
 STAMP_DIR="run-stamps/${MACHINE}/${EXAMPLE}/${ALGORITHM}/${MALLOC_DELAY}_${FREE_DELAY}"
