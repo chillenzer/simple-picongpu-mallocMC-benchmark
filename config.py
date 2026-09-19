@@ -11,9 +11,12 @@ values:
     python3 config.py list examples
     python3 config.py list run-matrix [initial|arms]
     python3 config.py list commits
+    python3 config.py list configs <Algorithm>
+    python3 config.py list build-matrix
     python3 config.py commit <name> <picongpu|mallocmc> <url|hash|path>
     python3 config.py check
     python3 config.py flag-lines <Example>
+    python3 config.py render-param <Algorithm> <config-name>
 
 `check` validates the structure and the file references (parameter files,
 profiles, the microbenchmark paths) so that a typo fails fast with a clear
@@ -23,10 +26,19 @@ repository root.
 The example's picongpu command lines are stored as structured `flag_lines`
 (entries of `examples`): one JSON object per command line, the keys in
 command-line order, a value a scalar or a list of positive integers.
-`flag-lines` (and the build) reconstruct the exact command lines from them:
-a one-letter key serializes to its short form (-d), any longer key to its
-long form (--periodic), a scalar to a single token, a list to a
-space-joined token; `config.py` is the sole authority for the format.
+ `flag-lines` (and the build) reconstruct the exact command lines from them:
+ a one-letter key serializes to its short form (-d), any longer key to its
+ long form (--periodic), a scalar to a single token, a list to a
+ space-joined token; `config.py` is the sole authority for the format.
+
+ The allocator's C++ is likewise data: each `configs.<Algorithm>.<name>`
+ object carries the heap scalars (`heap`) and a named hash profile
+ (`hash.profile`, a file under `param/<Algorithm>/profiles/`), and
+ `render-param` renders the algorithm's `param/<Algorithm>/mallocMC.param.in`
+ template into the `mallocMC.param` overlay from those two, the only place
+ the harness's allocator C++ is generated. The `// heap-args:` header line of
+ the template lists the template parameters in order, so the heap scalars
+ bind to them by (case-insensitive) name; no C++ ever appears in config.json.
 """
 
 from __future__ import annotations
@@ -436,6 +448,427 @@ def effective_commits(data: dict) -> list[dict]:
     return [{"name": "default", **{dep: dependencies.get(dep, {}) for dep in ("picongpu", "mallocmc")}}]
 
 
+HEAP_ARGS_LINE = "// heap-args: "
+CONFIG_DEFAULT = "default"
+# The heap scalars a `configs` block may carry when the `configs` key is
+# absent (the pre-migration fallback, reconstructed from the static
+# parameter files the migration replaces); they are the defaults every
+# shipped `default` config spells out explicitly today, so a legacy config
+# without `configs` still resolves to today's allocator.
+LEGACY_HEAP: dict[str, dict] = {
+    "FlatterScatter": {"accessBlockSize": 134217728, "pageSize": 131072, "wasteFactor": 2},
+    "ScatterAlloc": {
+        "pageSize": 2097152,
+        "accessBlockSize": 2147483648,
+        "regionSize": 16,
+        "wasteFactor": 2,
+        "resetFreedPages": True,
+    },
+    "Gallatin": {"bytesPerSegment": 16777216, "smallestSlice": 16, "largestSlice": 4096},
+}
+LEGACY_HASH: dict[str, str] = {"FlatterScatter": "FsHashDefault", "ScatterAlloc": "HashDefault"}
+
+
+def _canonical(name: str) -> str:
+    """Return the case-insensitive match key for a heap key (`name`).
+
+    Args:
+        name: the key to normalize.
+
+    Returns:
+        str: the canonical form (`aB` -> `ab`).
+
+    """
+    return name.lower().replace("_", "")
+
+
+def effective_configs(data: dict, algorithm: str) -> dict[str, dict]:
+    """Return the resolved config entries of one algorithm (+ their names, in order).
+
+    Each key is a config name and each value the config's full entry
+    (its ``heap`` mapping and, when present, its ``hash`` object). A config
+    whose ``heap`` is absent is filled from the pre-migration defaults
+    (``LEGACY_HEAP``); when the whole ``configs`` section is absent a single
+    ``default`` entry is synthesised from those defaults and, for an
+    algorithm with a hash slot, from the legacy hash profile.
+
+    Args:
+        data: the parsed configuration.
+        algorithm: the algorithm name.
+
+    Returns:
+        dict: config name to config entry, in config order (a copy).
+
+    """
+    algorithms = _walk(data, "algorithms")
+    if not isinstance(algorithms, list) or algorithm not in algorithms:
+        _fail(f"algorithm '{algorithm}' is not one of the configured algorithms")
+    raw = _walk(data, "configs")
+    entries = raw.get(algorithm) if isinstance(raw, dict) else None
+    if not isinstance(entries, dict) or not entries:
+        legacy = LEGACY_HEAP.get(algorithm)
+        if legacy is None:
+            _fail(f"algorithm '{algorithm}' has no configs.{algorithm} entries (add at least one)")
+        entry = {"heap": dict(legacy)}
+        profile = LEGACY_HASH.get(algorithm)
+        if profile:
+            entry["hash"] = {"profile": profile}
+        return {CONFIG_DEFAULT: entry}
+    return {name: _resolved_entry(algorithm, name, entry) for name, entry in entries.items()}
+
+
+def _resolved_entry(algorithm: str, name: str, entry: object) -> dict:
+    """Return one config entry with its ``heap`` filled in.
+
+    Args:
+        algorithm: the algorithm (for the error messages).
+        name: the config name (for the error messages).
+        entry: the raw config entry.
+
+    Returns:
+        dict: a copy of the entry; its ``heap`` defaults from ``LEGACY_HEAP``
+        when missing.
+
+    """
+    dotted = f"configs.{algorithm}.{name}"
+    if not isinstance(entry, dict):
+        _fail(f"{dotted}: each config must be a {{heap, hash?}} mapping")
+    resolved = dict(entry)
+    heap = resolved.get("heap")
+    if not isinstance(heap, dict):
+        legacy = LEGACY_HEAP.get(algorithm, {})
+        resolved["heap"] = dict(legacy)
+    return resolved
+
+
+def _hash_profile(algorithm: str, config: dict) -> str | None:
+    """Return the named hash profile of a config entry, or the policy default.
+
+    Args:
+        algorithm: the algorithm (for the error messages).
+        config: one ``{heap, hash?}`` config entry.
+
+    Returns:
+        str | None: the selected profile's file name (no ``.hpp``), or
+        ``None`` when the entry has no ``hash`` object — the policy's own
+        default hash type then stands in (and the Gallatin template, which
+        has no hash slot, has no such placeholder to fill).
+
+    """
+    if "hash" not in config:
+        return None
+    hash_ = config.get("hash")
+    profile = hash_.get("profile") if isinstance(hash_, dict) else None
+    if not isinstance(profile, str) or not profile:
+        _fail(f"configs.{algorithm}: a 'hash' entry needs a non-empty string 'profile'")
+    return profile
+
+
+def _fmt_scalar(value: object) -> str:
+    """Render one heap scalar as a C++ non-type template argument.
+
+    Args:
+        value: a config.json heap scalar.
+
+    Returns:
+        str: an integer with a ``U`` suffix, or ``true`` / ``false``.
+
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value) + "U"
+    return str(value)
+
+
+def _heap_arg_list(heap: dict, order: list[str], dotted: str) -> str:
+    """Render the ``{heapArgs}`` template argument list in the declared order.
+
+    Args:
+        heap: the config's heap mapping.
+        order: the ordered heap keys from the template's ``// heap-args:`` line.
+        dotted: the dotted path (for the error messages).
+
+    Returns:
+        str: the comma-separated, U-suffixed / bool-valued template arguments.
+
+    """
+    by_key = {_canonical(key): value for key, value in heap.items()}
+    args = []
+    for token in order:
+        key = by_key.get(_canonical(token))
+        if key is None:
+            _fail(f"{dotted}: the template wants heap argument '{token}' but the config has no such key")
+        args.append(_fmt_scalar(key))
+    return ", ".join(args)
+
+
+def render_param(data: dict, algorithm: str, config_name: str) -> str:
+    """Render one config of one algorithm into its `mallocMC.param` C++.
+
+    Reads the ``param/<Algorithm>/mallocMC.param.in`` template, reads the
+    ordered heap keys from its leading ``// heap-args:`` line, and substitutes
+    every ``{...}`` placeholder: ``{heapArgs}`` is the full (ordered)
+    template-argument list, every other name is a single heap scalar matched
+    case-insensitively to a key of the config's ``heap``, and ``{hashProfile}``
+    is the selected profile's type name (the policy's default type when the
+    config has no ``hash`` object). Any leftover placeholder is an error.
+
+    Args:
+        data: the parsed configuration.
+        algorithm: the algorithm name.
+        config_name: the config to render.
+
+    Returns:
+        str: the rendered C++ (no trailing newline management).
+
+    """
+    template_path = Path("param") / algorithm / "mallocMC.param.in"
+    if not template_path.is_file():
+        _fail(f"template not found: {template_path}")
+    template = template_path.read_text(encoding="utf-8")
+    order = _heap_arg_order(template)
+    if not order:
+        _fail(f"{template_path}: no '{HEAP_ARGS_LINE.strip()}' header line")
+    configs = effective_configs(data, algorithm)
+    entry = configs.get(config_name)
+    if entry is None:
+        _fail(f"config '{config_name}' not found for {algorithm} (have: {', '.join(configs)})")
+    heap = entry.get("heap")
+    if not isinstance(heap, dict) or not heap:
+        _fail(f"configs.{algorithm}.{config_name}.heap: must be a non-empty mapping of scalars")
+    dotted = f"configs.{algorithm}.{config_name}"
+    hash_profile = _hash_profile(algorithm, entry)
+    substitutions = {"heapArgs": _heap_arg_list(heap, order, dotted)}
+    for key, value in heap.items():
+        substitutions[key] = _fmt_scalar(value)
+        substitutions[_canonical(key)] = _fmt_scalar(value)
+    if hash_profile is not None:
+        substitutions["hashProfile"] = hash_profile
+    rendered = template
+    for name, value in substitutions.items():
+        rendered = rendered.replace("{" + name + "}", value)
+    unresolved = {match for match in _template_placeholders(template) if match not in substitutions}
+    if unresolved:
+        _fail(f"{algorithm}/{config_name}: unresolved placeholder(s) in the template: {', '.join(sorted(unresolved))}")
+    return rendered
+
+
+def _template_placeholders(template: str) -> list[str]:
+    """Return the ``{name}`` placeholder names a template uses (comments stripped).
+
+    Args:
+        template: the template C++ text.
+
+    Returns:
+        list[str]: every placeholder name appearing in the template body.
+
+    """
+    stripped = re.sub(r"//[^\n]*", "", template)
+    stripped = re.sub(r"/\*.*?\*/", "", stripped, flags=re.DOTALL)
+    return re.findall(r"\{([A-Za-z_]\w*)\}", stripped)
+
+
+def _heap_arg_order(template: str) -> list[str]:
+    """Return the ordered heap keys from a template's ``// heap-args:`` line.
+
+    Args:
+        template: the template C++ text.
+
+    Returns:
+        list[str]: the ordered heap keys, or ``[]`` when the line is absent.
+
+    """
+    for line in template.splitlines():
+        if line.startswith(HEAP_ARGS_LINE):
+            return line.split(HEAP_ARGS_LINE, 1)[1].split()
+    return []
+
+
+def _check_configs(data: dict, errors: list[str]) -> None:
+    """Validate the ``configs`` section (one entry per algorithm, per config).
+
+    For each configured algorithm: at least one config named ``default``;
+    every hash profile names an existing ``param/<Algo>/profiles/<name>.hpp``;
+    and every placeholder the algorithm's template needs (the ``// heap-args:``
+    keys, the per-key heap placeholders, and ``{hashProfile}`` when the
+    template uses one) resolves for every config of that algorithm. An
+    algorithm with no ``configs`` entry gets an implicit ``default`` (the
+    pre-migration fallback in ``effective_configs``), which is checked too.
+
+    Args:
+        data: the parsed configuration.
+        errors: accumulates the problems found.
+
+    """
+    algorithms = _walk(data, "algorithms")
+    if not isinstance(algorithms, list):
+        return
+    raw = _walk(data, "configs")
+    if raw is not None and not isinstance(raw, dict):
+        errors.append("configs: must be a mapping of algorithm to configs")
+        return
+    for algorithm in algorithms:
+        if not isinstance(algorithm, str):
+            continue
+        _check_configs_algorithm(algorithm, raw, errors)
+        entry = raw.get(algorithm) if isinstance(raw, dict) else None
+        if isinstance(entry, dict) and entry and CONFIG_DEFAULT not in entry:
+            errors.append(f"configs.{algorithm}: must contain a config named 'default'")
+
+
+# The template's placeholder requirements: (ordered // heap-args keys, the
+# other per-key heap placeholders, whether a {hashProfile} is used).
+TemplateReqs = tuple[list[str], set[str], bool]
+
+
+def _check_configs_algorithm(algorithm: str, raw: object, errors: list[str]) -> None:
+    """Validate one algorithm's configs and its template's placeholder coverage.
+
+    Args:
+        algorithm: the algorithm name.
+        raw: the parsed ``configs`` mapping (or None when absent).
+        errors: accumulates the problems found.
+
+    """
+    entry = raw.get(algorithm) if isinstance(raw, dict) else None
+    if entry is None or not isinstance(entry, dict) or not entry:
+        return  # implicit single default; nothing config-specific to check
+    reqs = _template_requirements(_algorithm_template(algorithm))
+    for config_name, config in entry.items():
+        _check_one_config(algorithm, config_name, config, reqs, errors)
+
+
+def _algorithm_template(algorithm: str) -> str | None:
+    """Return the algorithm's template C++ text, or None when it is absent.
+
+    Args:
+        algorithm: the algorithm name.
+
+    Returns:
+        str | None: the template text, or None when the file does not exist.
+
+    """
+    template_path = Path("param") / algorithm / "mallocMC.param.in"
+    return template_path.read_text(encoding="utf-8") if template_path.is_file() else None
+
+
+def _template_requirements(template: str | None) -> TemplateReqs:
+    """Return one template's placeholder requirements.
+
+    Args:
+        template: the template text (None-checked already by the caller).
+
+    Returns:
+        TemplateReqs: the ordered ``// heap-args:`` keys, the other heap
+        scalar placeholder names, and whether a ``{hashProfile}`` is used.
+
+    """
+    if template is None:
+        return [], set(), False
+    placeholders = set(_template_placeholders(template))
+    wanted = {name for name in placeholders if name not in {"heapArgs", "hashProfile"}}
+    return _heap_arg_order(template), wanted, "hashProfile" in placeholders
+
+
+def _check_one_config(algorithm: str, config_name: str, config: object, reqs: TemplateReqs, errors: list[str]) -> None:
+    """Validate one algorithm/config entry (heap scalars, hash profile).
+
+    Args:
+        algorithm: the algorithm name.
+        config_name: the config name.
+        config: the raw config entry.
+        reqs: the template's placeholder requirements.
+        errors: accumulates the problems found.
+
+    """
+    dotted = f"configs.{algorithm}.{config_name}"
+    if not isinstance(config, dict):
+        errors.append(f"{dotted}: must be a {{heap, hash?}} mapping")
+        return
+    _check_config_heap(dotted, config, reqs, errors)
+    _check_config_hash(algorithm, dotted, config, reqs, errors)
+
+
+def _check_config_heap(dotted: str, config: dict, reqs: TemplateReqs, errors: list[str]) -> None:
+    """Validate a config entry's `heap` (presence, scalarity, coverage).
+
+    Args:
+        dotted: the dotted path of the config entry (for the error messages).
+        config: the config entry (a mapping).
+        reqs: the template's placeholder requirements.
+        errors: accumulates the problems found.
+
+    """
+    order, wanted_keys, _wants_hash = reqs
+    heap = config.get("heap")
+    if not isinstance(heap, dict) or not heap:
+        errors.append(f"{dotted}.heap: must be a non-empty mapping of scalars")
+        return
+    for key, value in heap.items():
+        if not isinstance(value, (int, bool)):
+            errors.append(f"{dotted}.heap.{key}: must be an integer or a boolean")
+    resolved = {_canonical(name) for name in heap}
+    missing = [token for token in order + sorted(wanted_keys) if _canonical(token) not in resolved]
+    if missing:
+        errors.append(f"{dotted}.heap: missing key(s) for the template: {', '.join(missing)}")
+
+
+def _check_config_hash(algorithm: str, dotted: str, config: dict, reqs: TemplateReqs, errors: list[str]) -> None:
+    """Validate a config entry's `hash.profile` (against the hash slot).
+
+    Args:
+        algorithm: the algorithm name.
+        dotted: the dotted path of the config entry (for the error messages).
+        config: the config entry (a mapping).
+        reqs: the template's placeholder requirements.
+        errors: accumulates the problems found.
+
+    """
+    if "hash" not in config:
+        return
+    _order, _wanted, wants_hash = reqs
+    if not wants_hash:
+        errors.append(f"{dotted}.hash: no hash slot in the '{algorithm}' template, so no 'hash' key")
+        return
+    hash_ = config.get("hash")
+    profile = hash_.get("profile", None) if isinstance(hash_, dict) else None
+    if not isinstance(profile, str) or not profile:
+        errors.append(f"{dotted}.hash.profile: must be a non-empty string")
+        return
+    if not (Path("param") / algorithm / "profiles" / (profile + ".hpp")).is_file():
+        errors.append(f"{dotted}.hash.profile: no file param/{algorithm}/profiles/{profile}.hpp")
+
+
+def _cmd_list_configs(algorithm: str) -> None:
+    """Print one algorithm's config names, one per line (in config order).
+
+    Args:
+        algorithm: the algorithm name.
+
+    """
+    for name in effective_configs(_load(), algorithm):
+        print(name)
+
+
+def _cmd_build_matrix() -> None:
+    """Print the build matrix: one `build/<commit>/<Ex>/<Algo>/<cfg>` per line.
+
+    The quadruples (commit, example, algorithm, config) in build order, in
+    the same order the Makefile expands them.
+
+    """
+    data = _load()
+    examples = [example["name"] for example in data.get("examples", []) if isinstance(example, dict)]
+    algorithms = data.get("algorithms", [])
+    for commit in effective_commits(data):
+        name = commit.get("name")
+        for example in examples:
+            for algorithm in algorithms:
+                for config in effective_configs(data, algorithm):
+                    print(f"build/{name}/{example}/{algorithm}/{config}")
+
+
 def _check_build(data: dict, errors: list[str]) -> None:
     """Validate the build flags.
 
@@ -612,13 +1045,15 @@ def _check_microbench_runs(runs: object, errors: list[str]) -> None:
 
 
 def _check_benchmark_files(data: dict, errors: list[str]) -> None:
-    """Validate the per-algorithm parameter files.
+    """Validate the per-algorithm parameter templates and profile headers.
 
-    A missing file means the benchmark would build with the wrong (or no)
+    A missing template means the benchmark would build with the wrong (or no)
     allocator configuration, so it is a configuration error. The example's
     picongpu command lines come from config.json itself (the structured
     `flag_lines`, validated in `_check_examples`), so there is no flag file
-    to check.
+    to check. The hash profile headers referenced by a config's `hash.profile`
+    are checked by `_check_configs`, which also checks that every template
+    placeholder resolves for every config of its algorithm.
 
     Args:
         data: the parsed configuration.
@@ -629,7 +1064,7 @@ def _check_benchmark_files(data: dict, errors: list[str]) -> None:
     if isinstance(algorithms, list):
         for algorithm in algorithms:
             if isinstance(algorithm, str):
-                _missing_file(Path("param") / algorithm / "mallocMC.param", "algorithms", errors)
+                _missing_file(Path("param") / algorithm / "mallocMC.param.in", f"algorithms.{algorithm}", errors)
 
 
 def _run_matrix(data: dict, phase: str = "arms") -> list[str]:
@@ -687,6 +1122,7 @@ def _cmd_check() -> None:
     _check_algorithms(data, errors)
     _check_delays(data, errors)
     _check_commits(data, errors)
+    _check_configs(data, errors)
     _check_build(data, errors)
     _check_machines(data, errors)
     _check_microbench(data, errors)
@@ -779,6 +1215,13 @@ def _dispatch_key(command: str, rest: list[str]) -> None:
             _fail("'run-matrix' is a list, not a scalar key")
         _cmd_list_run_matrix(rest)
         return
+    if rest and rest[0] == "build-matrix":
+        if command != "list":
+            _fail("'build-matrix' is a list, not a scalar key")
+        if len(rest) > 1:
+            _fail("usage: config.py list build-matrix")
+        _cmd_build_matrix()
+        return
     if len(rest) != 1:
         _fail(f"usage: config.py {command} <dotted.key>")
     dotted = rest[0]
@@ -816,6 +1259,18 @@ def _cmd_list_run_matrix(rest: list[str]) -> None:
         print(combination)
 
 
+def _cmd_render_param(rest: list[str]) -> None:
+    """Render one config of one algorithm into its `mallocMC.param` C++ on stdout.
+
+    Args:
+        rest: the command line arguments after the "render-param" subcommand.
+
+    """
+    if len(rest) != 2:
+        _fail("usage: config.py render-param <Algorithm> <config-name>")
+    print(render_param(_load(), rest[0], rest[1]))
+
+
 def main() -> int:
     """Dispatch the subcommand on the command line.
 
@@ -825,7 +1280,7 @@ def main() -> int:
     """
     args = sys.argv[1:]
     if not args:
-        _fail("usage: config.py {get|list|check|flag-lines} ...")
+        _fail("usage: config.py {get|list|check|flag-lines|render-param} ...")
     command, rest = args[0], args[1:]
     if command == "check":
         if rest:
@@ -838,8 +1293,16 @@ def main() -> int:
     if command == "commit":
         _cmd_commit_field(rest)
         return 0
+    if command == "render-param":
+        _cmd_render_param(rest)
+        return 0
+    if command == "list" and rest and rest[0] == "configs":
+        if len(rest) != 2:
+            _fail("usage: config.py list configs <Algorithm>")
+        _cmd_list_configs(rest[1])
+        return 0
     if command not in {"get", "list"}:
-        _fail(f"unknown command '{command}' (expected get, list, flag-lines, commit or check)")
+        _fail(f"unknown command '{command}' (expected get, list, flag-lines, commit, render-param or check)")
     _dispatch_key(command, rest)
     return 0
 

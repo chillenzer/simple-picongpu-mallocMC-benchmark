@@ -17,33 +17,26 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with PIConGPU.
- * If not, see <http://www.gnu.org/licenses/>.
- */
 
 /** @file
  *
- * Fine-tuning of the particle heap for GPUs: When running on GPUs, we use a
- * high-performance parallel "new" allocator (mallocMC) which can be
- * parametrized here.
+ * The fork's default scatter hashing parameters, re-exposed as a dependent
+ * template on the heap config so every hash profile shares the same shape
+ * (`template<class T_HeapConfig>`); this one ignores the heap and uses the
+ * fork's constants.
  */
 
 #pragma once
 
-#include <pmacc/alpakaHelper/acc.hpp>
-
-#include <mallocMC/mallocMC.hpp>
-
-namespace picongpu {
-/** Define a new allocator
- *
- * This is an allocator resembling the behaviour of the ScatterAlloc
- * algorithm.
- */
-using DeviceHeap = mallocMC::Allocator<
-    alpaka::AccToTag<pmacc::Acc<DIM1>>,
-    mallocMC::CreationPolicies::GallatinCuda<>,
-    mallocMC::DistributionPolicies::Noop, mallocMC::OOMPolicies::ReturnNull,
-    mallocMC::ReservePoolPolicies::Noop,
-    mallocMC::AlignmentPolicies::Shrink<>>;
+namespace picongpu
+{
+    template<class /*T_HeapConfig*/>
+    struct HashDefault
+    {
+        static constexpr auto hashingK = 38183u;
+        static constexpr auto hashingDistMP = 17497u;
+        static constexpr auto hashingDistWP = 1u;
+        static constexpr auto hashingDistWPRel = 1u;
+    };
 
 } // namespace picongpu

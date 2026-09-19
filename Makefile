@@ -131,6 +131,14 @@ endif
 EXAMPLES   := $(shell $(PY) config.py list examples)
 ALGORITHMS := $(shell $(PY) config.py list algorithms)
 
+# The configs of each algorithm, one `CONFIGS_OF_<algo>` line per algorithm
+# (in config order). These are what the build/run matrix is expanded with:
+# a build is one (commit, example, algorithm, config) quadruple.
+define CONFIGS_OF
+CONFIGS_OF_$(1) := $(shell $(PY) config.py list configs $(1))
+endef
+$(foreach a,$(ALGORITHMS),$(eval $(call CONFIGS_OF,$(a))))
+
 # One commit is one {name, {picongpu, mallocmc} deps} pair from config.json;
 # the harness keeps one PIConGPU checkout per commit (and the mallocMC fork
 # nested inside it, pinned to the add-delay branch: run-time malloc/free
@@ -280,55 +288,65 @@ endif
 
 # --- per (commit, example, algorithm) harness targets -----------------------
 
-# The (commit, example, algorithm) triples, one "<c>/<e>/<a>" per build dir.
-# The build dir is build/<c>/<e>/<a> and the binary build/<c>/<e>/<a>/bin/picongpu.
-TRIPLES    := $(foreach c,$(COMMITS),$(foreach e,$(EXAMPLES),$(foreach a,$(ALGORITHMS),$(c)/$(e)/$(a))))
-BUILD_DIRS := $(addprefix build/,$(TRIPLES))
+# The (commit, example, algorithm, config) quadruples, one
+# "<c>/<e>/<a>/<cfg>" per build dir. The build dir is build/<c>/<e>/<a>/<cfg>
+# and the binary build/<c>/<e>/<a>/<cfg>/bin/picongpu.
+QUADS      := $(foreach c,$(COMMITS),$(foreach e,$(EXAMPLES),$(foreach a,$(ALGORITHMS),$(foreach g,$(CONFIGS_OF_$(a)),$(c)/$(e)/$(a)/$(g)))))
+BUILD_DIRS := $(addprefix build/,$(QUADS))
 BINARIES   := $(addsuffix /bin/picongpu,$(BUILD_DIRS))
 
-# One (commit, example, algorithm) triple: $1 = commit, $2 = example,
-# $3 = algorithm, $4 = build dir (build/<c>/<e>/<a>).
+# One (commit, example, algorithm, config) quadruple: $1 = commit, $2 =
+# example, $3 = algorithm, $4 = config, $5 = build dir
+# (build/<c>/<e>/<a>/<cfg>).
 #
 # The input is regenerated when the commit's PIConGPU pin (the pic-create
 # template), the profile (PICSRC feeds pic-create's tool path), or the
-# parameter overlay changes. The overlay prerequisites are the concrete
-# *.param files plus the three param directories (their mtime changes when a
-# file is added or removed, so a newly added parameter file is picked up).
+# parameter inputs change: the algorithm's mallocMC.param.in template, its
+# profile headers (copied into the build tree), config.json (it holds both
+# the config's heap scalars and its hash profile name), or the example's own
+# *.param overlay files (their own param directories, so a newly added
+# parameter file is picked up).
 #
 # The build is skipped while the input, the commit's mallocMC pin (the
 # headers are compiled into the binary), the profile content, the build
 # flags and the toolchain versions are all unchanged; targeting the binary
 # itself also covers a manually deleted bin/picongpu.
 define pair_rules
-build/$(4)/.input-stamp: $(PICONGPU_STAMP_$(1)) $(PROFILE_ENV_STAMP) \
-	$(wildcard $(PARAM_DIR)/$(3)/*.param) \
+build/$(5)/.input-stamp: $(PICONGPU_STAMP_$(1)) $(PROFILE_ENV_STAMP) \
+	$(CONFIG) \
+	$(PARAM_DIR)/$(3)/mallocMC.param.in \
+	$(wildcard $(PARAM_DIR)/$(3)/profiles/*.hpp) \
 	$(wildcard $(PARAM_DIR)/$(2)/*.param) \
 	$(wildcard $(PARAM_DIR)/$(2)/$(3)/*.param) \
 	$(if $(wildcard $(PARAM_DIR)/$(3)/.),$(PARAM_DIR)/$(3)) \
 	$(if $(wildcard $(PARAM_DIR)/$(2)/.),$(PARAM_DIR)/$(2)) \
 	$(if $(wildcard $(PARAM_DIR)/$(2)/$(3)/.),$(PARAM_DIR)/$(2)/$(3))
-	@echo "Preparing input build/$(4) ..."
-	@rm -rf build/$(4)
-	@mkdir -p build/$(4)
+	@echo "Preparing input build/$(5) ... ($(3)/$(4))"
+	@rm -rf build/$(5)
+	@mkdir -p build/$(5)
 	@source "$(PROFILE)"
-	pic-create "$(PICONGPU_ABS)/share/picongpu/examples/$(2)" "build/$(4)"
-	# The algorithm's mallocMC.param (the creation policy), the example's
-	# parameters, and any per-(example, algorithm) overrides; later levels
+	pic-create "$(PICONGPU_ABS)/share/picongpu/examples/$(2)" "build/$(5)"
+	@mkdir -p "build/$(5)/include/picongpu/param"
+	# The algorithm's allocator: the mallocMC.param is rendered from its
+	# template (param/<algo>/mallocMC.param.in) by config.py, the profiles
+	# it includes are copied in, and the example's own parameters (and any
+	# per-(example, algorithm) overrides) are overlaid on top; later levels
 	# win on name clashes.
-	find $(PARAM_DIR)/* -type f -wholename '$(PARAM_DIR)/$(3)/*.param' -exec cp -v {} "build/$(4)/include/picongpu/param/" ';'
-	find $(PARAM_DIR)/* -type f -wholename '$(PARAM_DIR)/$(2)/*.param' -exec cp -v {} "build/$(4)/include/picongpu/param/" ';'
-	find $(PARAM_DIR)/* -type f -wholename '$(PARAM_DIR)/$(2)/$(3)/*.param' -exec cp -v {} "build/$(4)/include/picongpu/param/" ';'
-	@printf 'input ready for %s\n' "$(4)" >"build/$(4)/.input-stamp"
-	@echo "Prepared input build/$(4)."
+	$(PY) config.py render-param "$(3)" "$(4)" >"build/$(5)/include/picongpu/param/mallocMC.param"
+	if [ -d "$(PARAM_DIR)/$(3)/profiles" ]; then cp -r -- "$(PARAM_DIR)/$(3)/profiles" "build/$(5)/include/picongpu/param/"; fi
+	find $(PARAM_DIR)/* -type f -wholename '$(PARAM_DIR)/$(2)/*.param' -exec cp -v {} "build/$(5)/include/picongpu/param/" ';'
+	find $(PARAM_DIR)/* -type f -wholename '$(PARAM_DIR)/$(2)/$(3)/*.param' -exec cp -v {} "build/$(5)/include/picongpu/param/" ';'
+	@printf 'input ready for %s (%s/%s)\n' "$(5)" "$(3)" "$(4)" >"build/$(5)/.input-stamp"
+	@echo "Prepared input build/$(5)."
 
-build/$(4)/bin/picongpu: build/$(4)/.input-stamp $(MALLOCMC_STAMP_$(1)) $(PROFILE_ENV_STAMP) $(TOOLCHAIN_STAMP) $(FLAGS_STAMP)
+build/$(5)/bin/picongpu: build/$(5)/.input-stamp $(MALLOCMC_STAMP_$(1)) $(PROFILE_ENV_STAMP) $(TOOLCHAIN_STAMP) $(FLAGS_STAMP)
 	@source "$(PROFILE)"
-	cd "build/$(4)"
+	cd "build/$(5)"
 	export CMAKE_PREFIX_PATH="$(MALLOCMC_ABS_$(1)):$${CMAKE_PREFIX_PATH:-}"
 	pic-build -c "$(FLAGS)"
 endef
 
-$(foreach t,$(TRIPLES),$(eval $(call pair_rules,$(word 1,$(subst /,$(space),$(t))),$(word 2,$(subst /,$(space),$(t))),$(word 3,$(subst /,$(space),$(t))),$(t))))
+$(foreach t,$(QUADS),$(eval $(call pair_rules,$(word 1,$(subst /,$(space),$(t))),$(word 2,$(subst /,$(space),$(t))),$(word 3,$(subst /,$(space),$(t))),$(word 4,$(subst /,$(space),$(t))),$(t))))
 
 # --- run stamps: one per (combination, repetition) --------------------------
 #
@@ -373,17 +391,17 @@ ifneq ($(filter runs full sweep-status clean-runs,$(MAKECMDGOALS)),)
 endif
 RUN_COMMITS := $(if $(strip $(COMMIT)),$(strip $(COMMIT)),$(COMMITS))
 
-# $1 = commit, $2 = example, $3 = algorithm, $4 = malloc delay (ns),
-# $5 = free delay (ns), $6 = repetition number. The recipe carries no shell
-# of its own (the rule is generated by $(eval $(call ...)) and is therefore
-# expanded twice), it just hands the parameters to run_stamp.sh, which does
-# the rest.
+# $1 = commit, $2 = example, $3 = algorithm, $4 = config, $5 = malloc delay
+# (ns), $6 = free delay (ns), $7 = repetition number. The recipe carries no
+# shell of its own (the rule is generated by $(eval $(call ...)) and is
+# therefore expanded twice), it just hands the parameters to run_stamp.sh,
+# which does the rest.
 define run_stamp_rules
-run-stamps/$(MACHINE)/$(1)/$(2)/$(3)/$(4)_$(5)/rep-$(6).stamp: build/flag-lines.$(2).stamp
-	@bash run_stamp.sh "$(MACHINE)" "$(REPEATS)" "$(1)" "$(2)" "$(3)" "$(4)" "$(5)" "$(6)"
+run-stamps/$(MACHINE)/$(1)/$(2)/$(3)/$(4)/$(5)_$(6)/rep-$(7).stamp: build/flag-lines.$(2).stamp
+	@bash run_stamp.sh "$(MACHINE)" "$(REPEATS)" "$(1)" "$(2)" "$(3)" "$(4)" "$(5)" "$(6)" "$(7)"
 endef
 
-$(foreach c,$(RUN_COMMITS),$(foreach e,$(EXAMPLES),$(foreach a,$(ALGORITHMS),$(foreach m,$(COMBOS),$(foreach r,$(REPS),$(eval $(call run_stamp_rules,$(c),$(e),$(a),$(firstword $(subst _, ,$(m))),$(lastword $(subst _, ,$(m))),$(r))))))))
+$(foreach c,$(RUN_COMMITS),$(foreach e,$(EXAMPLES),$(foreach a,$(ALGORITHMS),$(foreach g,$(CONFIGS_OF_$(a)),$(foreach m,$(COMBOS),$(foreach r,$(REPS),$(eval $(call run_stamp_rules,$(c),$(e),$(a),$(g),$(firstword $(subst _, ,$(m))),$(lastword $(subst _, ,$(m))),$(r)))))))))
 
 # --- run targets -------------------------------------------------------------
 
@@ -392,7 +410,7 @@ RUN_REPS := $(REPS)
 else
 RUN_REPS := $(REP)
 endif
-RUN_STAMPS := $(foreach c,$(RUN_COMMITS),$(foreach e,$(EXAMPLES),$(foreach a,$(ALGORITHMS),$(foreach i,$(RUN_REPS),$(addprefix run-stamps/$(MACHINE)/$(c)/$(e)/$(a)/,$(addsuffix /rep-$(i).stamp,$(COMBOS)))))))
+RUN_STAMPS := $(foreach c,$(RUN_COMMITS),$(foreach e,$(EXAMPLES),$(foreach a,$(ALGORITHMS),$(foreach g,$(CONFIGS_OF_$(a)),$(foreach i,$(RUN_REPS),$(addprefix run-stamps/$(MACHINE)/$(c)/$(e)/$(a)/$(g)/,$(addsuffix /rep-$(i).stamp,$(COMBOS))))))))
 
 # The fan-out: one sub-make per (combination, repetition) stamp, in sweep
 # order, serially (one GPU; -j cannot parallelize a single recipe). A stamp
@@ -482,6 +500,9 @@ check:
 	$(PY) config.py check
 	@printf 'examples:   %s\n' "$(EXAMPLES)"
 	@printf 'algorithms: %s\n' "$(ALGORITHMS)"
+	@for a in $(ALGORITHMS); do
+	  printf 'configs    %s: %s\n' "$$a" "$$(python3 config.py list configs $$a | tr '\n' ' ' | sed 's/ *$$//')"
+	done
 	@if [ "$$(python3 config.py list run-matrix arms | wc -l | tr -d ' ')" = "1" ]; then
 	  printf 'runs:       baseline only (no delay sweep configured)\n'
 	else
@@ -492,7 +513,7 @@ check:
 	    "$$(python3 config.py list run-matrix arms | wc -l | tr -d ' ')" \
 	    "$$(python3 config.py list run-matrix arms | tr '\n' ' ' | sed 's/ *$$//')"
 	fi
-	@printf 'builds:     %s (commit/example/algorithm triples)\n' "$(words $(BINARIES))"
+	@printf 'builds:     %s (commit/example/algorithm/config quadruples)\n' "$(words $(BINARIES))"
 	@for c in $(COMMITS); do
 	  printf 'commit %-14s picongpu %s @ %s\n' "$$c" "$$(python3 config.py commit $$c picongpu path)" "$$(printf '%.8s' $$(python3 config.py commit $$c picongpu hash))"
 	  printf '             mallocmc %s @ %s\n' "$$(python3 config.py commit $$c mallocmc path)" "$$(printf '%.8s' $$(python3 config.py commit $$c mallocmc hash))"

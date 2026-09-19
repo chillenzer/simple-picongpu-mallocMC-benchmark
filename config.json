@@ -41,6 +41,37 @@
     "ScatterAlloc",
     "Gallatin"
   ],
+  "configs": {
+    "FlatterScatter": {
+      "default": {
+        "heap": { "accessBlockSize": 134217728, "pageSize": 131072, "wasteFactor": 2 },
+        "hash": { "profile": "FsHashDefault" }
+      }
+    },
+    "ScatterAlloc": {
+      "default": {
+        "heap": { "pageSize": 2097152, "accessBlockSize": 2147483648, "regionSize": 16, "wasteFactor": 2, "resetFreedPages": true },
+        "hash": { "profile": "HashDefault" }
+      },
+      "16MiB-page": {
+        "heap": { "pageSize": 16777216, "accessBlockSize": 2147483648, "regionSize": 16, "wasteFactor": 2, "resetFreedPages": true },
+        "hash": { "profile": "HashDefault" }
+      },
+      "tuned-hash": {
+        "heap": { "pageSize": 2097152, "accessBlockSize": 2147483648, "regionSize": 16, "wasteFactor": 2, "resetFreedPages": true },
+        "hash": { "profile": "HashTuned" }
+      },
+      "hash-from-page": {
+        "heap": { "pageSize": 2097152, "accessBlockSize": 2147483648, "regionSize": 16, "wasteFactor": 2, "resetFreedPages": true },
+        "hash": { "profile": "HashFromHeap" }
+      }
+    },
+    "Gallatin": {
+      "default": {
+        "heap": { "bytesPerSegment": 16777216, "smallestSlice": 16, "largestSlice": 4096 }
+      }
+    }
+  },
   "delays": {
     "baseline": [
       0,

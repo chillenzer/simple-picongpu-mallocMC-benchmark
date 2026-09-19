@@ -404,6 +404,7 @@ def _run_block(args: argparse.Namespace) -> dict[str, object]:
         "setup": args.example,
         "algorithm": args.algorithm,
         "commit": args.commit,
+        "config": args.config,
         "delays": [args.malloc_delay, args.free_delay],
         "rep": args.rep,
         "repeats": args.repeats,
@@ -463,6 +464,7 @@ def main() -> int:
     run.add_argument("--example", required=True)
     run.add_argument("--algorithm", required=True)
     run.add_argument("--commit", required=True)
+    run.add_argument("--config", required=True)
     run.add_argument("--malloc-delay", type=int, required=True)
     run.add_argument("--free-delay", type=int, required=True)
     run.add_argument("--flag-line", required=True)
