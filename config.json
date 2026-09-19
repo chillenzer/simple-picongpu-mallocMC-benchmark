@@ -76,18 +76,21 @@
       "values": []
     }
   },
-  "dependencies": {
-    "picongpu": {
-      "url": "https://github.com/ComputationalRadiationPhysics/picongpu",
-      "path": "src/picongpu",
-      "hash": "6e7d58bb97300ac74cd7a09e13b3c03fdd3863ae"
-    },
-    "mallocmc": {
-      "url": "https://github.com/chillenzer/mallocMC",
-      "path": "src/picongpu/thirdParty/mallocMC",
-      "hash": "9de11602e2865d4035d93359005cb0a816b7dfe7"
+  "commits": [
+    {
+      "name": "default",
+      "picongpu": {
+        "url": "https://github.com/ComputationalRadiationPhysics/picongpu",
+        "path": "src/picongpu",
+        "hash": "6e7d58bb97300ac74cd7a09e13b3c03fdd3863ae"
+      },
+      "mallocmc": {
+        "url": "https://github.com/chillenzer/mallocMC",
+        "path": "src/picongpu/thirdParty/mallocMC",
+        "hash": "9de11602e2865d4035d93359005cb0a816b7dfe7"
+      }
     }
-  },
+  ],
   "build": {
     "cxx_flags": "-DBOOST_DISABLE_CURRENT_LOCATION",
     "extra_cmake_flags": [

@@ -255,6 +255,8 @@ def _metadata_source(metadata: dict) -> dict:
     source = {
         "started_utc": _text(metadata.get("ts")),
         "commit": commit,
+        "dep_commit": _text(run.get("commit")),
+        "config": _text(run.get("config")),
         "binary_sha256": _text(binary.get("sha256")),
         "picongpu": _text(pins.get("picongpu")),
         "mallocmc": _text(pins.get("mallocmc")),

@@ -118,6 +118,10 @@ FIGDIR  := figures
 
 CONFIG := config.json
 
+# A single space (the `$(space)` used to split a path into its word fields).
+empty :=
+space := $(empty) $(empty)
+
 # --- harness configuration: validated up front, read through config.py ----
 
 ifneq ($(strip $(shell $(PY) config.py check >/dev/null 2>&1; echo $$?)),0)
@@ -127,21 +131,40 @@ endif
 EXAMPLES   := $(shell $(PY) config.py list examples)
 ALGORITHMS := $(shell $(PY) config.py list algorithms)
 
-PICONGPU_PATH  := $(shell $(PY) config.py get dependencies.picongpu.path)
-PICONGPU_URL   := $(shell $(PY) config.py get dependencies.picongpu.url)
-PICONGPU_HASH  := $(shell $(PY) config.py get dependencies.picongpu.hash)
-PICONGPU_ABS   := $(CURDIR)/$(PICONGPU_PATH)
-PICONGPU_SHORT := $(shell printf '%.8s' $(PICONGPU_HASH))
-# add-delay branch: run-time malloc/free delays for every creation policy
-# (FlatterScatter, Scatter, Gallatin) via the MALLOCMC_MALLOC_DELAY /
-# MALLOCMC_FREE_DELAY environment variables (read into the device allocator
-# by mallocMC::Allocator::alloc), the delays as busy-waits on the device
-# global timer. We pin our fork, not picongpu's own mallocMC copy.
-MALLOCMC_PATH  := $(shell $(PY) config.py get dependencies.mallocmc.path)
-MALLOCMC_URL   := $(shell $(PY) config.py get dependencies.mallocmc.url)
-MALLOCMC_HASH  := $(shell $(PY) config.py get dependencies.mallocmc.hash)
-MALLOCMC_ABS   := $(CURDIR)/$(MALLOCMC_PATH)
-MALLOCMC_SHORT := $(shell printf '%.8s' $(MALLOCMC_HASH))
+# One commit is one {name, {picongpu, mallocmc} deps} pair from config.json;
+# the harness keeps one PIConGPU checkout per commit (and the mallocMC fork
+# nested inside it, pinned to the add-delay branch: run-time malloc/free
+# delays for every creation policy via the MALLOCMC_MALLOC_DELAY /
+# MALLOCMC_FREE_DELAY environment variables, read into the device allocator
+# by mallocMC::Allocator::alloc as busy-waits on the device global timer. We
+# pin our fork, not picongpu's own mallocMC copy.)
+COMMITS := $(shell $(PY) config.py list commits)
+
+# Per-commit dependency pins, resolved from config.json (paths defaulted to
+# src/<commit>/picongpu[...]). Each value is a self-contained shell call
+# (referencing a sibling variable inside the same eval block would expand
+# before it is set). The first commit (config order, typically the `default`
+# one) provides the profile's PICSRC and the pic-create/pic-build tooling
+# that every commit's build is driven with (per-commit toolchains are a
+# documented extension point, not implemented); the per-commit checkout and
+# mallocMC prefix are what make the builds differ. $1 = commit name.
+define COMMIT_DEPS
+PICONGPU_PATH_$(1)    := $(shell $(PY) config.py commit $(1) picongpu path)
+PICONGPU_ABS_$(1)     := $(CURDIR)/$(shell $(PY) config.py commit $(1) picongpu path)
+PICONGPU_URL_$(1)     := $(shell $(PY) config.py commit $(1) picongpu url)
+PICONGPU_HASH_$(1)    := $(shell $(PY) config.py commit $(1) picongpu hash)
+PICONGPU_SHORT_$(1)   := $(shell printf '%.8s' $(shell $(PY) config.py commit $(1) picongpu hash))
+MALLOCMC_PATH_$(1)    := $(shell $(PY) config.py commit $(1) mallocmc path)
+MALLOCMC_ABS_$(1)     := $(CURDIR)/$(shell $(PY) config.py commit $(1) mallocmc path)
+MALLOCMC_URL_$(1)     := $(shell $(PY) config.py commit $(1) mallocmc url)
+MALLOCMC_HASH_$(1)    := $(shell $(PY) config.py commit $(1) mallocmc hash)
+MALLOCMC_SHORT_$(1)   := $(shell printf '%.8s' $(shell $(PY) config.py commit $(1) mallocmc hash))
+endef
+$(foreach c,$(COMMITS),$(eval $(call COMMIT_DEPS,$(c))))
+# The first commit's PIConGPU checkout is the PICSRC every build is driven
+# with (see the profile's PICSRC patching in `env-check` below).
+_first_commit := $(firstword $(COMMITS))
+PICONGPU_ABS := $(PICONGPU_ABS_$(_first_commit))
 
 # The microbenchmark suite (microbenchmarks/memmansurvey, a git submodule;
 # its raw results and frozen table live under microbenchmarks/, the
@@ -213,11 +236,18 @@ endif
 endif
 
 # Stamps: written by the phony drivers below, consumed as prerequisites.
-PICONGPU_STAMP    := $(PICONGPU_ABS)/.dep-stamp
-MALLOCMC_STAMP    := $(MALLOCMC_ABS)/.dep-stamp
 PROFILE_ENV_STAMP := build/.profile-env
 TOOLCHAIN_STAMP   := build/.toolchain
 FLAGS_STAMP       := build/.build-flags
+
+# Per-commit dependency stamps (the checkout of each commit's PIConGPU and
+# the mallocMC fork nested in it). The stamps live inside the checkouts
+# themselves, so they are removed with the checkout by `make distclean`.
+define COMMIT_STAMPS
+PICONGPU_STAMP_$(1)  := $(PICONGPU_ABS_$(1))/.dep-stamp
+MALLOCMC_STAMP_$(1)  := $(MALLOCMC_ABS_$(1))/.dep-stamp
+endef
+$(foreach c,$(COMMITS),$(eval $(call COMMIT_STAMPS,$(c))))
 
 # The example's picongpu command lines come from config.json (the structured
 # flag_lines), not from a flags/ file. This fingerprint stamp is the
@@ -243,69 +273,72 @@ endif
 
 .PHONY: all build check clean distclean results summary figures \
 	figures-picongpu figures-sweeps figures-shared figures-microbench \
-	picongpu-src mallocmc-src microbench-src env-check env runs full \
+	$(foreach c,$(COMMITS),picongpu-src-$(c) mallocmc-src-$(c)) microbench-src env-check env runs full \
 	clean-runs freeze freeze-verify \
 	legacy-results legacy-verify microbench-results microbench-verify microbench-audit \
 	rocrate crate-zip sweep-status
 
-# --- per (example, algorithm) harness targets ------------------------------
+# --- per (commit, example, algorithm) harness targets -----------------------
 
-PAIRS      := $(foreach e,$(EXAMPLES),$(foreach a,$(ALGORITHMS),$(e)/$(a)))
-BUILD_DIRS := $(addprefix build/,$(PAIRS))
+# The (commit, example, algorithm) triples, one "<c>/<e>/<a>" per build dir.
+# The build dir is build/<c>/<e>/<a> and the binary build/<c>/<e>/<a>/bin/picongpu.
+TRIPLES    := $(foreach c,$(COMMITS),$(foreach e,$(EXAMPLES),$(foreach a,$(ALGORITHMS),$(c)/$(e)/$(a))))
+BUILD_DIRS := $(addprefix build/,$(TRIPLES))
 BINARIES   := $(addsuffix /bin/picongpu,$(BUILD_DIRS))
 
-# One (example, algorithm) pair: $1 = example, $2 = algorithm, $3 = pair.
+# One (commit, example, algorithm) triple: $1 = commit, $2 = example,
+# $3 = algorithm, $4 = build dir (build/<c>/<e>/<a>).
 #
-# The input is regenerated when the PIConGPU pin (the pic-create template),
-# the profile (PICSRC feeds pic-create's tool path), or the parameter overlay
-# changes. The overlay prerequisites are the concrete *.param files plus the
-# three param directories (their mtime changes when a file is added or
-# removed, so a newly added parameter file is picked up).
+# The input is regenerated when the commit's PIConGPU pin (the pic-create
+# template), the profile (PICSRC feeds pic-create's tool path), or the
+# parameter overlay changes. The overlay prerequisites are the concrete
+# *.param files plus the three param directories (their mtime changes when a
+# file is added or removed, so a newly added parameter file is picked up).
 #
-# The build is skipped while the input, the mallocMC pin (the headers are
-# compiled into the binary), the profile content, the build flags and the
-# toolchain versions are all unchanged; targeting the binary itself also
-# covers a manually deleted bin/picongpu.
+# The build is skipped while the input, the commit's mallocMC pin (the
+# headers are compiled into the binary), the profile content, the build
+# flags and the toolchain versions are all unchanged; targeting the binary
+# itself also covers a manually deleted bin/picongpu.
 define pair_rules
-build/$(3)/.input-stamp: $(PICONGPU_STAMP) $(PROFILE_ENV_STAMP) \
+build/$(4)/.input-stamp: $(PICONGPU_STAMP_$(1)) $(PROFILE_ENV_STAMP) \
+	$(wildcard $(PARAM_DIR)/$(3)/*.param) \
 	$(wildcard $(PARAM_DIR)/$(2)/*.param) \
-	$(wildcard $(PARAM_DIR)/$(1)/*.param) \
-	$(wildcard $(PARAM_DIR)/$(1)/$(2)/*.param) \
+	$(wildcard $(PARAM_DIR)/$(2)/$(3)/*.param) \
+	$(if $(wildcard $(PARAM_DIR)/$(3)/.),$(PARAM_DIR)/$(3)) \
 	$(if $(wildcard $(PARAM_DIR)/$(2)/.),$(PARAM_DIR)/$(2)) \
-	$(if $(wildcard $(PARAM_DIR)/$(1)/.),$(PARAM_DIR)/$(1)) \
-	$(if $(wildcard $(PARAM_DIR)/$(1)/$(2)/.),$(PARAM_DIR)/$(1)/$(2))
-	@echo "Preparing input build/$(3) ..."
-	@rm -rf build/$(3)
-	@mkdir -p build/$(3)
+	$(if $(wildcard $(PARAM_DIR)/$(2)/$(3)/.),$(PARAM_DIR)/$(2)/$(3))
+	@echo "Preparing input build/$(4) ..."
+	@rm -rf build/$(4)
+	@mkdir -p build/$(4)
 	@source "$(PROFILE)"
-	pic-create "$(PICONGPU_ABS)/share/picongpu/examples/$(1)" "build/$(3)"
+	pic-create "$(PICONGPU_ABS)/share/picongpu/examples/$(2)" "build/$(4)"
 	# The algorithm's mallocMC.param (the creation policy), the example's
 	# parameters, and any per-(example, algorithm) overrides; later levels
 	# win on name clashes.
-	find $(PARAM_DIR)/* -type f -wholename '$(PARAM_DIR)/$(2)/*.param' -exec cp -v {} "build/$(3)/include/picongpu/param/" ';'
-	find $(PARAM_DIR)/* -type f -wholename '$(PARAM_DIR)/$(1)/*.param' -exec cp -v {} "build/$(3)/include/picongpu/param/" ';'
-	find $(PARAM_DIR)/* -type f -wholename '$(PARAM_DIR)/$(1)/$(2)/*.param' -exec cp -v {} "build/$(3)/include/picongpu/param/" ';'
-	@printf 'input ready for %s/%s\n' "$(1)" "$(2)" >"build/$(3)/.input-stamp"
-	@echo "Prepared input build/$(3)."
+	find $(PARAM_DIR)/* -type f -wholename '$(PARAM_DIR)/$(3)/*.param' -exec cp -v {} "build/$(4)/include/picongpu/param/" ';'
+	find $(PARAM_DIR)/* -type f -wholename '$(PARAM_DIR)/$(2)/*.param' -exec cp -v {} "build/$(4)/include/picongpu/param/" ';'
+	find $(PARAM_DIR)/* -type f -wholename '$(PARAM_DIR)/$(2)/$(3)/*.param' -exec cp -v {} "build/$(4)/include/picongpu/param/" ';'
+	@printf 'input ready for %s\n' "$(4)" >"build/$(4)/.input-stamp"
+	@echo "Prepared input build/$(4)."
 
-build/$(3)/bin/picongpu: build/$(3)/.input-stamp $(MALLOCMC_STAMP) $(PROFILE_ENV_STAMP) $(TOOLCHAIN_STAMP) $(FLAGS_STAMP)
+build/$(4)/bin/picongpu: build/$(4)/.input-stamp $(MALLOCMC_STAMP_$(1)) $(PROFILE_ENV_STAMP) $(TOOLCHAIN_STAMP) $(FLAGS_STAMP)
 	@source "$(PROFILE)"
-	cd "build/$(3)"
-	export CMAKE_PREFIX_PATH="$(MALLOCMC_ABS):$${CMAKE_PREFIX_PATH:-}"
+	cd "build/$(4)"
+	export CMAKE_PREFIX_PATH="$(MALLOCMC_ABS_$(1)):$${CMAKE_PREFIX_PATH:-}"
 	pic-build -c "$(FLAGS)"
 endef
 
-$(foreach p,$(PAIRS),$(eval $(call pair_rules,$(firstword $(subst /, ,$(p))),$(lastword $(subst /, ,$(p))),$(p))))
+$(foreach t,$(TRIPLES),$(eval $(call pair_rules,$(word 1,$(subst /,$(space),$(t))),$(word 2,$(subst /,$(space),$(t))),$(word 3,$(subst /,$(space),$(t))),$(t))))
 
 # --- run stamps: one per (combination, repetition) --------------------------
 #
-# A run is one (example, algorithm) build through one (malloc delay, free
-# delay) combination: the example's whole flag lines once (the structured
-# flag_lines of config.json), with the combination's delays in the
-# environment. The sweep order is example, then algorithm, then repetition,
-# and within a repetition the combination order of `config.py list run-matrix`,
-# so every repetition is a full sweep and when REPEATS is finished, every
-# build has finished it.
+# A run is one (commit, example, algorithm) build through one (malloc delay,
+# free delay) combination: the example's whole flag lines once (the
+# structured flag_lines of config.json), with the combination's delays in
+# the environment. The sweep order is commit, then example, then algorithm,
+# then repetition, and within a repetition the combination order of
+# `config.py list run-matrix`, so every repetition is a full sweep and when
+# REPEATS is finished, every build has finished it.
 #
 # The stamp is the record that the run happened (its content is the
 # run's log paths, one per line, i.e. the paths of its current vintage),
@@ -322,16 +355,35 @@ $(foreach p,$(PAIRS),$(eval $(call pair_rules,$(firstword $(subst /, ,$(p))),$(l
 # explicit target per (combination, repetition).
 REPS := $(strip $(shell seq 1 '$(REPEATS)' 2>/dev/null))
 
-# $1 = malloc delay (ns), $2 = free delay (ns), $3 = example, $4 = algorithm,
-# $5 = repetition number. The recipe carries no shell of its own (the rule
-# is generated by $(eval $(call ...)) and is therefore expanded twice), it
-# just hands the parameters to run_stamp.sh, which does the rest.
+# COMMIT restricts a `runs`/`full`/`sweep-status`/`clean-runs` invocation to
+# one commit (the slurm case: parallelise the commits across nodes; the
+# single-commit case is the default). Like MACHINE, it is an invocation
+# value, not a configuration key.
+ifeq ($(origin COMMIT),environment)
+COMMIT =
+endif
+COMMIT ?=
+ifneq ($(filter runs full sweep-status clean-runs,$(MAKECMDGOALS)),)
+  ifneq ($(strip $(COMMIT)),)
+    ifeq ($(filter $(COMMIT),$(COMMITS)),$(COMMIT))
+    else
+      $(error specify COMMIT=<name> from the config commits list, e.g. make runs MACHINE=hal COMMIT=default (got '$(COMMIT)'))
+    endif
+  endif
+endif
+RUN_COMMITS := $(if $(strip $(COMMIT)),$(strip $(COMMIT)),$(COMMITS))
+
+# $1 = commit, $2 = example, $3 = algorithm, $4 = malloc delay (ns),
+# $5 = free delay (ns), $6 = repetition number. The recipe carries no shell
+# of its own (the rule is generated by $(eval $(call ...)) and is therefore
+# expanded twice), it just hands the parameters to run_stamp.sh, which does
+# the rest.
 define run_stamp_rules
-run-stamps/$(MACHINE)/$(3)/$(4)/$(1)_$(2)/rep-$(5).stamp: build/flag-lines.$(3).stamp
-	@bash run_stamp.sh "$(MACHINE)" "$(REPEATS)" "$(3)" "$(4)" "$(1)" "$(2)" "$(5)"
+run-stamps/$(MACHINE)/$(1)/$(2)/$(3)/$(4)_$(5)/rep-$(6).stamp: build/flag-lines.$(2).stamp
+	@bash run_stamp.sh "$(MACHINE)" "$(REPEATS)" "$(1)" "$(2)" "$(3)" "$(4)" "$(5)" "$(6)"
 endef
 
-$(foreach c,$(COMBOS),$(foreach e,$(EXAMPLES),$(foreach a,$(ALGORITHMS),$(foreach r,$(REPS),$(eval $(call run_stamp_rules,$(firstword $(subst _, ,$(c))),$(lastword $(subst _, ,$(c))),$(e),$(a),$(r)))))))
+$(foreach c,$(RUN_COMMITS),$(foreach e,$(EXAMPLES),$(foreach a,$(ALGORITHMS),$(foreach m,$(COMBOS),$(foreach r,$(REPS),$(eval $(call run_stamp_rules,$(c),$(e),$(a),$(firstword $(subst _, ,$(m))),$(lastword $(subst _, ,$(m))),$(r))))))))
 
 # --- run targets -------------------------------------------------------------
 
@@ -340,7 +392,7 @@ RUN_REPS := $(REPS)
 else
 RUN_REPS := $(REP)
 endif
-RUN_STAMPS := $(foreach e,$(EXAMPLES),$(foreach a,$(ALGORITHMS),$(foreach i,$(RUN_REPS),$(addprefix run-stamps/$(MACHINE)/$(e)/$(a)/,$(addsuffix /rep-$(i).stamp,$(COMBOS))))))
+RUN_STAMPS := $(foreach c,$(RUN_COMMITS),$(foreach e,$(EXAMPLES),$(foreach a,$(ALGORITHMS),$(foreach i,$(RUN_REPS),$(addprefix run-stamps/$(MACHINE)/$(c)/$(e)/$(a)/,$(addsuffix /rep-$(i).stamp,$(COMBOS)))))))
 
 # The fan-out: one sub-make per (combination, repetition) stamp, in sweep
 # order, serially (one GPU; -j cannot parallelize a single recipe). A stamp
@@ -366,14 +418,14 @@ runs:
 	fi
 	@STAMPED=0
 	@for stamp in $(RUN_STAMPS); do
-	  EX=$$(printf '%s\n' "$$stamp" | cut -d/ -f3)
+	  EX=$$(printf '%s\n' "$$stamp" | cut -d/ -f4)
 	  if [ -f "$$stamp" ] && [ ! "build/flag-lines.$$EX.stamp" -nt "$$stamp" ]; then
 	    STAMPED=$$(($$STAMPED + 1))
 	    continue
 	  fi
 	  $(MAKE) --no-print-directory "$$stamp"
 	done
-	@echo "runs [$(MACHINE)]: $${STAMPED} of $(words $(RUN_STAMPS)) runs already stamped."
+	@echo "runs [$(MACHINE)]: $${STAMPED} of $(words $(RUN_STAMPS)) runs already stamped${if $(COMMIT), (commit $(COMMIT))}."
 
 # The one-command machine-side flow: build the harness, then run the whole
 # series. The analysis (figures, summary) stays a plain `make`, which is
@@ -382,14 +434,20 @@ full:
 	@$(MAKE) build PROFILE="$$(python3 config.py get machines.$(MACHINE).profile)" PARAM_DIR=param
 	@$(MAKE) runs
 
-# Remove the run stamps (of all machines, or of one): the next `make runs`
+# Remove the run stamps (of all machines, or of one; and, when a machine is
+# named together with a COMMIT, of just that commit's): the next `make runs`
 # then repeats those series, as a new vintage next to the existing logs.
 # No log is ever removed by make.
 clean-runs:
 	@if [ -n "$(MACHINE)" ]; then
 	  python3 config.py get "machines.$(MACHINE).output" >/dev/null || { echo "make clean-runs: MACHINE=$(MACHINE) is not in the config machines table" >&2; exit 1; }
-	  rm -rf "run-stamps/$(MACHINE)"
-	  echo "removed run-stamps/$(MACHINE)"
+	  if [ -n "$(COMMIT)" ]; then
+	    rm -rf "run-stamps/$(MACHINE)/$(COMMIT)"
+	    echo "removed run-stamps/$(MACHINE)/$(COMMIT)"
+	  else
+	    rm -rf "run-stamps/$(MACHINE)"
+	    echo "removed run-stamps/$(MACHINE)"
+	  fi
 	else
 	  rm -rf run-stamps
 	  echo "removed run-stamps"
@@ -434,8 +492,11 @@ check:
 	    "$$(python3 config.py list run-matrix arms | wc -l | tr -d ' ')" \
 	    "$$(python3 config.py list run-matrix arms | tr '\n' ' ' | sed 's/ *$$//')"
 	fi
-	@printf 'picongpu:   %s @ %s\n' "$(PICONGPU_ABS)" "$(PICONGPU_SHORT)"
-	@printf 'mallocmc:   %s @ %s\n' "$(MALLOCMC_ABS)" "$(MALLOCMC_SHORT)"
+	@printf 'builds:     %s (commit/example/algorithm triples)\n' "$(words $(BINARIES))"
+	@for c in $(COMMITS); do
+	  printf 'commit %-14s picongpu %s @ %s\n' "$$c" "$$(python3 config.py commit $$c picongpu path)" "$$(printf '%.8s' $$(python3 config.py commit $$c picongpu hash))"
+	  printf '             mallocmc %s @ %s\n' "$$(python3 config.py commit $$c mallocmc path)" "$$(printf '%.8s' $$(python3 config.py commit $$c mallocmc hash))"
+	done
 	@printf 'microbench: %s @ %s\n' "$(MICROBENCH_PATH)" \
 		"$$(git -C "$(MICROBENCH_PATH)" rev-parse --short HEAD 2>/dev/null || echo 'not initialised')"
 	# Each value comes through a double-quoted command substitution, so any
@@ -645,61 +706,69 @@ distclean: clean
 
 # --- harness dependency sources, environment, toolchain ---------------------
 
-# Clone and keep the pinned sources in sync. The phony driver runs on every
-# make invocation (a changed pin must be noticed even though the stamp
-# exists) and rewrites the stamp only when the checkout actually changed;
-# the stamp is what invalidates the downstream inputs and builds.
-picongpu-src:
+# Clone and keep each commit's pinned PIConGPU checkout in sync. The phony
+# driver runs on every make invocation (a changed pin must be noticed even
+# though the stamp exists) and rewrites the stamp only when the checkout
+# actually changed; the stamp is what invalidates the downstream inputs and
+# builds. One driver per commit (the checkout lives at
+# PICONGPU_ABS_$(1)). $1 = commit name.
+define picongpu_src_rules
+picongpu-src-$(1):
 	@mkdir -p src
-	@if [ -d "$(PICONGPU_ABS)/.git" ]; then
-	  if [ "$$(git -C "$(PICONGPU_ABS)" rev-parse HEAD)" != "$(PICONGPU_HASH)" ]; then
-	    echo "Updating $(PICONGPU_ABS) to $(PICONGPU_SHORT) ..."
-	    git -C "$(PICONGPU_ABS)" fetch --quiet
-	    git -C "$(PICONGPU_ABS)" checkout --quiet "$(PICONGPU_HASH)"
+	@if [ -d "$(PICONGPU_ABS_$(1))/.git" ]; then
+	  if [ "$$(git -C "$(PICONGPU_ABS_$(1))" rev-parse HEAD)" != "$(PICONGPU_HASH_$(1))" ]; then
+	    echo "Updating $(PICONGPU_ABS_$(1)) [$(1)] to $(PICONGPU_SHORT_$(1)) ..."
+	    git -C "$(PICONGPU_ABS_$(1))" fetch --quiet
+	    git -C "$(PICONGPU_ABS_$(1))" checkout --quiet "$(PICONGPU_HASH_$(1))"
 	  fi
-	  git -C "$(PICONGPU_ABS)" submodule update --init --force --quiet
-	  echo "Using $(PICONGPU_ABS) @ $(PICONGPU_SHORT)."
-	  if [ "$$(cat "$(PICONGPU_STAMP)" 2>/dev/null)" != "$(PICONGPU_HASH)" ]; then
-	    echo "$(PICONGPU_HASH)" >"$(PICONGPU_STAMP)"
+	  git -C "$(PICONGPU_ABS_$(1))" submodule update --init --force --quiet
+	  echo "Using $(PICONGPU_ABS_$(1)) [$(1)] @ $(PICONGPU_SHORT_$(1))."
+	  if [ "$$(cat "$(PICONGPU_STAMP_$(1))" 2>/dev/null)" != "$(PICONGPU_HASH_$(1))" ]; then
+	    echo "$(PICONGPU_HASH_$(1))" >"$(PICONGPU_STAMP_$(1))"
 	  fi
 	else
-	  if [ -e "$(PICONGPU_ABS)" ]; then
-	    echo "Replacing $(PICONGPU_ABS) (not a git checkout) ..."
-	    rm -rf "$(PICONGPU_ABS)"
+	  if [ -e "$(PICONGPU_ABS_$(1))" ]; then
+	    echo "Replacing $(PICONGPU_ABS_$(1)) [$(1)] (not a git checkout) ..."
+	    rm -rf "$(PICONGPU_ABS_$(1))"
 	  fi
-	  echo "Cloning $(PICONGPU_ABS) @ $(PICONGPU_SHORT) ..."
-	  git clone "$(PICONGPU_URL)" "$(PICONGPU_ABS)"
-	  git -C "$(PICONGPU_ABS)" checkout "$(PICONGPU_HASH)"
-	  git -C "$(PICONGPU_ABS)" submodule init
-	  git -C "$(PICONGPU_ABS)" submodule update
-	  echo "$(PICONGPU_HASH)" >"$(PICONGPU_STAMP)"
+	  echo "Cloning $(PICONGPU_ABS_$(1)) [$(1)] @ $(PICONGPU_SHORT_$(1)) ..."
+	  git clone "$(PICONGPU_URL_$(1))" "$(PICONGPU_ABS_$(1))"
+	  git -C "$(PICONGPU_ABS_$(1))" checkout "$(PICONGPU_HASH_$(1))"
+	  git -C "$(PICONGPU_ABS_$(1))" submodule init
+	  git -C "$(PICONGPU_ABS_$(1))" submodule update
+	  echo "$(PICONGPU_HASH_$(1))" >"$(PICONGPU_STAMP_$(1))"
 	fi
+endef
+$(foreach c,$(COMMITS),$(eval $(call picongpu_src_rules,$(c))))
 
-# mallocMC lives inside the picongpu tree, so its clone waits for the
-# picongpu checkout to exist.
-mallocmc-src: picongpu-src
-	@if [ -d "$(MALLOCMC_ABS)/.git" ]; then
-	  if [ "$$(git -C "$(MALLOCMC_ABS)" rev-parse HEAD)" != "$(MALLOCMC_HASH)" ]; then
-	    echo "Updating $(MALLOCMC_ABS) to $(MALLOCMC_SHORT) ..."
-	    git -C "$(MALLOCMC_ABS)" fetch --quiet
-	    git -C "$(MALLOCMC_ABS)" checkout --quiet "$(MALLOCMC_HASH)"
+# mallocMC lives inside the commit's picongpu tree, so its clone waits for
+# that commit's picongpu checkout to exist. $1 = commit name.
+define mallocmc_src_rules
+mallocmc-src-$(1): picongpu-src-$(1)
+	@if [ -d "$(MALLOCMC_ABS_$(1))/.git" ]; then
+	  if [ "$$(git -C "$(MALLOCMC_ABS_$(1))" rev-parse HEAD)" != "$(MALLOCMC_HASH_$(1))" ]; then
+	    echo "Updating $(MALLOCMC_ABS_$(1)) [$(1)] to $(MALLOCMC_SHORT_$(1)) ..."
+	    git -C "$(MALLOCMC_ABS_$(1))" fetch --quiet
+	    git -C "$(MALLOCMC_ABS_$(1))" checkout --quiet "$(MALLOCMC_HASH_$(1))"
 	  fi
-	  echo "Using $(MALLOCMC_ABS) @ $(MALLOCMC_SHORT)."
-	  if [ "$$(cat "$(MALLOCMC_STAMP)" 2>/dev/null)" != "$(MALLOCMC_HASH)" ]; then
-	    echo "$(MALLOCMC_HASH)" >"$(MALLOCMC_STAMP)"
+	  echo "Using $(MALLOCMC_ABS_$(1)) [$(1)] @ $(MALLOCMC_SHORT_$(1))."
+	  if [ "$$(cat "$(MALLOCMC_STAMP_$(1))" 2>/dev/null)" != "$(MALLOCMC_HASH_$(1))" ]; then
+	    echo "$(MALLOCMC_HASH_$(1))" >"$(MALLOCMC_STAMP_$(1))"
 	  fi
 	else
-	  if [ -e "$(MALLOCMC_ABS)" ]; then
-	    echo "Replacing $(MALLOCMC_ABS) (not a git checkout) ..."
-	    rm -rf "$(MALLOCMC_ABS)"
+	  if [ -e "$(MALLOCMC_ABS_$(1))" ]; then
+	    echo "Replacing $(MALLOCMC_ABS_$(1)) [$(1)] (not a git checkout) ..."
+	    rm -rf "$(MALLOCMC_ABS_$(1))"
 	  fi
-	  echo "Cloning $(MALLOCMC_ABS) @ $(MALLOCMC_SHORT) ..."
-	  git clone "$(MALLOCMC_URL)" "$(MALLOCMC_ABS)"
-	  git -C "$(MALLOCMC_ABS)" checkout "$(MALLOCMC_HASH)"
-	  git -C "$(MALLOCMC_ABS)" submodule init
-	  git -C "$(MALLOCMC_ABS)" submodule update
-	  echo "$(MALLOCMC_HASH)" >"$(MALLOCMC_STAMP)"
+	  echo "Cloning $(MALLOCMC_ABS_$(1)) [$(1)] @ $(MALLOCMC_SHORT_$(1)) ..."
+	  git clone "$(MALLOCMC_URL_$(1))" "$(MALLOCMC_ABS_$(1))"
+	  git -C "$(MALLOCMC_ABS_$(1))" checkout "$(MALLOCMC_HASH_$(1))"
+	  git -C "$(MALLOCMC_ABS_$(1))" submodule init
+	  git -C "$(MALLOCMC_ABS_$(1))" submodule update
+	  echo "$(MALLOCMC_HASH_$(1))" >"$(MALLOCMC_STAMP_$(1))"
 	fi
+endef
+$(foreach c,$(COMMITS),$(eval $(call mallocmc_src_rules,$(c))))
 
 # The microbenchmark suite is a git submodule (the microbench section of
 # config.json), pinned by the gitlink of the repository HEAD: the driver
@@ -730,16 +799,19 @@ microbench-src:
 	fi
 	@echo "Using $(MICROBENCH_PATH) @ $$(printf '%.8s' "$$(git -C "$(MICROBENCH_PATH)" rev-parse HEAD)")."
 
-# The stamp files are side effects of the phony drivers above; the trivial
-# recipes only tie them into the dependency graph (their mtime is what the
-# inputs and builds key off). The recipe is what matters: make refreshes a
-# target's mtime after running its recipe, but not for recipe-less targets,
-# so a pin change (a rewritten stamp) would not invalidate the dependents
-# otherwise.
-$(PICONGPU_STAMP): picongpu-src
+# The stamp files are side effects of the per-commit phony drivers above;
+# the trivial recipes only tie them into the dependency graph (their mtime
+# is what the inputs and builds key off). The recipe is what matters: make
+# refreshes a target's mtime after running its recipe, but not for
+# recipe-less targets, so a pin change (a rewritten stamp) would not
+# invalidate the dependents otherwise. $1 = commit name.
+define stamp_rules
+$(PICONGPU_STAMP_$(1)): picongpu-src-$(1)
 	@true
-$(MALLOCMC_STAMP): mallocmc-src
+$(MALLOCMC_STAMP_$(1)): mallocmc-src-$(1)
 	@true
+endef
+$(foreach c,$(COMMITS),$(eval $(call stamp_rules,$(c))))
 $(MICROBENCH_STAMP): microbench-src
 	@true
 

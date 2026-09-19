@@ -111,8 +111,36 @@ def _git_state() -> dict[str, object]:
     return state
 
 
-def _pins() -> dict[str, str]:
-    """Return the dependency pins from `config.json`.
+def _commit_dependency(config: dict, commit: str | None) -> dict | None:
+    """Return the {picongpu, mallocmc} pair of one commit (or the legacy one).
+
+    Args:
+        config: the parsed `config.json`.
+        commit: the logical commit name, or None (legacy / session mode).
+
+    Returns:
+        dict | None: the dependency-pair mapping, or None when absent.
+
+    """
+    commits = config.get("commits")
+    if isinstance(commits, list) and commit:
+        for entry in commits:
+            if isinstance(entry, dict) and entry.get("name") == commit:
+                return {dep: entry.get(dep) for dep in ("picongpu", "mallocmc")}
+    dependencies = config.get("dependencies")
+    return dependencies if isinstance(dependencies, dict) else None
+
+
+def _pins(commit: str | None) -> dict[str, str]:
+    """Return the dependency pins of one commit (or the legacy pair).
+
+    The pins describe the binary that ran, so they are read from the run's
+    commit (the `commits` entry named `--commit`, when set) rather than a
+    global `dependencies` block; a config without a `--commit` (or with a
+    legacy `dependencies` pair) falls back to the legacy pair.
+
+    Args:
+        commit: the logical commit name the binary was built from, or None.
 
     Returns:
         dict: the full pins of `picongpu` and `mallocmc` (at their
@@ -124,13 +152,15 @@ def _pins() -> dict[str, str]:
         config = json.loads(Path("config.json").read_text(encoding="utf-8"))
     except OSError, json.JSONDecodeError:
         return pins
-    dependencies = config.get("dependencies") if isinstance(config, dict) else None
-    if not isinstance(dependencies, dict):
+    if not isinstance(config, dict):
+        return pins
+    dependency = _commit_dependency(config, commit)
+    if not isinstance(dependency, dict):
         return pins
     for name in pins:
-        dependency = dependencies.get(name)
-        if isinstance(dependency, dict) and isinstance(dependency.get("hash"), str):
-            pins[name] = dependency["hash"]
+        spec = dependency.get(name)
+        if isinstance(spec, dict) and isinstance(spec.get("hash"), str):
+            pins[name] = spec["hash"]
     return pins
 
 
@@ -373,6 +403,7 @@ def _run_block(args: argparse.Namespace) -> dict[str, object]:
     return {
         "setup": args.example,
         "algorithm": args.algorithm,
+        "commit": args.commit,
         "delays": [args.malloc_delay, args.free_delay],
         "rep": args.rep,
         "repeats": args.repeats,
@@ -382,13 +413,15 @@ def _run_block(args: argparse.Namespace) -> dict[str, object]:
     }
 
 
-def _metadata(kind: str, machine: str, extra: dict[str, object]) -> dict[str, object]:
+def _metadata(kind: str, machine: str, extra: dict[str, object], commit: str | None = None) -> dict[str, object]:
     """Assemble the metadata dict.
 
     Args:
         kind: the metadata kind ("run" or "setup").
         machine: the machine label from the config machines table.
         extra: the kind-specific blocks (binary, build, run).
+        commit: the logical commit name the binary was built from (run mode
+            only); the dependency pins it selects.
 
     Returns:
         dict: the metadata, ready for `json.dumps`.
@@ -407,7 +440,7 @@ def _metadata(kind: str, machine: str, extra: dict[str, object]) -> dict[str, ob
     slurm_job = os.environ.get("SLURM_JOB_ID")
     if slurm_job:
         metadata["slurm_job"] = slurm_job
-    metadata["pins"] = _pins()
+    metadata["pins"] = _pins(commit)
     metadata["hw"] = _hardware()
     metadata.update(extra)
     return metadata
@@ -429,6 +462,7 @@ def main() -> int:
     run.add_argument("--rep", type=int, required=True)
     run.add_argument("--example", required=True)
     run.add_argument("--algorithm", required=True)
+    run.add_argument("--commit", required=True)
     run.add_argument("--malloc-delay", type=int, required=True)
     run.add_argument("--free-delay", type=int, required=True)
     run.add_argument("--flag-line", required=True)
@@ -440,6 +474,7 @@ def main() -> int:
 
     args = parser.parse_args()
     extra: dict[str, object] = {}
+    commit = getattr(args, "commit", None)
     if args.command == "run":
         kind = "run"
         extra["binary"] = _binary_block(args.binary)
@@ -447,7 +482,7 @@ def main() -> int:
         extra["run"] = _run_block(args)
     else:
         kind = "setup"
-    print(METADATA_PREFIX + json.dumps(_metadata(kind, args.machine, extra), separators=(",", ":")))
+    print(METADATA_PREFIX + json.dumps(_metadata(kind, args.machine, extra, commit), separators=(",", ":")))
     return 0
 
 

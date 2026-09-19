@@ -62,6 +62,7 @@ import performance_model
 from make_microbench import ALLOC_COST_COLUMNS, ALLOC_COST_MIXED_COLUMNS, ALLOC_COST_SCALING_COLUMNS
 from results_io import (
     RESULTS,
+    RUN_DIMENSION_COLUMNS,
     RUN_METRIC_COLUMNS,
     RUN_NOMINAL_COLUMNS,
     RUN_SOURCE_COLUMNS,
@@ -96,6 +97,7 @@ LEGACY_H5 = Path(__file__).resolve().parent.parent / "legacy" / "legacy_results.
 RUNS_COLUMNS = [
     "machine",
     "hardware",
+    *RUN_DIMENSION_COLUMNS,
     *GROUP_KEYS,
     MALLOC_DELAY,
     FREE_DELAY,
@@ -109,6 +111,7 @@ RUNS_COLUMNS = [
 ]
 GROUP_STATS_COLUMNS = [
     "machine",
+    "dep_commit",
     *GROUP_KEYS,
     MALLOC_DELAY,
     FREE_DELAY,
@@ -336,6 +339,29 @@ def _superseded_flags(log_dir: Path, label: str, stamps_root: Path) -> dict[str,
     return flags
 
 
+def _fill_run_columns(frame: pd.DataFrame) -> None:
+    """Fill the runs-table columns a parsed frame does not carry at all.
+
+    Args:
+        frame: the parsed runs frame (mutated in place).
+
+    """
+    if frame.empty:
+        return
+    for column in RUN_METRIC_COLUMNS:
+        if column not in frame:
+            frame[column] = np.nan
+    for column in RUN_DIMENSION_COLUMNS:
+        if column not in frame:
+            frame[column] = ""
+    for column in RUN_SOURCE_COLUMNS:
+        if column not in frame:
+            frame[column] = ""
+    for column in RUN_NOMINAL_COLUMNS:
+        if column not in frame:
+            frame[column] = np.nan
+
+
 def read_all_runs(sweep: dict[str, dict], legacy_frame: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     """Parse the sweep machines' run logs and the frozen legacy runs.
 
@@ -376,12 +402,7 @@ def read_all_runs(sweep: dict[str, dict], legacy_frame: pd.DataFrame) -> tuple[p
         # log-derived columns the sweep machine frames have; default them
         # (the frozen runs are superseded by nothing).
         legacy_rows = legacy_frame.copy()
-        for column in RUN_SOURCE_COLUMNS:
-            if column not in legacy_rows:
-                legacy_rows[column] = ""
-        for column in RUN_NOMINAL_COLUMNS:
-            if column not in legacy_rows:
-                legacy_rows[column] = np.nan
+        _fill_run_columns(legacy_rows)
         legacy_rows["superseded"] = 0
         frames.append(legacy_rows)
     h5_machines = set() if legacy_frame.empty else set(legacy_frame["machine"])
@@ -448,19 +469,7 @@ def _parse_dir(log_dir: Path) -> pd.DataFrame:
     # `name` (the log's absolute path) is kept: the caller derives the
     # run's vintage state from its file name and the run stamps.
     frame = frame.rename(columns={"runtime in s": RUN_TIME})
-    # The records carry the metrics and provenance the log (its metadata,
-    # its trace) holds; a column a log carries not at all (no `-s` on the
-    # flags line, no repetition number in the metadata) is filled here so
-    # every frame matches the runs table.
-    for column in RUN_METRIC_COLUMNS:
-        if column not in frame:
-            frame[column] = np.nan
-    for column in RUN_SOURCE_COLUMNS:
-        if column not in frame:
-            frame[column] = ""
-    for column in RUN_NOMINAL_COLUMNS:
-        if column not in frame:
-            frame[column] = np.nan
+    _fill_run_columns(frame)
     return frame
 
 
@@ -496,7 +505,14 @@ def group_runtime_stats(runs: pd.DataFrame) -> pd.DataFrame:
         return _empty_table(GROUP_STATS_COLUMNS)
     keys = [
         column
-        for column in ["machine", *GROUP_KEYS, MALLOC_DELAY, FREE_DELAY, "configuration"]
+        for column in [
+            "machine",
+            *RUN_DIMENSION_COLUMNS,
+            *GROUP_KEYS,
+            MALLOC_DELAY,
+            FREE_DELAY,
+            "configuration",
+        ]
         if column in runs.columns
     ]
     return _describe_grouped(runs, keys)
@@ -1441,6 +1457,7 @@ def main(output: Path, configuration: str | None = None) -> None:
         "sweep_machines": ",".join(sweep_labels),
         "machine_titles": "; ".join(f"{label}: {sweep[label]['title']}" for label in sweep_labels),
         "algorithm_order": ",".join(str(algorithm) for algorithm in config.get("algorithms", [])),
+        "commit_order": ",".join(str(c["name"]) for c in config.get("commits", []) if isinstance(c, dict)),
         "excluded_sources": json.dumps(legacy_input["excluded_sources"], sort_keys=True),
         "excluded_runs": str(legacy_input["excluded_runs"]),
         "microbench_source": microbench_input["source"],

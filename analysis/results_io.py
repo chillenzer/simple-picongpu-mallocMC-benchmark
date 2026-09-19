@@ -65,6 +65,12 @@ RUN_SOURCE_COLUMNS = (
 # re-run of the same nominal repetition keeps its vintages apart from the
 # true repetition numbers this way.
 RUN_NOMINAL_COLUMNS = ("nominal_rep",)
+# The benchmark dimensions carried on a run (from the metadata's run block),
+# distinct from the provenance `commit` column (the benchmark-repo HEAD):
+# `dep_commit` is the logical commit name the binary was built from (the
+# metadata's `run.commit`) and `config` the allocator config name
+# (`run.config`). Legacy rows carry the empty string for both.
+RUN_DIMENSION_COLUMNS = ("dep_commit", "config")
 # The vintage state of a run, derived from the run stamps (which list the
 # log paths of the identity's current vintage): 1 where the identity's
 # stamp exists but does not list the run's log, 0 otherwise.

@@ -7,9 +7,11 @@ The build harness (the Makefile and the per-machine log_*.sh launchers)
 parses no config format itself; it calls this helper to look up individual
 values:
 
-    python3 config.py get dependencies.picongpu.hash
+    python3 config.py get machines.hal.hardware
     python3 config.py list examples
     python3 config.py list run-matrix [initial|arms]
+    python3 config.py list commits
+    python3 config.py commit <name> <picongpu|mallocmc> <url|hash|path>
     python3 config.py check
     python3 config.py flag-lines <Example>
 
@@ -33,6 +35,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 CONFIG_PATH = Path("config.json")
 
@@ -41,7 +44,7 @@ CONFIG_PATH = Path("config.json")
 SWEEP_PHASES = {"initial", "arms"}
 
 
-def _fail(message: str) -> None:
+def _fail(message: str) -> NoReturn:
     """Print `message` to stderr and exit with status 1.
 
     Args:
@@ -289,19 +292,160 @@ def _check_delays(data: dict, errors: list[str]) -> None:
         errors.append("delays.joint.values: must be a subset of delays.arms.values (optional, may be empty)")
 
 
-def _check_build(data: dict, errors: list[str]) -> None:
-    """Validate the dependency pins and the build flags.
+def _check_dep_spec(dep: object, dotted: str, errors: list[str]) -> None:
+    """Validate one dependency pin ({url, hash, path?}).
+
+    Args:
+        dep: the dependency mapping (checked here).
+        dotted: the dotted key path (for the error messages).
+        errors: accumulates the problems found.
+
+    """
+    if not isinstance(dep, dict):
+        errors.append(f"{dotted}: must be a {{url, hash, path?}} mapping")
+        return
+    url = dep.get("url")
+    if not isinstance(url, str) or not url:
+        errors.append(f"{dotted}.url: must be a non-empty string")
+    path = dep.get("path")
+    if path is not None and (not isinstance(path, str) or not path):
+        errors.append(f"{dotted}.path: must be a non-empty string or omitted (defaults to src/<commit>/...)")
+    hash_ = dep.get("hash")
+    if not isinstance(hash_, str) or not re.fullmatch(r"[0-9a-f]{40}", hash_):
+        errors.append(f"{dotted}.hash: must be a 40-hex git commit")
+
+
+def _check_commit_entry(commit: object, dotted: str, names: set[str], errors: list[str]) -> None:
+    """Validate one `commits` entry ({name, picongpu, mallocmc}).
+
+    Args:
+        commit: the commit mapping (checked here).
+        dotted: the dotted key path (for the error messages).
+        names: the commit names seen so far (accumulated for the uniqueness
+            check).
+        errors: accumulates the problems found.
+
+    """
+    if not isinstance(commit, dict):
+        errors.append(f"{dotted}: each commit must be a {{name, picongpu, mallocmc}} mapping")
+        return
+    name = commit.get("name")
+    if not isinstance(name, str) or not name:
+        errors.append(f"{dotted}.name: must be a non-empty string")
+    elif name in names:
+        errors.append(f"{dotted}.name: commit name '{name}' is not unique")
+    else:
+        names.add(name)
+    for dep in ("picongpu", "mallocmc"):
+        _check_dep_spec(commit.get(dep), f"{dotted}.{dep}", errors)
+
+
+def _check_commits(data: dict, errors: list[str]) -> None:
+    """Validate the `commits` list (the dependency pairs to build and run).
+
+    A `commit` is one {name, picongpu, mallocmc} pair: the logical commit
+    name the harness builds and runs, and the two dependency pins it uses.
+    When `commits` is absent the single legacy pair in `dependencies` is
+    synthesised as one commit `default` (a config with both is an error).
 
     Args:
         data: the parsed configuration.
         errors: accumulates the problems found.
 
     """
-    for name in ("picongpu", "mallocmc"):
-        for field in ("url", "path", "hash"):
-            dotted = f"dependencies.{name}.{field}"
-            if not isinstance(_walk(data, dotted), str):
-                errors.append(f"{dotted}: must be a string")
+    commits = _walk(data, "commits")
+    dependencies = _walk(data, "dependencies")
+    if commits is not None and dependencies is not None:
+        errors.append("use either 'commits' or the legacy 'dependencies' block, not both")
+        return
+    if commits is not None:
+        if not isinstance(commits, list) or not commits:
+            errors.append("commits: must be a non-empty list of {name, picongpu, mallocmc}")
+            return
+        names: set[str] = set()
+        for index, commit in enumerate(commits):
+            _check_commit_entry(commit, f"commits[{index}]", names, errors)
+        return
+    # Legacy single pair: validate it when present (a config with neither is
+    # still valid until the build needs the pins; the Makefile reads commits).
+    if dependencies is not None:
+        for dep in ("picongpu", "mallocmc"):
+            _check_dep_spec(
+                dependencies.get(dep) if isinstance(dependencies, dict) else None, f"dependencies.{dep}", errors
+            )
+
+
+def _commit_field(data: dict, commit_name: str, dep: str, field: str) -> str:
+    """Resolve one dependency field of one commit, defaulting its path.
+
+    Args:
+        data: the parsed configuration.
+        commit_name: the logical commit name to look up.
+        dep: the dependency ("picongpu" or "mallocmc").
+        field: the field ("url", "hash", or "path").
+
+    Returns:
+        str: the field's value, the path defaulted when omitted
+        (`src/<commit>/picongpu` / `.../thirdParty/mallocMC`).
+
+    """
+    for commit in effective_commits(data):
+        if commit.get("name") != commit_name:
+            continue
+        spec = commit.get(dep) if isinstance(commit.get(dep), dict) else {}
+        value = spec.get(field)
+        if field == "path" and (value is None or not value):
+            if dep == "picongpu":
+                return f"src/{commit_name}/picongpu"
+            return f"src/{commit_name}/picongpu/thirdParty/mallocMC"
+        if isinstance(value, str) and value:
+            return value
+        _fail(f"commit '{commit_name}' has no {dep}.{field}")
+    _fail(f"commit '{commit_name}' not found")
+
+
+def _cmd_commit_field(rest: list[str]) -> None:
+    """Print one dependency field of one commit (`commit <name> <dep> <field>`).
+
+    Args:
+        rest: the command line arguments after the "commit" subcommand.
+
+    """
+    if len(rest) != 3 or rest[1] not in {"picongpu", "mallocmc"} or rest[2] not in {"url", "hash", "path"}:
+        _fail("usage: config.py commit <commit-name> <picongpu|mallocmc> <url|hash|path>")
+    print(_commit_field(_load(), rest[0], rest[1], rest[2]))
+
+
+def effective_commits(data: dict) -> list[dict]:
+    """Return the commits to build and run (synthesising the legacy pair).
+
+    Args:
+        data: the parsed configuration.
+
+    Returns:
+        list: one {name, picongpu, mallocmc} mapping per commit, in
+        config order. When `commits` is absent, a single commit `default`
+        is synthesised from the legacy `dependencies` pair.
+
+    """
+    commits = _walk(data, "commits")
+    if isinstance(commits, list) and commits:
+        return [commit for commit in commits if isinstance(commit, dict)]
+    dependencies = _walk(data, "dependencies")
+    dependencies = dependencies if isinstance(dependencies, dict) else {}
+    return [{"name": "default", **{dep: dependencies.get(dep, {}) for dep in ("picongpu", "mallocmc")}}]
+
+
+def _check_build(data: dict, errors: list[str]) -> None:
+    """Validate the build flags.
+
+    The dependency pins are validated by `_check_commits`.
+
+    Args:
+        data: the parsed configuration.
+        errors: accumulates the problems found.
+
+    """
     if not isinstance(_walk(data, "build.cxx_flags"), str):
         errors.append("build.cxx_flags: must be a string")
     if not _is_str_list(_walk(data, "build.extra_cmake_flags"), non_empty=False):
@@ -542,6 +686,7 @@ def _cmd_check() -> None:
     _check_examples(data, errors)
     _check_algorithms(data, errors)
     _check_delays(data, errors)
+    _check_commits(data, errors)
     _check_build(data, errors)
     _check_machines(data, errors)
     _check_microbench(data, errors)
@@ -602,11 +747,27 @@ def _cmd_flag_lines(rest: list[str]) -> None:
     _fail(f"example '{name}' not found")
 
 
+def _print_named_objects(items: list[object], dotted: str, command: str) -> None:
+    """Print the `name` field of a list of objects (the `list commits` contract).
+
+    Args:
+        items: the list of objects to print the names of.
+        dotted: the dotted key path (for the error message).
+        command: the subcommand ("get" or "list").
+
+    """
+    if command == "get":
+        _fail(f"'{dotted}' is a list of objects; use `list {dotted}`")
+    for item in items:
+        print(item["name"] if isinstance(item, dict) else item)
+
+
 def _dispatch_key(command: str, rest: list[str]) -> None:
     """Dispatch one `get` or `list` over a dotted key path to its own output.
 
-    `run-matrix` and the examples list (objects now) have special printers;
-    everything else is a scalar (`get`) or a list of scalars (`list`).
+    `run-matrix` and the list-of-object keys (`commits`, `examples`) have
+    special printers; everything else is a scalar (`get`) or a list of
+    scalars (`list`).
 
     Args:
         command: the subcommand ("get" or "list").
@@ -621,14 +782,17 @@ def _dispatch_key(command: str, rest: list[str]) -> None:
     if len(rest) != 1:
         _fail(f"usage: config.py {command} <dotted.key>")
     dotted = rest[0]
+    if dotted == "commits":
+        # A config with a legacy `dependencies` block still lists its single
+        # synthesised commit `default`, so the names go through
+        # `effective_commits` (which applies the synthesis).
+        _print_named_objects(effective_commits(_load()), dotted, command)
+        return
     value = _lookup(_load(), dotted)
     if dotted == "examples":
         # The examples are objects; `list examples` prints the names only
-        # (the Makefile's contract) and `get` is not for a list of objects.
-        if command == "get":
-            _fail("'examples' is a list of objects; use `list examples`")
-        for example in value:
-            print(example["name"] if isinstance(example, dict) else example)
+        # (the Makefile's contract).
+        _print_named_objects(value, dotted, command)
         return
     if command == "get":
         _print_scalar(value, dotted)
@@ -671,8 +835,11 @@ def main() -> int:
     if command == "flag-lines":
         _cmd_flag_lines(rest)
         return 0
+    if command == "commit":
+        _cmd_commit_field(rest)
+        return 0
     if command not in {"get", "list"}:
-        _fail(f"unknown command '{command}' (expected get, list, flag-lines or check)")
+        _fail(f"unknown command '{command}' (expected get, list, flag-lines, commit or check)")
     _dispatch_key(command, rest)
     return 0
 
