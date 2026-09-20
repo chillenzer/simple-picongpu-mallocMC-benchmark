@@ -10,7 +10,7 @@ dataset per column: numeric columns are stored as float64 (int64 when the
 column carries no NaN), text columns as variable-length strings, and a
 missing text value is stored as ``""``. The fits' parameter vectors and
 covariances are stored next to their fit row, one subgroup each under
-``fits/cov/<machine>/<setup>/<algorithm>/<grid>``.
+``fits/cov/<machine>/<dep_commit>/<config>/<setup>/<algorithm>/<grid>``.
 
 The file's top-level attributes record the provenance: the creation time,
 the git commit, the source log directories, `algorithm_order` (the

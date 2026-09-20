@@ -7,10 +7,12 @@
 #
 # 1. The benchmark build harness (rewritten from setup.sh): clones the
 #    pinned PIConGPU and mallocMC into src/, prepares one input directory
-#    per (example, algorithm) (pic-create template + parameter overlay) and
-#    builds each one (pic-build). What to build (examples, algorithms,
-#    dependency pins, build flags) is read from config.json through
-#    config.py and validated up front:
+#    per (commit, example, algorithm, config) (pic-create template + a
+#    picongpu/param/mallocMC.param rendered from config.json's
+#    configs.<Algorithm>.<config> + parameter overlay) and builds each one
+#    (pic-build). What to build (commits, examples, algorithms, the allocator
+#    configs, build flags) is read from config.json through config.py and
+#    validated up front:
 #
 #      make build PROFILE=profiles/hal.sh PARAM_DIR=param   # clone + inputs + builds
 #      make check                                           # resolved configuration
@@ -39,8 +41,9 @@
 #    so rebuilding the binaries never invalidates finished runs (and
 #    `make clean` / `distclean` do not touch run-stamps/). Every run gets
 #    one self-contained log per grid run (one line of the example's flag
-#    lines), run_<machine>_<Ex>_<Algo>_m<M>_f<F>_r<I>_<line-sha8>_<time>.txt
-#    in the machine's output directory: a human one-liner `# run:` line,
+#    lines), run_<machine>_<commit8>_<Ex>_<Algo>_<config>_m<M>_f<F>_r<I>_<line-sha8>_<time>.txt
+#    in the machine's output directory (<commit8> is the commit's PIConGPU
+#    hash, <config> the allocator config): a human one-liner `# run:` line,
 #    the self-describing `# metadata:` JSON line emitted by logmeta.py
 #    (machine, commit, the pinned dependency hashes, the slurm job when
 #    running under slurm, the sha256 of the binary used, the build facts
@@ -67,6 +70,12 @@
 #    `make microbench-results` from the raw CSVs under microbenchmarks/
 #    data/ (see microbenchmarks/README.md); when it is absent (a fresh
 #    checkout without the machine data), the analysis runs without it.
+#    The PIConGPU figure families (the sweeps, the shared fits, the
+#    configs- and commits- comparison figures, and the setup figures) each
+#    read output/results.h5 and skip gracefully when their comparison axis
+#    has at most one distinct value (a single-config / single-commit checkout,
+#    or a baseline-only series for the sweep families): the configs- and
+#    commits- figures are the primary output of a baseline-only run series.
 #    The numbers are rebuilt from both on every invocation: make
 #    deliberately does not list files of the output/ or legacy/ data as
 #    prerequisites, because their names are machine-specific (run names,
