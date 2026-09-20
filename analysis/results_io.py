@@ -21,6 +21,7 @@ order), `sweep_machines` (the sweep machine labels, in config order) and
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -334,6 +335,44 @@ def sweep_machine_labels(file: h5py.File) -> list[str]:
 
     """
     return [label for label in str(file.attrs.get("sweep_machines", "")).split(",") if label]
+
+
+def commit_order(file: h5py.File) -> list[str]:
+    """Return the commit order, as recorded in the file (config name order).
+
+    A results file written before the commit dimension carries no
+    ``commit_order`` attribute; an empty list is returned then (there is at
+    most one commit in such data).
+
+    Args:
+        file: an opened results file.
+
+    Returns:
+        list[str]: the commit names, in order.
+
+    """
+    return [name for name in str(file.attrs.get("commit_order", "")).split(",") if name]
+
+
+def config_order(file: h5py.File) -> dict[str, list[str]]:
+    """Return the per-algorithm config order, as recorded in the file.
+
+    A results file written before the config dimension carries no
+    ``config_order`` attribute; an empty mapping is returned then (the
+    single-config data the figures compare against).
+
+    Args:
+        file: an opened results file.
+
+    Returns:
+        dict[str, list[str]]: algorithm -> ordered config names.
+
+    """
+    try:
+        order = json.loads(file.attrs.get("config_order", "{}"))
+    except json.JSONDecodeError:
+        return {}
+    return order if isinstance(order, dict) else {}
 
 
 def machine_titles(file: h5py.File) -> dict[str, str]:

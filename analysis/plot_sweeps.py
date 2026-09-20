@@ -298,7 +298,15 @@ def collect_fits(fits: pd.DataFrame, covs: dict) -> dict[tuple, Fit1d | Fit2d]:
     fits_by_key = {}
     for _, row in fits.iterrows():
         key = _group_key(tuple(row[k] for k in GROUP_KEYS))
-        cov = covs.get((row["setup"], row["algorithm"], grid_label(row["x"], row["y"], row["z"])))
+        cov = covs.get(
+            (
+                str(row["dep_commit"]),
+                str(row["config"]),
+                row["setup"],
+                row["algorithm"],
+                grid_label(row["x"], row["y"], row["z"]),
+            )
+        )
         if row["model"] == "2d" and all(
             pd.notna(row[k])
             for k in (
@@ -369,7 +377,9 @@ def collect_shared_fits(shared: pd.DataFrame, covs: dict) -> dict:
             continue
         if not all(pd.notna(row[k]) for k in ("W", "N_malloc", "N_free", "A_malloc", "A_free", "m0_ns", "f0_ns")):
             continue
-        cov = covs.get((row["setup"], grid_label(row["x"], row["y"], row["z"])))
+        cov = covs.get(
+            (str(row["dep_commit"]), str(row["config"]), row["setup"], grid_label(row["x"], row["y"], row["z"]))
+        )
         key = (row["setup"], row["algorithm"], *scen[1:])
         fits_by_key[key] = Fit2d(
             W=float(row["W"]),

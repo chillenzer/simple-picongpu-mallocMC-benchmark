@@ -27,6 +27,7 @@ import json
 import sys
 from pathlib import Path
 
+import h5py
 import pandas as pd
 from results_io import RESULTS, load_results, no_delay_mask, read_table, scenario_key, scenario_name
 
@@ -262,6 +263,80 @@ def _print_fits_ca(fits_ca: pd.DataFrame) -> None:
     )
 
 
+def _has_delay_sweep(runs: pd.DataFrame) -> bool:
+    """Whether a runs table spans a delay sweep (a non-baseline delay ladder).
+
+    Baseline-only series (only the (0, 0) combination, or no delay columns
+    at all) have no sweep, so the performance-model fit sections would be
+    empty; such a series is the common case for the comparison figures and
+    the zero-delay baselines are its headline.
+
+    Args:
+        runs: the parsed runs table of the results file.
+
+    Returns:
+        bool: True when the runs span at least one non-zero delay value.
+
+    """
+    for column in ("malloc_sleeptime", "free_sleeptime"):
+        if column not in runs.columns:
+            return False
+    non_zero = (runs["malloc_sleeptime"].fillna(0) != 0) | (runs["free_sleeptime"].fillna(0) != 0)
+    return bool(non_zero.any())
+
+
+def _print_machine_tables(
+    label: str, machine: object, runs: pd.DataFrame, group_stats: pd.DataFrame, *, raw: bool
+) -> None:
+    """Print one machine's parsed runs (when `raw`) and its group statistics.
+
+    Args:
+        label: the machine's display name (the empty label shows as "legacy").
+        machine: the machine's value in the runs table (the filter key).
+        runs: the full parsed runs table.
+        group_stats: the full group statistics table.
+        raw: also print the raw parsed runs.
+
+    """
+    if raw:
+        print_table(f"Parsed runs: {label}", runs[runs["machine"] == machine].to_string(index=False))
+    stats = group_stats[group_stats["machine"] == machine]
+    if len(stats):
+        print_table(f"Group statistics: {label}", stats.to_string(index=False))
+
+
+def _load_tables(file: h5py.File) -> tuple[dict[str, pd.DataFrame], dict, str | None]:
+    """Read every table a summary needs from an open results file, plus its attrs.
+
+    Args:
+        file: the open results file (an h5py handle).
+
+    Returns:
+        tuple: (the named tables, the excluded sources, the excluded-runs
+            count) read from the file's attributes.
+
+    """
+    micro = ("alloc_cost", "alloc_cost_mixed", "alloc_cost_scaling")
+    tables: dict[str, pd.DataFrame] = {
+        "runs": read_table(file, "runs"),
+        "group_stats": read_table(file, "group_stats"),
+        "fits": read_table(file, "fits"),
+        "fits_ca": read_table(file, "fits_ca") if "fits_ca" in file else pd.DataFrame(),
+        "shared_fits": read_table(file, "shared_fits") if "shared_fits" in file else pd.DataFrame(),
+        "absorption": read_table(file, "absorption") if "absorption" in file else pd.DataFrame(),
+        "foil": read_table(file, "foil"),
+        "foil_pvalue": read_table(file, "foil_pvalue"),
+        "khi": read_table(file, "khi"),
+    }
+    for name in micro:
+        tables[name] = read_table(file, name) if name in file else pd.DataFrame()
+    return (
+        tables,
+        json.loads(file.attrs.get("excluded_sources", "{}")),
+        file.attrs.get("excluded_runs"),
+    )
+
+
 def main(*, results: Path = RESULTS, raw: bool = False) -> int:
     """Print the summary tables of one results file.
 
@@ -279,21 +354,11 @@ def main(*, results: Path = RESULTS, raw: bool = False) -> int:
         print(f"{err}\nno results file: run `python3 analysis/compute_results.py` first", file=sys.stderr)
         return 1
     with file:
-        runs = read_table(file, "runs")
-        group_stats = read_table(file, "group_stats")
-        fits = read_table(file, "fits")
-        fits_ca = read_table(file, "fits_ca") if "fits_ca" in file else pd.DataFrame()
-        shared_fits = read_table(file, "shared_fits") if "shared_fits" in file else pd.DataFrame()
-        absorption = read_table(file, "absorption") if "absorption" in file else pd.DataFrame()
-        microbench = {
-            name: (read_table(file, name) if name in file else pd.DataFrame())
-            for name in ("alloc_cost", "alloc_cost_mixed", "alloc_cost_scaling")
-        }
-        foil = read_table(file, "foil")
-        foil_pvalue = read_table(file, "foil_pvalue")
-        khi = read_table(file, "khi")
-        excluded_sources = json.loads(file.attrs.get("excluded_sources", "{}"))
-        excluded_runs = file.attrs.get("excluded_runs")
+        tables, excluded_sources, excluded_runs = _load_tables(file)
+    runs = tables["runs"]
+    group_stats = tables["group_stats"]
+    fits = tables["fits"]
+    microbench = {name: tables[name] for name in ("alloc_cost", "alloc_cost_mixed", "alloc_cost_scaling")}
     if runs.empty:
         print("no runs found in the results file")
         # The microbenchmark tables are independent of the PIConGPU runs, so
@@ -310,27 +375,27 @@ def main(*, results: Path = RESULTS, raw: bool = False) -> int:
     for machine in runs["machine"].drop_duplicates():
         # The legacy paper-world runs carry no sweep machine (empty label);
         # they have no group statistics of their own.
-        label = machine if machine else "legacy"
-        if raw:
-            print_table(f"Parsed runs: {label}", runs[runs["machine"] == machine].to_string(index=False))
-        stats = group_stats[group_stats["machine"] == machine]
-        if len(stats):
-            print_table(f"Group statistics: {label}", stats.to_string(index=False))
-    print_table("Fits", fits.to_string(index=False, float_format=lambda v: f"{v:10.3g}"))
-    _print_fits_ca(fits_ca)
-    print_shared_fit_summary(shared_fits, fits)
-    print_fraction_summary(fits)
-    if len(absorption):
-        print_table(
-            "Absorbed delay per arm (d = plateau deficit in s, c = d/N in us per call)",
-            absorption.to_string(index=False, float_format=lambda v: f"{v:10.3g}"),
-        )
-    print_table("No-delay runtimes", runs[no_delay_mask(runs)].to_string(index=False))
+        _print_machine_tables(machine if machine else "legacy", machine, runs, group_stats, raw=raw)
+    baselines = runs[no_delay_mask(runs)]
+    if len(baselines):
+        print_table("No-delay runtimes", baselines.to_string(index=False))
+    if _has_delay_sweep(runs):
+        print_table("Fits", fits.to_string(index=False, float_format=lambda v: f"{v:10.3g}"))
+        _print_fits_ca(tables["fits_ca"])
+        print_shared_fit_summary(tables["shared_fits"], fits)
+        print_fraction_summary(fits)
+        if len(tables["absorption"]):
+            print_table(
+                "Absorbed delay per arm (d = plateau deficit in s, c = d/N in us per call)",
+                tables["absorption"].to_string(index=False, float_format=lambda v: f"{v:10.3g}"),
+            )
+    else:
+        print("\n(no delay sweep in this run series; performance-model fit sections skipped)")
     print_table(
         "Foil metadata",
-        foil.merge(foil_pvalue, on="hardware", how="left").to_string(index=False),
+        tables["foil"].merge(tables["foil_pvalue"], on="hardware", how="left").to_string(index=False),
     )
-    print_table("Khi metadata", khi.to_string(index=False))
+    print_table("Khi metadata", tables["khi"].to_string(index=False))
     _print_microbench(microbench)
     return 0
 

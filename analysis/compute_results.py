@@ -83,6 +83,11 @@ from scipy.stats import kruskal
 REFERENCE_ALGORITHM = "ScatterAlloc"
 # The two algorithms the paper figures compare for their significance tests.
 PAPER_ALGORITHMS = ("FlatterScatter", "ScatterAlloc")
+# The machine-level fit/baseline/absorption grouping keys: the group key
+# plus the two benchmark dimension columns (`dep_commit`, `config`), so the
+# sweep-machine numbers are per (commit, config) and the shared fit is per
+# (commit, config, scenario).
+GROUP_KEYS_MACHINE_DIM = ["machine", "dep_commit", "config", *GROUP_KEYS]
 # The frozen legacy runs (the legacy cut; see legacy/README.md): the single
 # source of the pre-redesign runs. Built once with `make legacy-results`.
 LEGACY_H5 = Path(__file__).resolve().parent.parent / "legacy" / "legacy_results.h5"
@@ -112,6 +117,7 @@ RUNS_COLUMNS = [
 GROUP_STATS_COLUMNS = [
     "machine",
     "dep_commit",
+    "config",
     *GROUP_KEYS,
     MALLOC_DELAY,
     FREE_DELAY,
@@ -127,6 +133,8 @@ GROUP_STATS_COLUMNS = [
 ]
 FITS_COLUMNS = [
     "machine",
+    "dep_commit",
+    "config",
     *GROUP_KEYS,
     "n_runs",
     "model",
@@ -161,6 +169,8 @@ FITS_COLUMNS = [
 # only for groups whose hardware has a matching microbenchmark cost.
 FITS_CA_COLUMNS = [
     "machine",
+    "dep_commit",
+    "config",
     *GROUP_KEYS,
     "n_runs",
     "model",
@@ -192,6 +202,8 @@ FITS_CA_COLUMNS = [
 # so they are gauge-invariant and immune to the (W, A, s0) flat direction.
 ABSORPTION_COLUMNS = [
     "machine",
+    "dep_commit",
+    "config",
     *GROUP_KEYS,
     "arm",
     "n",
@@ -203,6 +215,8 @@ ABSORPTION_COLUMNS = [
 # the shared-parameter columns are repeated on every row of the scenario.
 SHARED_FITS_COLUMNS = [
     "machine",
+    "dep_commit",
+    "config",
     "setup",
     "x",
     "y",
@@ -231,7 +245,20 @@ SHARED_FITS_COLUMNS = [
     "f_free_err",
     "note",
 ]
-BASELINES_COLUMNS = ["machine", "setup", "x", "y", "z", "algorithm", "count", "p25", "p50", "p75"]
+BASELINES_COLUMNS = [
+    "machine",
+    "dep_commit",
+    "config",
+    "setup",
+    "x",
+    "y",
+    "z",
+    "algorithm",
+    "count",
+    "p25",
+    "p50",
+    "p75",
+]
 FOIL_COLUMNS = ["hardware", "algorithm", "n", "p25", "p50", "p75"]
 FOIL_PVALUE_COLUMNS = ["hardware", "kruskal_p"]
 KHI_COLUMNS = ["hardware", "memory_gb", "reference_runtime", "outlier_count", "kruskal_p", "flatter_median_relative"]
@@ -893,14 +920,9 @@ def fit_sweep(
     rows = []
     ca_rows = []
     covs = []
-    for key, frame in runs.groupby(["machine", *GROUP_KEYS], dropna=False):
+    for key, frame in runs.groupby(GROUP_KEYS_MACHINE_DIM, dropna=False):
         grp = frame.dropna(subset=[MALLOC_DELAY, FREE_DELAY, RUN_TIME])
-        row = {
-            "machine": key[0],
-            **dict(zip(GROUP_KEYS, key[1:], strict=True)),
-            "n_runs": len(grp),
-            **no_fit,
-        }
+        row = {**dict(zip(GROUP_KEYS_MACHINE_DIM, key, strict=True)), "n_runs": len(grp), **no_fit}
         hardware = frame["hardware"].iloc[0] if len(frame["hardware"]) else None
         try:
             row.update(fit_one_group(grp[MALLOC_DELAY], grp[FREE_DELAY], grp[RUN_TIME]))
@@ -920,16 +942,24 @@ def fit_sweep(
         ca_row = fit_one_group_ca(grp[MALLOC_DELAY], grp[FREE_DELAY], grp[RUN_TIME], c_malloc, c_free)
         if ca_row is not None:
             ca_row.pop("cov", None)  # the standard errors are in the table columns
-            ca_row = {
-                "machine": key[0],
-                **dict(zip(GROUP_KEYS, key[1:], strict=True)),
-                "n_runs": len(grp),
-                **ca_row,
-            }
+            ca_row = {**dict(zip(GROUP_KEYS_MACHINE_DIM, key, strict=True)), "n_runs": len(grp), **ca_row}
             ca_rows.append(ca_row)
         cov = row.pop("cov", None)
         if cov is not None:
-            covs.append(((key[0], key[1], key[2], grid_label(key[3], key[4], key[5])), cov[0], cov[1]))
+            covs.append(
+                (
+                    (
+                        row["machine"],
+                        row["dep_commit"],
+                        row["config"],
+                        row["setup"],
+                        str(row["algorithm"]),
+                        grid_label(row["x"], row["y"], row["z"]),
+                    ),
+                    cov[0],
+                    cov[1],
+                )
+            )
         rows.append(row)
     return (
         pd.DataFrame(rows)[FITS_COLUMNS],
@@ -996,7 +1026,7 @@ def absorption_table(runs: pd.DataFrame) -> pd.DataFrame:
     if runs.empty:
         return _empty_table(ABSORPTION_COLUMNS)
     rows = []
-    for key, frame in runs.groupby(["machine", *GROUP_KEYS], dropna=False):
+    for key, frame in runs.groupby(GROUP_KEYS_MACHINE_DIM, dropna=False):
         grp = frame.dropna(subset=[MALLOC_DELAY, FREE_DELAY, RUN_TIME])
         m = np.asarray(grp[MALLOC_DELAY], dtype=float)
         f = np.asarray(grp[FREE_DELAY], dtype=float)
@@ -1004,7 +1034,7 @@ def absorption_table(runs: pd.DataFrame) -> pd.DataFrame:
         base = (m == 0) & (f == 0)
         baseline = float(np.median(t[base])) if base.any() else float("nan")
         for arm, mask, xcol in (("malloc", (m > 0) & (f == 0), m), ("free", (m == 0) & (f > 0), f)):
-            row = {"machine": key[0], **dict(zip(GROUP_KEYS, key[1:], strict=True)), "arm": arm}
+            row = {**dict(zip(GROUP_KEYS_MACHINE_DIM, key, strict=True)), "arm": arm}
             row.update(_arm_absorption(pd.Series(xcol[mask]), t[mask], baseline))
             rows.append(row)
     return pd.DataFrame(rows)[ABSORPTION_COLUMNS]
@@ -1063,23 +1093,31 @@ def fit_sweep_combined(
 
     """
     indexed: dict[tuple, pd.Series] = {
-        (row["machine"], row["algorithm"], scenario_key(row["setup"], row["x"], row["y"], row["z"])): row
+        (
+            row["machine"],
+            row["dep_commit"],
+            row["config"],
+            row["algorithm"],
+            scenario_key(row["setup"], row["x"], row["y"], row["z"]),
+        ): row
         for _, row in fits.iterrows()
         if pd.notna(row["model"])
     }
     rows = []
     covs = []
-    for key, frame in runs.groupby(["machine", "setup", "x", "y", "z"], dropna=False):
-        machine, setup, x, y, z = key
+    scen_keys = [k for k in GROUP_KEYS_MACHINE_DIM if k != "algorithm"]
+    for key, frame in runs.groupby(scen_keys, dropna=False):
+        group = dict(zip(scen_keys, key, strict=True))
+        machine, dep_commit, config = group["machine"], group["dep_commit"], group["config"]
+        scenario = scenario_key(group["setup"], group["x"], group["y"], group["z"])
         grp = frame.dropna(subset=[MALLOC_DELAY, FREE_DELAY, RUN_TIME])
         if grp.shape[0] < 3 or len(dict.fromkeys(grp["algorithm"])) < 2:
             continue
         if grp[MALLOC_DELAY].nunique() < 2 and grp[FREE_DELAY].nunique() < 2:
             continue
-        scenario = scenario_key(setup, x, y, z)
         p0 = {}
         for a in dict.fromkeys(grp["algorithm"]):
-            row = indexed.get((machine, a, scenario))
+            row = indexed.get((machine, dep_commit, config, a, scenario))
             if row is not None:
                 p0[a] = _shared_p0(row)
         res = performance_model.fit_combined(
@@ -1088,11 +1126,7 @@ def fit_sweep_combined(
             p0=p0 or None,
         )
         base = {
-            "machine": machine,
-            "setup": setup,
-            "x": x,
-            "y": y,
-            "z": z,
+            **group,
             "n_runs": len(grp),
             "model": res["model"],
             "W": res["W"],
@@ -1125,7 +1159,19 @@ def fit_sweep_combined(
                 }
             )
         if res["fit_params"] is not None:
-            covs.append(((machine, setup, grid_label(x, y, z)), np.asarray(res["fit_params"]), np.asarray(res["pcov"])))
+            covs.append(
+                (
+                    (
+                        machine,
+                        dep_commit,
+                        config,
+                        group["setup"],
+                        grid_label(group["x"], group["y"], group["z"]),
+                    ),
+                    np.asarray(res["fit_params"]),
+                    np.asarray(res["pcov"]),
+                )
+            )
     if not rows:
         return _empty_table(SHARED_FITS_COLUMNS), []
     return pd.DataFrame(rows)[SHARED_FITS_COLUMNS], covs
@@ -1145,7 +1191,7 @@ def baseline_stats(runs: pd.DataFrame) -> pd.DataFrame:
     base = runs[no_delay_mask(runs)]
     if base.empty:
         return _empty_table(BASELINES_COLUMNS)
-    stats = _describe_grouped(base, BASELINES_COLUMNS[:6])
+    stats = _describe_grouped(base, BASELINES_COLUMNS[:8])
     return stats[BASELINES_COLUMNS]
 
 
@@ -1391,17 +1437,71 @@ def _microbench_inputs(config: dict) -> dict[str, Any]:
     }
 
 
-def main(output: Path, configuration: str | None = None) -> None:
+def _build_tables(  # ruff: ignore[too-many-arguments]
+    *,
+    runs: pd.DataFrame,
+    sweep_runs: pd.DataFrame,
+    configuration: str | None,
+    dep_commit: str | None,
+    config_name: str | None,
+    micro: dict[str, pd.DataFrame],
+    algorithms: list,
+) -> tuple[dict[str, pd.DataFrame], list[tuple[tuple, tuple, tuple]], list[tuple[tuple, tuple, tuple]]]:
+    """Build the sweep-machine analysis tables for the requested slice.
+
+    The group statistics, fits and zero-delay baselines cover the sweep
+    machines only; the paper-figure statistics (foil, khi) cover the
+    zero-delay runs of both sources.
+
+    Args:
+        runs: the complete parsed runs table (all sources).
+        sweep_runs: the sweep-machine rows of `runs`.
+        configuration: "run-time" / "compile-time" or None for the fits.
+        dep_commit: commit slice for the fits, or None.
+        config_name: config slice for the fits, or None.
+        micro: the microbenchmark frames.
+        algorithms: the config's figure order.
+
+    Returns:
+        tuple: (the tables dict, the fit covs, the shared-fit covs).
+
+    """
+    analyzed = _slice_runs(sweep_runs, configuration, dep_commit, config_name)
+    tables: dict[str, pd.DataFrame] = {
+        "runs": runs,
+        "group_stats": group_runtime_stats(analyzed),
+        "baselines": baseline_stats(_slice_runs(sweep_runs, None, dep_commit, config_name)),
+        "absorption": absorption_table(analyzed),
+        "foil": foil_stats(runs),
+        "foil_pvalue": foil_pvalues(runs),
+        "khi": khi_stats(runs),
+    }
+    tables.update(micro)
+    tables["fits"], tables["fits_ca"], fit_covs = fit_sweep(analyzed, micro["alloc_cost"])
+    tables["shared_fits"], shared_covs = fit_sweep_combined(analyzed, tables["fits"], [str(a) for a in algorithms])
+    return tables, fit_covs, shared_covs
+
+
+def main(
+    output: Path,
+    configuration: str | None = None,
+    dep_commit: str | None = None,
+    config_name: str | None = None,
+) -> None:
     """Parse all the run logs, compute every table, and write the results file.
 
     Prints nothing; write the tables to `output` (an HDF5 file). With
     `configuration`, the statistics and the fits are computed only from
     runs of that configuration (the runs table itself always stays
-    complete).
+    complete). `dep_commit` and `config_name` restrict the statistics and
+    the fits to that one commit / config slice (the runs table also stays
+    complete for them).
 
     Args:
         output: the destination results file, e.g. `output/results.h5`.
         configuration: "run-time" or "compile-time", or None for all runs.
+        dep_commit: restrict the statistics and fits to this commit name.
+        config_name: restrict the statistics and fits to this config name.
 
     """
     config = load_config()
@@ -1429,23 +1529,14 @@ def main(output: Path, configuration: str | None = None) -> None:
         # tables (or empty tables) are in either branch.
         tables.update(microbench_input["frames"])
     else:
-        analyzed = sweep_runs if configuration is None else sweep_runs[sweep_runs["configuration"] == configuration]
-        tables = {
-            "runs": runs,
-            # The group statistics, fits and zero-delay baselines cover the
-            # sweep machines only; the paper-figure statistics (foil, khi)
-            # cover the zero-delay runs of both sources.
-            "group_stats": group_runtime_stats(analyzed),
-            "baselines": baseline_stats(sweep_runs),
-            "absorption": absorption_table(analyzed),
-            "foil": foil_stats(runs),
-            "foil_pvalue": foil_pvalues(runs),
-            "khi": khi_stats(runs),
-        }
-        tables.update(microbench_input["frames"])
-        tables["fits"], tables["fits_ca"], fit_covs = fit_sweep(analyzed, microbench_input["frames"]["alloc_cost"])
-        tables["shared_fits"], shared_covs = fit_sweep_combined(
-            analyzed, tables["fits"], [str(algorithm) for algorithm in config.get("algorithms", [])]
+        tables, fit_covs, shared_covs = _build_tables(
+            runs=runs,
+            sweep_runs=sweep_runs,
+            configuration=configuration,
+            dep_commit=dep_commit,
+            config_name=config_name,
+            micro=microbench_input["frames"],
+            algorithms=list(config.get("algorithms", [])),
         )
     source_parts = [f"{label}: {sweep[label]['dir']}" for label in sweep if sweep[label]["dir"].is_dir()]
     if legacy_input["source"] != "none":
@@ -1458,6 +1549,7 @@ def main(output: Path, configuration: str | None = None) -> None:
         "machine_titles": "; ".join(f"{label}: {sweep[label]['title']}" for label in sweep_labels),
         "algorithm_order": ",".join(str(algorithm) for algorithm in config.get("algorithms", [])),
         "commit_order": ",".join(str(c["name"]) for c in config.get("commits", []) if isinstance(c, dict)),
+        "config_order": json.dumps(_config_order(config), sort_keys=True),
         "excluded_sources": json.dumps(legacy_input["excluded_sources"], sort_keys=True),
         "excluded_runs": str(legacy_input["excluded_runs"]),
         "microbench_source": microbench_input["source"],
@@ -1465,6 +1557,57 @@ def main(output: Path, configuration: str | None = None) -> None:
         "microbench_protocol": json.dumps(microbench_input["protocol"], sort_keys=True),
     }
     write_results(output, tables, attrs, fit_covs, shared_covs)
+
+
+def _slice_runs(
+    runs: pd.DataFrame, configuration: str | None, dep_commit: str | None, config_name: str | None
+) -> pd.DataFrame:
+    """Restrict a runs frame to the requested configuration / dimension slice.
+
+    The `configuration`, `dep_commit`, and `config_name` filters are applied
+    independently; a `None` value leaves that dimension unfiltered.
+
+    Args:
+        runs: the runs frame to restrict (a copy is returned, the input
+            is not mutated).
+        configuration: "run-time" / "compile-time" or None.
+        dep_commit: commit name or None.
+        config_name: config name or None.
+
+    Returns:
+        pd.DataFrame: the filtered rows.
+
+    """
+    frame = runs
+    if configuration is not None and "configuration" in frame:
+        frame = frame[frame["configuration"] == configuration]
+    if dep_commit is not None and "dep_commit" in frame:
+        frame = frame[frame["dep_commit"] == dep_commit]
+    if config_name is not None and "config" in frame:
+        frame = frame[frame["config"] == config_name]
+    return frame
+
+
+def _config_order(config: dict) -> dict[str, list[str]]:
+    """Return the per-algorithm config order (config.json), for the figures.
+
+    An algorithm without an explicit config entry gets a single implicit
+    ``default`` (matching ``config.py effective_configs``).
+
+    Args:
+        config: the parsed configuration.
+
+    Returns:
+        dict: algorithm -> ordered config names (``{algo: [names]}``).
+
+    """
+    entries = config.get("configs", {})
+    entries = entries if isinstance(entries, dict) else {}
+    order: dict[str, list[str]] = {}
+    for algorithm in config.get("algorithms", []):
+        configs = entries.get(algorithm)
+        order[str(algorithm)] = list(map(str, configs)) if isinstance(configs, dict) and configs else ["default"]
+    return order
 
 
 if __name__ == "__main__":
@@ -1483,5 +1626,16 @@ if __name__ == "__main__":
         default=None,
         help="compute the statistics and the fits only from runs of that configuration (default: all of them)",
     )
+    parser.add_argument(
+        "--dep-commit",
+        default=None,
+        help="compute the statistics and the fits only from runs of that commit (default: all of them)",
+    )
+    parser.add_argument(
+        "--config",
+        dest="config_name",
+        default=None,
+        help="compute the statistics and the fits only from runs of that allocator config (default: all of them)",
+    )
     args = parser.parse_args()
-    main(args.output, args.configuration)
+    main(args.output, args.configuration, args.dep_commit, args.config_name)
