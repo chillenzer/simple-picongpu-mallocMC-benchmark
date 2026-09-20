@@ -68,9 +68,10 @@ LEGACY_H5 = "legacy/legacy_results.h5"
 STAMPS = "run-stamps"
 UNAVAILABLE = "unavailable"
 
-# The identity of one run, parsed from the run log's file name
-# (example, algorithm, malloc delay, free delay, repetition).
-type Identity = tuple[str, str, str, str, str]
+# The identity of one run: the example, the algorithm, the logical commit
+# name, the config name, and the (malloc delay, free delay, repetition).
+# Parsed from the log's metadata run block, not its file name.
+type Identity = tuple[str, str, str, str, str, str, str]
 
 # The harness steps the main workflow (the Makefile) executes; each must
 # be a file of the repository (missing ones are skipped).
@@ -254,32 +255,45 @@ def log_header(path: Path) -> tuple[str, dict] | None:
     return runline, metadata
 
 
-def identity(label: str, name: str) -> Identity | None:
-    """Split a run log's file name into its run identity.
+def identity(run: dict) -> Identity | None:
+    """Return one run's identity from its metadata run block.
 
-    Mirrors `analysis/compute_results.py::_identity_stamp_path`, so the
-    crate keys the vintage state on the same identity make and the
+    The identity is taken from the log's parsed metadata (`run.setup`,
+    `run.algorithm`, `run.commit`, `run.config`, `run.delays`, `run.rep`),
+    not its file name: the file name only carries the commit's short hash,
+    and the stamp path is keyed on the commit's logical name (and the
+    config) instead. Mirrors `analysis/compute_results.py::_identity_stamp_path`,
+    so the crate keys the vintage state on the same identity make and the
     analysis use.
 
     Args:
-        label: the sweep machine's label.
-        name: the run log's file name
-            (`run_<label>_<Ex>_<Algo>_m<M>_f<F>_r<I>_<...>.txt`).
+        run: the metadata's run block (absent or partial ok).
 
     Returns:
-        Identity | None: (example, algorithm, malloc delay, free
-            delay, repetition), or `None` when the name carries no
-            identity.
+        Identity | None: (example, algorithm, commit, config, malloc
+            delay, free delay, repetition), or `None` when the run block
+            carries no complete identity.
 
     """
-    pattern = rf"^run_{re.escape(label)}_(?P<rest>.+)_m(?P<m>\d+)_f(?P<f>\d+)_r(?P<rep>\d+)_.*$"
-    match = re.match(pattern, name)
-    if match is None:
+    example = run.get("setup")
+    algorithm = run.get("algorithm")
+    commit = run.get("commit")
+    config = run.get("config")
+    delays = run.get("delays")
+    rep = run.get("rep")
+    if not (isinstance(example, str) and example) or not (isinstance(algorithm, str) and algorithm):
         return None
-    example, _, algorithm = match["rest"].partition("_")
-    if not example or not algorithm:
+    commit = commit if isinstance(commit, str) else ""
+    config = config if isinstance(config, str) else ""
+    if not (
+        isinstance(delays, list)
+        and len(delays) == 2
+        and all(isinstance(delay, int) and not isinstance(delay, bool) for delay in delays)
+        and isinstance(rep, int)
+        and not isinstance(rep, bool)
+    ):
         return None
-    return example, algorithm, match["m"], match["f"], match["rep"]
+    return example, algorithm, commit, config, str(delays[0]), str(delays[1]), str(rep)
 
 
 def run_stamp_path(label: str, identity: Identity) -> Path:
@@ -287,15 +301,15 @@ def run_stamp_path(label: str, identity: Identity) -> Path:
 
     Args:
         label: the sweep machine's label.
-        identity: the run's identity (example, algorithm, malloc
-            delay, free delay, repetition).
+        identity: the run's identity (example, algorithm, commit, config,
+            malloc delay, free delay, repetition).
 
     Returns:
         Path: the stamp path (not necessarily existing).
 
     """
-    example, algorithm, malloc_ns, free_ns, rep = identity
-    return Path(STAMPS) / label / example / algorithm / f"{malloc_ns}_{free_ns}" / f"rep-{rep}.stamp"
+    example, algorithm, commit, config, malloc_ns, free_ns, rep = identity
+    return Path(STAMPS) / label / commit / example / algorithm / config / f"{malloc_ns}_{free_ns}" / f"rep-{rep}.stamp"
 
 
 def stamp_state(stamp: Path, relpath: str) -> str:
@@ -815,7 +829,23 @@ def _add_harness_files(crate: Crate) -> None:
     add_file(crate, "README.md", encoding="text/markdown", about="./")
     if Path("param").is_dir():
         for param_file in sorted(Path("param").rglob("*.param")):
-            add_file(crate, str(param_file), description="parameter overlay for the build (mallocMC configuration)")
+            add_file(
+                crate,
+                str(param_file),
+                description="parameter overlay for the build (example-level mallocMC parameters)",
+            )
+        for template in sorted(Path("param").rglob("mallocMC.param.in")):
+            add_file(
+                crate,
+                str(template),
+                description="allocator parameter assembly template (rendered from config.json)",
+            )
+        for profile_header in sorted(Path("param").rglob("profiles/*.hpp")):
+            add_file(
+                crate,
+                str(profile_header),
+                description="a static, user-authored allocator hash/heap profile header",
+            )
     if Path("profiles").is_dir():
         for profile in sorted(Path("profiles").glob("*")):
             if profile.is_file():
@@ -1129,6 +1159,29 @@ def _environment_ids(crate: Crate, action_id: str, delays: object, slurm_job: ob
     return environment_ids
 
 
+def _run_dimension_ids(crate: Crate, action_id: str, commit: str, config: str) -> list[str]:
+    """Add the action's benchmark-dimension PropertyValue entities; return their ids.
+
+    Args:
+        crate: the crate to add them to.
+        action_id: the action's id (the entities nest under it).
+        commit: the logical dependency commit name (empty for pre-multi-commit logs).
+        config: the allocator config name (empty for pre-config logs).
+
+    Returns:
+        list: the dimension entity ids (empty when the dimension is absent).
+
+    """
+    dimension_ids: list[str] = []
+    for name, value in (("dep_commit", commit), ("config", config)):
+        if not value:
+            continue
+        dim_id = f"{action_id}#{name}"
+        crate.add({"@id": dim_id, "@type": "PropertyValue", "name": name, "value": value})
+        dimension_ids.append(dim_id)
+    return dimension_ids
+
+
 def _resolve_person(crate: Crate, user: str, metadata: dict) -> tuple[str | None, str | None]:
     """Resolve one run's user to (the ORCID iD, the display name).
 
@@ -1192,8 +1245,8 @@ def run_action(crate: Crate, label: str, metadata: dict, relpath: str) -> tuple[
         relpath: the log's path relative to the repository root.
 
     Returns:
-        tuple: (the action, or `None` when the log's file name carries
-            no identity at all, 1 when the action is a superseded
+        tuple: (the action, or `None` when the log's metadata run block
+            carries no identity at all, 1 when the action is a superseded
             vintage and 0 otherwise).
 
     """
@@ -1201,14 +1254,13 @@ def run_action(crate: Crate, label: str, metadata: dict, relpath: str) -> tuple[
     if not isinstance(run, dict):
         return None, 0
     name = Path(relpath).name
-    match = identity(label, name)
+    match = identity(run)
     if match is None:
         return None, 0
     state = stamp_state(run_stamp_path(label, match), relpath)
-    example, algorithm = match[0], match[1]
+    example, algorithm, commit, config = match[0], match[1], match[2], match[3]
     stem = name[: -len(".txt")]
     action_id = f"#run-{slug(stem)}"
-    binary_id = _binary_entity(crate, metadata, run)
 
     action = {
         "@id": action_id,
@@ -1216,8 +1268,10 @@ def run_action(crate: Crate, label: str, metadata: dict, relpath: str) -> tuple[
         "name": f"{example}/{algorithm} (run log {name})",
         "description": f"{_command_line(run, name)}; vintage: {vintage_text(state, run_stamp_path(label, match))}",
         "actionStatus": ref("https://schema.org/CompletedActionStatus"),
-        "instrument": ref(binary_id),
-        "object": [ref(item) for item in ("config.json", f"param/{algorithm}/mallocMC.param") if Path(item).is_file()],
+        "instrument": ref(_binary_entity(crate, metadata, run)),
+        "object": [
+            ref(item) for item in ("config.json", f"param/{algorithm}/mallocMC.param.in") if Path(item).is_file()
+        ],
         "result": ref(relpath),
     }
     start_time = metadata.get("ts")
@@ -1227,8 +1281,9 @@ def run_action(crate: Crate, label: str, metadata: dict, relpath: str) -> tuple[
     if end_time:
         action["endTime"] = end_time
     environment_ids = _environment_ids(crate, action_id, run.get("delays"), metadata.get("slurm_job"))
-    if environment_ids:
-        action["environment"] = [ref(env_id) for env_id in environment_ids]
+    dimension_ids = _run_dimension_ids(crate, action_id, commit, config)
+    if environment_ids or dimension_ids:
+        action["environment"] = [ref(env_id) for env_id in (*environment_ids, *dimension_ids)]
     _attach_agent(crate, action, metadata)
     return action, 1 if state == "superseded" else 0
 

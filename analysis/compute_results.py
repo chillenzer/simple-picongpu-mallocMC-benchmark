@@ -49,7 +49,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import re
 import subprocess  # ruff: ignore[suspicious-subprocess-import] -- used to read the git commit
 import sys
 from datetime import UTC, datetime
@@ -310,31 +309,60 @@ def load_machines(config: dict) -> dict[str, dict]:
     return sweep
 
 
-def _identity_stamp_path(label: str, name: str, stamps_root: Path) -> Path | None:
-    """Return the run stamp of one run log's identity, or None.
+def _identity_stamp_path(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
+    label: str,
+    example: str,
+    algorithm: str,
+    commit: str,
+    config: str,
+    malloc_delay: object,
+    free_delay: object,
+    rep: object,
+    stamps_root: Path,
+) -> Path | None:
+    """Return the run stamp of one run's identity, or None.
+
+    The identity (example, algorithm, commit, config, delays, repetition)
+    is taken from the log's parsed metadata columns, not its file name:
+    the file name only carries the commit's short hash, and the stamp path
+    is keyed on the commit's logical name (and the config) instead.
 
     Args:
         label: the sweep machine's label.
-        name: the run log's file name
-            (`run_<label>_<Ex>_<Algo>_m<M>_f<F>_r<I>_<line-sha8>_<time>.txt`).
+        example: the run's setup (the example), from `run.setup`.
+        algorithm: the run's algorithm, from `run.algorithm`.
+        commit: the logical commit name, from `run.commit` (empty for
+            pre-multi-commit logs).
+        config: the config name, from `run.config` (empty for
+            pre-config logs).
+        malloc_delay: the imposed malloc delay in nanoseconds (int).
+        free_delay: the imposed free delay in nanoseconds (int).
+        rep: the run's declared repetition number (int).
         stamps_root: the run-stamps directory (the repo root's).
 
     Returns:
         Path | None: the identity's stamp path (which may not exist), or
-        None when the name does not carry the identity.
+        None when the metadata does not carry a complete identity.
 
     """
-    match = re.match(rf"^run_{re.escape(label)}_(?P<rest>.+)_m(?P<m>\d+)_f(?P<f>\d+)_r(?P<rep>\d+)_", name)
-    if match is None:
+    counts = (malloc_delay, free_delay, rep)
+    if any(not isinstance(count, (int, np.integer)) or isinstance(count, bool) for count in counts):
         return None
-    rest, m, f, rep = match["rest"], match["m"], match["f"], match["rep"]
-    if "_" not in rest:
+    if not example or not algorithm:
         return None
-    example, _, algorithm = rest.partition("_")
-    return stamps_root / label / example / algorithm / f"{m}_{f}" / f"rep-{rep}.stamp"
+    return (
+        stamps_root
+        / label
+        / commit
+        / example
+        / algorithm
+        / config
+        / f"{malloc_delay}_{free_delay}"
+        / f"rep-{rep}.stamp"
+    )
 
 
-def _superseded_flags(log_dir: Path, label: str, stamps_root: Path) -> dict[str, int]:
+def _superseded_flags(frame: pd.DataFrame, label: str, stamps_root: Path) -> dict[str, int]:
     """Map one machine output directory's log names to their vintage state.
 
     The run stamp of an identity lists the log paths of its current
@@ -345,24 +373,38 @@ def _superseded_flags(log_dir: Path, label: str, stamps_root: Path) -> dict[str,
     superseded by nothing.
 
     Args:
-        log_dir: the sweep machine's log directory.
+        frame: the parsed runs frame for this machine (carries the run's
+            identity columns and its log file name `name`).
         label: the sweep machine's label.
         stamps_root: the run-stamps directory (the repo root's).
 
     Returns:
-        dict: log file name -> 1 (superseded by a newer vintage) or 0.
+        dict: log absolute path -> 1 (superseded by a newer vintage) or 0.
 
     """
     flags: dict[str, int] = {}
-    for path in sorted(p for p in log_dir.glob("*") if p.is_file()):
-        stamp = _identity_stamp_path(label, path.name, stamps_root)
+    root = stamps_root.parent
+    for _, row in frame.iterrows():
+        name = Path(row["name"])
+        stamp = _identity_stamp_path(
+            label,
+            str(row.get("setup", "")),
+            str(row.get("algorithm", "")),
+            str(row.get("dep_commit", "")),
+            str(row.get("config", "")),
+            row.get(MALLOC_DELAY),
+            row.get(FREE_DELAY),
+            row.get("nominal_rep"),
+            stamps_root,
+        )
         if stamp is None or not stamp.is_file():
-            flags[path.name] = 0
+            flags[str(name)] = 0
             continue
-        listed = {
-            line.strip().rsplit("/", 1)[-1] for line in stamp.read_text(encoding="utf-8").splitlines() if line.strip()
-        }
-        flags[path.name] = 0 if path.name in listed else 1
+        # The stamp lists the log paths relative to the repository root
+        # (run_stamp.sh is invoked from it); resolve them against the root
+        # so they compare to the parsed absolute log paths.
+        listed = {root / line.strip() for line in stamp.read_text(encoding="utf-8").splitlines() if line.strip()}
+        flags[str(name)] = 0 if name in listed else 1
     return flags
 
 
@@ -421,8 +463,8 @@ def read_all_runs(sweep: dict[str, dict], legacy_frame: pd.DataFrame) -> tuple[p
             continue
         frame["machine"] = label
         frame["hardware"] = machine["hardware"]
-        flags = _superseded_flags(machine["dir"], label, stamps_root)
-        frame["superseded"] = frame["name"].map(lambda p: flags.get(Path(p).name, 0)).astype(int)
+        flags = _superseded_flags(frame, label, stamps_root)
+        frame["superseded"] = frame["name"].map(lambda p: flags.get(str(p), 0)).astype(int)
         frames.append(frame)
     if not legacy_frame.empty:
         # A frozen legacy row carries no file name and none of the
