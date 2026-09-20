@@ -280,7 +280,7 @@ endif
 endif
 
 .PHONY: all build check clean distclean results summary figures \
-	figures-picongpu figures-sweeps figures-shared figures-microbench \
+	figures-picongpu figures-sweeps figures-shared figures-configs figures-commits figures-microbench \
 	$(foreach c,$(COMMITS),picongpu-src-$(c) mallocmc-src-$(c)) microbench-src env-check env runs full \
 	clean-runs freeze freeze-verify \
 	legacy-results legacy-verify microbench-results microbench-verify microbench-audit \
@@ -654,12 +654,13 @@ summary: results
 # figures` runs cleanly on any checkout.
 figures: figures-picongpu figures-microbench
 
-# The PIConGPU figures: the per-machine sweep fits, the shared fits, and the
-# setup-specific figures (FoilLCT, KelvinHelmholtz, the fade models, the
-# native-cost comparison). The family targets run the plotting scripts
-# unfiltered (all machines, all scenarios), so they work even when figures/
-# does not exist yet.
-figures-picongpu: figures-sweeps figures-shared \
+# The PIConGPU figures: the per-machine sweep fits, the shared fits, the two
+# comparison figure families (configs and commits), and the setup-specific
+# figures (FoilLCT, KelvinHelmholtz, the fade models, the native-cost
+# comparison). The family targets run the plotting scripts unfiltered (all
+# machines, all scenarios, all configs/commits), so they work even when
+# figures/ does not exist yet.
+figures-picongpu: figures-sweeps figures-shared figures-configs figures-commits \
 	$(FIGDIR)/foil_lct.pdf $(FIGDIR)/kelvin_helmholtz.pdf $(FIGDIR)/fade-models.pdf \
 	$(FIGDIR)/native-cost.pdf
 
@@ -668,6 +669,16 @@ figures-sweeps: results
 
 figures-shared: results
 	$(PY) analysis/plot_shared_fits.py --results $(RESULTS)
+
+# The per-machine allocator-config comparison: one figure per (machine,
+# commit) with an algorithm carrying two or more configs (skips otherwise).
+figures-configs: results
+	$(PY) analysis/plot_configs.py --results $(RESULTS) --dep-commit all
+
+# The per-machine dependency-commit comparison: one figure per (machine,
+# config) with two or more commits (skips otherwise).
+figures-commits: results
+	$(PY) analysis/plot_commits.py --results $(RESULTS) --config all
 
 # The microbenchmark figures: the allocation-cost figures (from the frozen
 # table in results.h5) and the diagnostic figures (from the suite's raw CSVs
@@ -703,6 +714,17 @@ $(FIGDIR)/sweeps-%.pdf: results
 
 $(FIGDIR)/sweeps-shared-%.pdf: results
 	$(PY) analysis/plot_shared_fits.py --results $(RESULTS) --machine $*
+
+# A single machine's comparison figures (the single-commit/single-config form,
+# `make figures/configs-hal.pdf`): `configs-<machine>.pdf` uses the first
+# commit, `commits-<machine>.pdf` the `default` config. (The all-commits /
+# all-configs variants carry a `-<commit>` / `-<config>` suffix and are built
+# by the unfiltered family targets above.)
+$(FIGDIR)/configs-%.pdf: results
+	$(PY) analysis/plot_configs.py --results $(RESULTS) --machine $*
+
+$(FIGDIR)/commits-%.pdf: results
+	$(PY) analysis/plot_commits.py --results $(RESULTS) --machine $*
 
 # The RO-Crate metadata (see the header): generate it and run make_rocrate.py's
 # checks on the result (built-in validation, plus the official rocrate
