@@ -38,8 +38,8 @@ namespace picongpu
     {
         using Upstream = mallocMC::CreationPolicies::FlatterScatterAlloc::DefaultFlatterScatterHashConfig;
         static constexpr auto blockStride = Upstream::blockStride;
-        ALPAKA_FN_INLINE ALPAKA_FN_ACC
         template<uint32_t T_PageSize, class TAcc>
+        ALPAKA_FN_INLINE ALPAKA_FN_ACC
         static auto hash(TAcc const& acc, uint32_t const numBytes) -> uint32_t
         {
             return Upstream::template hash<T_PageSize>(acc, numBytes);
