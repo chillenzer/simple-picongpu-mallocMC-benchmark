@@ -37,7 +37,7 @@ import shutil
 import socket
 import subprocess  # ruff: ignore[suspicious-subprocess-import] (probes system tools by absolute path only)
 import sys
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 SCHEMA = 1
@@ -431,7 +431,7 @@ def _metadata(kind: str, machine: str, extra: dict[str, object], commit: str | N
     metadata: dict[str, object] = {
         "schema": SCHEMA,
         "kind": kind,
-        "ts": datetime.now(UTC).isoformat(timespec="seconds"),
+        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "machine": machine,
         "hostname": socket.gethostname(),
         "user": _user(),
