@@ -176,6 +176,7 @@ MALLOCMC_ABS_$(1)     := $(CURDIR)/$(shell $(PY) config.py commit $(1) mallocmc 
 MALLOCMC_URL_$(1)     := $(shell $(PY) config.py commit $(1) mallocmc url)
 MALLOCMC_HASH_$(1)    := $(shell $(PY) config.py commit $(1) mallocmc hash)
 MALLOCMC_SHORT_$(1)   := $(shell printf '%.8s' $(shell $(PY) config.py commit $(1) mallocmc hash))
+MALLOCMC_REL_$(1)     := $(patsubst $(CURDIR)/$(shell $(PY) config.py commit $(1) picongpu path)/%,%,$(CURDIR)/$(shell $(PY) config.py commit $(1) mallocmc path))
 endef
 $(foreach c,$(COMMITS),$(eval $(call COMMIT_DEPS,$(c))))
 # The first commit's PIConGPU checkout is the PICSRC every build is driven
@@ -771,6 +772,17 @@ picongpu-src-$(1):
 	@mkdir -p src
 	@if [ -d "$(PICONGPU_ABS_$(1))/.git" ]; then
 	  if [ "$$(git -C "$(PICONGPU_ABS_$(1))" rev-parse HEAD)" != "$(PICONGPU_HASH_$(1))" ]; then
+	    # Nested fork discard: picongpu pins its mallocMC copy as a tracked
+	    # *vendored* tree (there is no gitlink here), so the fork that this
+	    # harness re-clones into it marks the checkout dirty; a picongpu
+	    # hash-move would then be refused ("local changes would be
+	    # overwritten"). Discard the fork before the checkout - the mallocmc
+	    # driver (which runs next) re-clones it at the pinned hash.
+	    if [ -n "$(MALLOCMC_REL_$(1))" ] && [ -e "$(PICONGPU_ABS_$(1))/$(MALLOCMC_REL_$(1))" ]; then
+	      echo "Discarding the nested mallocMC fork before moving the picongpu checkout ..."
+	      git -C "$(PICONGPU_ABS_$(1))" checkout --quiet -- "$(MALLOCMC_REL_$(1))"
+	      rm -rf "$(PICONGPU_ABS_$(1))/$(MALLOCMC_REL_$(1))"
+	    fi
 	    echo "Updating $(PICONGPU_ABS_$(1)) [$(1)] to $(PICONGPU_SHORT_$(1)) ..."
 	    git -C "$(PICONGPU_ABS_$(1))" fetch --quiet
 	    git -C "$(PICONGPU_ABS_$(1))" checkout --quiet "$(PICONGPU_HASH_$(1))"
