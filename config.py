@@ -377,6 +377,7 @@ def _check_commits(data: dict, errors: list[str]) -> None:
         names: set[str] = set()
         for index, commit in enumerate(commits):
             _check_commit_entry(commit, f"commits[{index}]", names, errors)
+        _check_commit_path_collisions(commits, errors)
         return
     # Legacy single pair: validate it when present (a config with neither is
     # still valid until the build needs the pins; the Makefile reads commits).
@@ -385,6 +386,76 @@ def _check_commits(data: dict, errors: list[str]) -> None:
             _check_dep_spec(
                 dependencies.get(dep) if isinstance(dependencies, dict) else None, f"dependencies.{dep}", errors
             )
+
+
+def _commit_dep_path(commit: object, dep: str) -> str | None:
+    """Return one commit's resolved dependency path, defaulting it.
+
+    Mirrors `_commit_field` for `field == "path"` (the same defaulting the
+    Makefile applies via `config.py commit <name> <dep> path`), so the
+    collision check sees exactly the paths the build would use: an explicit
+    `path` when present, else `src/<name>/picongpu` /
+    `src/<name>/picongpu/thirdParty/mallocMC`.
+
+    Args:
+        commit: a valid commit mapping ({name, picongpu, mallocmc}).
+        dep: the dependency ("picongpu" or "mallocmc").
+
+    Returns:
+        str | None: the resolved path, or `None` when the dep is absent or
+        the commit's name is unusable.
+
+    """
+    spec = commit.get(dep) if isinstance(commit.get(dep), dict) else {}
+    path = spec.get("path")
+    name = commit.get("name")
+    base = name if (isinstance(name, str) and name) else ""
+    if isinstance(path, str) and path:
+        return path
+    if not base:
+        return None
+    return f"src/{base}/picongpu" if dep == "picongpu" else f"src/{base}/picongpu/thirdParty/mallocMC"
+
+
+def _check_commit_path_collisions(commits: list, errors: list[str]) -> None:
+    """Validate that no two commits resolve to the same dependency path.
+
+    The harness keeps one `src/...` checkout per (commit, dependency) — the
+    `.dep-stamp` files and the source drivers are keyed on the resolved
+    path. Two commits resolving to the same path (a shared `src/picongpu`,
+    and therefore a shared nested `thirdParty/mallocMC`) collapses their
+    stamp targets (make warns "overriding recipe"), and their builds clobber
+    each other's checkouts, so the second commit cannot really be built.
+    Each commit needs its own path (e.g. `src/<name>/picongpu`).
+
+    Args:
+        commits: the validated `commits` list (each a {name, picongpu,
+            mallocmc} mapping).
+        errors: accumulates the problems found.
+
+    """
+    for dep in ("picongpu", "mallocmc"):
+        seen: dict[str, str] = {}
+        for index, commit in enumerate(commits):
+            if not isinstance(commit, dict):
+                continue
+            path = _commit_dep_path(commit, dep)
+            if path is None:
+                continue
+            key = path.rstrip("/")
+            name = commit.get("name")
+            label = f"commits[{index}]" if not (isinstance(name, str) and name) else f"commits[{index}] ({name})"
+            owner = seen.get(key)
+            if owner is None:
+                seen[key] = label
+            else:
+                errors.append(
+                    f"{label}: `{dep}.path` resolves to '{path}', which "
+                    f"collides with {owner} — the harness keeps one checkout per "
+                    f"commit, so two commits must not share a path; give each "
+                    f"commit its own (e.g. `src/<name>/picongpu`, "
+                    f"`src/<name>/picongpu/thirdParty/mallocMC`) or drop one."
+                )
 
 
 def _commit_field(data: dict, commit_name: str, dep: str, field: str) -> str:
