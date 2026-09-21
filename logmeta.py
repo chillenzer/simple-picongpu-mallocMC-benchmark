@@ -64,7 +64,7 @@ def _probe(command: list[str]) -> str | None:
         probe = subprocess.run(  # ruff: ignore[subprocess-without-shell-equals-true]
             command, capture_output=True, text=True, timeout=120, check=False
         )
-    except OSError, subprocess.SubprocessError:
+    except (OSError, subprocess.SubprocessError):
         return None
     if probe.returncode != 0:
         return None
@@ -150,7 +150,7 @@ def _pins(commit: str | None) -> dict[str, str]:
     pins = dict.fromkeys(("picongpu", "mallocmc"), UNAVAILABLE)
     try:
         config = json.loads(Path("config.json").read_text(encoding="utf-8"))
-    except OSError, json.JSONDecodeError:
+    except (OSError, json.JSONDecodeError):
         return pins
     if not isinstance(config, dict):
         return pins

@@ -199,7 +199,7 @@ def _polish(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", OptimizeWarning)
             popt, _pcov = curve_fit(model, (m, f), t, p0=p0, bounds=bounds, maxfev=40000)
-    except RuntimeError, ValueError:
+    except (RuntimeError, ValueError):
         return None
     params = np.asarray(popt, dtype=float)
     pred = model((m, f), *params)

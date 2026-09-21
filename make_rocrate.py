@@ -180,7 +180,7 @@ def load_config() -> dict:
     """
     try:
         config = json.loads(Path("config.json").read_text(encoding="utf-8"))
-    except OSError, json.JSONDecodeError:
+    except (OSError, json.JSONDecodeError):
         msg = "make_rocrate.py: config.json not found or invalid; run from the repository root"
         raise SystemExit(msg) from None
     if not isinstance(config, dict):

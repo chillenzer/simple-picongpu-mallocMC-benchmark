@@ -340,7 +340,7 @@ def _git_commit() -> str:
             stderr=subprocess.DEVNULL,
             text=True,
         ).strip()
-    except OSError, subprocess.CalledProcessError:
+    except (OSError, subprocess.CalledProcessError):
         return ""
 
 
