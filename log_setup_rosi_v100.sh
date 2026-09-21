@@ -8,7 +8,7 @@ set -e
 
 # The machine-specific values (output folder, profile, modules) come from
 # config.json.
-MACHINE=rosi
+MACHINE=rosi-v100
 FOLDER=$(python3 config.py get "machines.$MACHINE.output")
 PROFILE=$(python3 config.py get "machines.$MACHINE.profile")
 # Session logs live in a folder of their own: they are a free-text backup

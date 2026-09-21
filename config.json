@@ -136,9 +136,9 @@
       "hardware": "NVIDIA A30",
       "modules": []
     },
-    "rosi": {
+    "rosi-v100": {
       "profile": "profiles/rosi-v100.profile",
-      "output": "output/rosi-sleeptimes",
+      "output": "output/rosi-v100-sleeptimes",
       "hardware": "NVIDIA V100",
       "modules": [
         "hopper",

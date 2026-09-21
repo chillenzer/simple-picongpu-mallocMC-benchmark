@@ -24,7 +24,7 @@
 #
 #      make runs MACHINE=hal                          # full (arms) sweep
 #      make runs MACHINE=hal PHASE=initial            # fast first scan
-#      make runs MACHINE=rosi REPEATS=3 REP=2         # one repetition (= one slurm job)
+#      make runs MACHINE=rosi-v100 REPEATS=3 REP=2    # one repetition (= one slurm job)
 #      make full MACHINE=hal                          # build, then run
 #      make clean-runs [MACHINE=hal]                  # forget finished runs
 #      make sweep-status MACHINE=hal [PHASE=...]      # which runs are stamped

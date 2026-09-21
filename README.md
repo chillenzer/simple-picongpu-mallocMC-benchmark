@@ -117,7 +117,7 @@ ladder plus a joint grid is near-degenerate for the fit.
 
 ## What is benchmarked
 
-- **Machines**: `hal` (NVIDIA A30), `rosi` (NVIDIA V100) and
+- **Machines**: `hal` (NVIDIA A30), `rosi-v100` (NVIDIA V100) and
   `rosi-a100` (NVIDIA A100); the rosi machines load the `hopper`,
   `GCCcore/14.3.0` and `git/2.50.1` modules before their profile. The
   `machines` table of `config.json` maps each machine label to its
@@ -243,7 +243,7 @@ The Makefile variables:
 
 | variable        | meaning                                                            |
 |-----------------|--------------------------------------------------------------------|
-| `MACHINE`       | a row of the `machines` table of `config.json` (hal, rosi, rosi-a100) |
+| `MACHINE`       | a row of the `machines` table of `config.json` (hal, rosi-v100, rosi-a100) |
 | `PROFILE`       | the profile to source for the build (`profiles/<machine>.sh`)      |
 | `PARAM_DIR`     | the parameter overlay directory (default `param`)                  |
 | `REPEATS`       | full-sweep repetitions of `make runs` (default 1)                  |
@@ -301,7 +301,7 @@ The Makefile variables:
     make runs MACHINE=hal                    # arms phase, REPEATS=1 (the defaults), all commits
     make runs MACHINE=hal PHASE=initial      # the fast first scan (17 combinations)
     make runs MACHINE=hal REPEATS=3          # three full-sweep repetitions
-    make runs MACHINE=rosi REPEATS=3 REP=2   # only repetition 2 (one slurm job)
+    make runs MACHINE=rosi-v100 REPEATS=3 REP=2   # only repetition 2 (one slurm job)
     make runs MACHINE=hal COMMIT=<name>      # only that commit (a name in config.json)
     make full MACHINE=hal                    # build, then run (PHASE and COMMIT pass through)
     make clean-runs [MACHINE=hal] [COMMIT=<name>]  # forget finished runs (re-runs add a vintage)
@@ -318,12 +318,12 @@ The Makefile variables:
    `PHASE=initial` first, check the interim fit (*Analysis*), then run
    `PHASE=arms` to extend the same series — it re-runs only the eight
    combinations without an up-to-date stamp. Per machine, the initial phase
-   costs about 80 h (hal) or 41 h (rosi) per repetition, and the extension
+   costs about 80 h (hal) or 41 h (rosi-v100) per repetition, and the extension
    about 67 h or 35 h, against 172 h / 89 h for the old 34-combination
    design.
 
    On a slurm machine, the `log_run_<machine>.sh` launcher drives one slurm
-   job per repetition: `sbatch log_run_rosi.sh 1` (with `REPEATS` in the
+   job per repetition: `sbatch log_run_rosi_v100.sh 1` (with `REPEATS` in the
    environment) runs exactly one full-sweep repetition — all slurm
    allocation options come from the `sbatch` line, the scripts carry no
    `#SBATCH` directives.
@@ -597,7 +597,7 @@ empty):
   of the repository (`make rocrate`, `make crate-zip`): the harness as a
   workflow, the benchmark runs as provenance, the analysis as actions
   (what exactly is described, see the *RO-Crate* section below).
-- `log_{setup,run}_<machine>.sh` — per-machine launchers (hal, rosi,
+- `log_{setup,run}_<machine>.sh` — per-machine launchers (hal, rosi-v100,
   rosi-a100): log the environment, load the machine's modules (setup), and
   run `make build` / `make runs MACHINE=<machine>` with the machine's
   profile from the `machines` table in `config.json` (the sweep invocation
@@ -957,11 +957,11 @@ section records the known limitations of the data and of the reporting.
   from the large-delay asymptote rather than the small-delay points.
 - **Arms without delay absorption.** A few arms show the opposite of
   absorption — their large-delay line extrapolates *above* the baseline
-  (the free arms of rosi FoilLCT and rosi KHI 128^3, and the hal KHI 128^3
+  (the free arms of rosi-v100 FoilLCT and rosi-v100 KHI 128^3, and the hal KHI 128^3
   ScatterAlloc arms) — and one hal FoilLCT free arm is non-monotonic. These
   arms are excluded from the absorption summary and flagged in the results
   file.
-- **Slow-fade rosi KelvinHelmholtz arms.** On `rosi` the absorption fades
+- **Slow-fade rosi-v100 KelvinHelmholtz arms.** On `rosi-v100` the absorption fades
   over tens of milliseconds, beyond the measured delay range; there the
   plateau deficit is an extrapolation with a larger error.
 - **The allocator comparison is conditional.** The relative per-call slack

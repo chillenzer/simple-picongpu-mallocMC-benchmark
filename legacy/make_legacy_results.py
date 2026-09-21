@@ -19,7 +19,7 @@ legacy/move_legacy_logs.sh, which moves them out of the historical
 output/ tree). A subdirectory's name sets the run attribution:
 
 - the output directory of a sweep machine from the config machines table
-  (e.g. hal-sleeptimes, rosi-sleeptimes): the runs are attributed to the
+  (e.g. hal-sleeptimes, rosi-v100-sleeptimes): the runs are attributed to the
   machine label and to the short hardware name (the last word of the
   machine's hardware title), as the sweep-machine parsing did;
 - a legacy per-cluster directory (the frozen LEGACY_DIRECTORIES map): the

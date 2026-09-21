@@ -7,7 +7,7 @@ set -x
 set -e
 
 # The machine-specific values (output folder, profile) come from config.json.
-MACHINE=rosi
+MACHINE=rosi-v100
 FOLDER=$(python3 config.py get "machines.$MACHINE.output")
 # The session log belongs to sessions/ (a free-text backup, never re-read
 # by the analysis).
@@ -37,9 +37,9 @@ echo "========================" | tee -a "$FILENAME"
 # variable, default arms) selects the sweep's delay combinations. Submit one
 # job per repetition with the same REPEATS, e.g.
 #
-#   sbatch log_run_rosi.sh 1   # with REPEATS=3 in the environment
-#   sbatch log_run_rosi.sh 2
-#   sbatch log_run_rosi.sh 3
+#   sbatch log_run_rosi_v100.sh 1   # with REPEATS=3 in the environment
+#   sbatch log_run_rosi_v100.sh 2
+#   sbatch log_run_rosi_v100.sh 3
 #
 # (All slurm allocation options come from the sbatch invocation itself; this
 # script carries no #SBATCH directives.) Without a repetition number the job
