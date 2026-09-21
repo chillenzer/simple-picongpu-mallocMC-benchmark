@@ -334,7 +334,9 @@ build/$(5)/.input-stamp: $(PICONGPU_STAMP_$(1)) $(PROFILE_ENV_STAMP) \
 	@rm -rf build/$(5)
 	@mkdir -p build/$(5)
 	@source "$(PROFILE)"
-	pic-create "$(PICONGPU_ABS)/share/picongpu/examples/$(2)" "build/$(5)"
+	# -f: the destination was just (re)created above, so merging into it is
+	# the intended overwrite; without -f pic-create would prompt interactively.
+	pic-create -f "$(PICONGPU_ABS)/share/picongpu/examples/$(2)" "build/$(5)"
 	@mkdir -p "build/$(5)/include/picongpu/param"
 	# The algorithm's allocator: the mallocMC.param is rendered from its
 	# template (param/<algo>/mallocMC.param.in) by config.py, the profiles
