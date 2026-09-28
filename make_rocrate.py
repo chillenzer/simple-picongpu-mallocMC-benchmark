@@ -110,6 +110,9 @@ PARAMS = [
     ("REPEATS", "Integer", False, "the number of full-sweep repetitions (make runs)"),
     ("REP", "Integer", False, "one repetition only (make runs; the slurm case)"),
     ("PHASE", "Text", False, "the sweep phase, initial or arms (make runs)"),
+    ("COMMIT", "Text", False, "restrict the invocation to the targets of one commit"),
+    ("ALGO", "Text", False, "restrict the invocation to the targets of one algorithm"),
+    ("CFG", "Text", False, "restrict the invocation to the targets of one config"),
 ]
 
 
@@ -180,7 +183,7 @@ def load_config() -> dict:
     """
     try:
         config = json.loads(Path("config.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         msg = "make_rocrate.py: config.json not found or invalid; run from the repository root"
         raise SystemExit(msg) from None
     if not isinstance(config, dict):
@@ -766,7 +769,8 @@ def _makefile_entity(commit: str, *, dirty: bool | None) -> dict:
         "@type": ["File", "SoftwareSourceCode", "ComputationalWorkflow"],
         "name": "PIConGPU/mallocMC benchmark harness",
         "description": (
-            "Builds the pinned PIConGPU with the pinned mallocMC per (example, algorithm), sweeps the "
+            "Builds the pinned PIConGPU with the pinned mallocMC for every target row "
+            "(commit, algorithm, config) and example, sweeps the "
             "run matrix per repetition into the append-only run logs (one self-describing log per grid "
             "run), and computes the numbers (output/results.h5) and figures from them. `make rocrate` "
             "generates this crate's metadata."
@@ -824,7 +828,7 @@ def _add_harness_files(crate: Crate) -> None:
         "config.json",
         encoding="application/json",
         description="the single source of truth for what the harness builds and runs "
-        "(examples, algorithms, delay sweep, dependency pins, build flags, machines)",
+        "(the targets rows, examples, algorithms, configs, delay sweep, dependency pins, build flags, machines)",
     )
     add_file(crate, "README.md", encoding="text/markdown", about="./")
     if Path("param").is_dir():
