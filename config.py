@@ -12,6 +12,7 @@ values:
     python3 config.py list run-matrix [initial|arms]
     python3 config.py list commits
     python3 config.py list configs <Algorithm>
+    python3 config.py list targets [commit=X] [algorithm=Y] [config=Z]
     python3 config.py list build-matrix
     python3 config.py commit <name> <picongpu|mallocmc> <url|hash|path>
     python3 config.py check
@@ -922,22 +923,56 @@ def _cmd_list_configs(algorithm: str) -> None:
         print(name)
 
 
+def _cmd_list_targets(rest: list[str]) -> None:
+    """Print one line per target row: "<commit> <algorithm> <config>".
+
+    Any subset of the three key=VALUE filters is allowed (AND): the
+    commit name, algorithm name, and/or config name must equal the
+    value. Rows are printed in the `targets` order; a non-matching
+    filter yields an empty result. Unknown keys, malformed arguments,
+    and non-list `targets` sections fail with a usage message.
+
+    Args:
+        rest: the command line arguments after "list targets".
+
+    """
+    filters: dict[str, str] = {}
+    valid_keys = {"commit", "algorithm", "config"}
+    for arg in rest:
+        if "=" not in arg:
+            _fail("usage: config.py list targets [commit=X] [algorithm=Y] [config=Z]")
+        key, value = arg.split("=", 1)
+        if key not in valid_keys:
+            _fail(f"unknown filter '{key}' (expected commit, algorithm or config)")
+        filters[key] = value
+    raw = _walk(_load(), "targets")
+    targets = [t for t in raw if isinstance(t, dict)] if isinstance(raw, list) else []
+    for target in targets:
+        if all(str(target.get(key, "")) == value for key, value in filters.items()):
+            print(f"{target.get('commit', '')} {target.get('algorithm', '')} {target.get('config', '')}")
+
+
 def _cmd_build_matrix() -> None:
     """Print the build matrix: one `build/<commit>/<Ex>/<Algo>/<cfg>` per line.
 
-    The quadruples (commit, example, algorithm, config) in build order, in
-    the same order the Makefile expands them.
-
+    One build directory per (`targets` row, example). The rows keep
+    their `targets` order, and within a row the examples keep their
+    `examples` order. Invalid rows (missing / non-string fields) are
+    silently skipped when the corresponding `config.py check` call
+    has not yet run.
     """
     data = _load()
     examples = [example["name"] for example in data.get("examples", []) if isinstance(example, dict)]
-    algorithms = data.get("algorithms", [])
-    for commit in effective_commits(data):
-        name = commit.get("name")
+    raw_targets = _walk(data, "targets")
+    targets = [t for t in raw_targets if isinstance(t, dict)] if isinstance(raw_targets, list) else []
+    for target in targets:
+        commit = target.get("commit")
+        algorithm = target.get("algorithm")
+        config = target.get("config")
+        if not (isinstance(commit, str) and isinstance(algorithm, str) and isinstance(config, str)):
+            continue
         for example in examples:
-            for algorithm in algorithms:
-                for config in effective_configs(data, algorithm):
-                    print(f"build/{name}/{example}/{algorithm}/{config}")
+            print(f"build/{commit}/{example}/{algorithm}/{config}")
 
 
 def _check_build(data: dict, errors: list[str]) -> None:
@@ -1181,6 +1216,145 @@ def _run_matrix(data: dict, phase: str = "arms") -> list[str]:
     return combinations
 
 
+def _target_config_names(data: dict, algorithm: str) -> set[str]:
+    """Return the config names defined for one algorithm.
+
+    Mirrors `effective_configs`: an algorithm with an explicit
+    `configs.<algorithm>` node offers exactly its keys, and an algorithm
+    without one offers the implicit single `default`.
+
+    Args:
+        data: the parsed configuration.
+        algorithm: the algorithm name.
+
+    Returns:
+        set[str]: the config names a target row may name.
+
+    """
+    raw = _walk(data, "configs")
+    entries = raw.get(algorithm) if isinstance(raw, dict) else None
+    if isinstance(entries, dict) and entries:
+        return set(entries)
+    return {CONFIG_DEFAULT}
+
+
+def _check_target_row(  # ruff: ignore[too-many-arguments, too-many-positional-arguments]
+    target: object,
+    index: int,
+    commit_names: set[str],
+    algorithms: list[str],
+    data: dict,
+    errors: list[str],
+) -> tuple[str, str, str] | None:
+    """Validate one `targets` row; return its triple when well-formed.
+
+    Args:
+        target: the raw row.
+        index: the row index (for the error messages).
+        commit_names: the defined commit names.
+        algorithms: the algorithms list.
+        data: the parsed configuration (for the config-name lookup).
+        errors: accumulates the problems found.
+
+    Returns:
+        tuple[str, str, str] | None: the (commit, algorithm, config) triple,
+        or None when the row could not be validated.
+
+    """
+    dotted = f"targets[{index}]"
+    if not isinstance(target, dict):
+        errors.append(f"{dotted}: must be a {{commit, algorithm, config}} mapping")
+        return None
+    if set(target) != {"commit", "algorithm", "config"}:
+        errors.append(f"{dotted}: must have exactly the keys commit, algorithm, config")
+        return None
+    commit, algorithm, config = target["commit"], target["algorithm"], target["config"]
+    fields = (commit, algorithm, config)
+    if not all(isinstance(field, str) and field for field in fields):
+        errors.append(f"{dotted}: commit, algorithm and config must all be non-empty strings")
+        return None
+    if commit not in commit_names:
+        errors.append(f"{dotted}.commit: '{commit}' is not a defined commit")
+    if algorithm not in algorithms:
+        errors.append(f"{dotted}.algorithm: '{algorithm}' is not in the algorithms list")
+    elif config not in _target_config_names(data, algorithm):
+        errors.append(f"{dotted}.config: '{config}' is not a config of '{algorithm}'")
+    return (commit, algorithm, config)
+
+
+def _dead_config_warnings(data: dict, referenced: set[tuple[str, str]]) -> list[str]:
+    """Return one message per defined config that no target references.
+
+    Args:
+        data: the parsed configuration.
+        referenced: the (algorithm, config) pairs the targets name.
+
+    Returns:
+        list[str]: the warning bodies (no "config.json:" prefix).
+
+    """
+    raw_configs = _walk(data, "configs")
+    if not isinstance(raw_configs, dict):
+        return []
+    return [
+        f"configs.{algorithm}.{config} is defined but no target references it"
+        for algorithm, entries in raw_configs.items()
+        if isinstance(entries, dict)
+        for config in entries
+        if (algorithm, config) not in referenced
+    ]
+
+
+def _check_targets(data: dict, errors: list[str]) -> None:
+    """Validate the required `targets` list (the benchmark matrix).
+
+    The harness builds and runs exactly the (commit, algorithm, config)
+    triples listed here, in order, with no implicit cartesian product.
+    Every commit, algorithm and config a row names must be defined (in
+    `commits`, `algorithms`, and `configs.<algorithm>` respectively);
+    a duplicate triple is an error. A commit defined but named by no
+    row is an error too (a pin that never builds), while a config
+    defined under `configs.<algorithm>` but named by no row is only a
+    warning (a catalog of variants you have not scheduled yet is
+    legitimate; it is printed only for an otherwise valid config).
+
+    Args:
+        data: the parsed configuration.
+        errors: accumulates the problems found.
+
+    """
+    raw_targets = _walk(data, "targets")
+    if not isinstance(raw_targets, list) or not raw_targets:
+        errors.append("targets: must be a non-empty list of {commit, algorithm, config} entries")
+        return
+    commit_names = {commit.get("name") for commit in effective_commits(data) if isinstance(commit, dict)}
+    algorithms = _walk(data, "algorithms")
+    algorithms = algorithms if isinstance(algorithms, list) else []
+
+    seen: set[tuple[str, str, str]] = set()
+    triples: list[tuple[str, str, str]] = []
+    for index, target in enumerate(raw_targets):
+        triple = _check_target_row(target, index, commit_names, algorithms, data, errors)
+        if triple is None:
+            continue
+        if triple in seen:
+            errors.append(f"targets[{index}]: duplicate target {triple[0]}/{triple[1]}/{triple[2]}")
+        seen.add(triple)
+        triples.append(triple)
+
+    referenced_commits = {triple[0] for triple in triples}
+    errors.extend(
+        f"commits: '{commit}' is defined but no target references it"
+        for commit in sorted(commit_names)
+        if commit not in referenced_commits
+    )
+
+    if not errors:
+        references = {(triple[1], triple[2]) for triple in triples}
+        for warning in _dead_config_warnings(data, references):
+            print(f"config.json: warning: {warning}", file=sys.stderr)
+
+
 def _cmd_check() -> None:
     """Validate the structure and file references of `config.json`.
 
@@ -1199,6 +1373,7 @@ def _cmd_check() -> None:
     _check_microbench(data, errors)
     _check_people(data, errors)
     _check_benchmark_files(data, errors)
+    _check_targets(data, errors)
     if errors:
         for error in errors:
             print(f"config.json: {error}", file=sys.stderr)
@@ -1269,6 +1444,38 @@ def _print_named_objects(items: list[object], dotted: str, command: str) -> None
         print(item["name"] if isinstance(item, dict) else item)
 
 
+def _dispatch_list_key(command: str, rest: list[str]) -> bool:
+    """Dispatch the list-valued keys that have their own printers.
+
+    `run-matrix`, `build-matrix` and `targets` are lists with a custom
+    line format (not the one-name-per-line contract of `_print_list`).
+
+    Args:
+        command: the subcommand ("get" or "list").
+        rest: the command line arguments after the subcommand.
+
+    Returns:
+        bool: True when `rest` named one of them and it was handled.
+
+    """
+    if not rest or command != "list":
+        if rest and rest[0] in {"run-matrix", "build-matrix", "targets"}:
+            _fail(f"'{rest[0]}' is a list, not a scalar key")
+        return False
+    key = rest[0]
+    if key == "run-matrix":
+        _cmd_list_run_matrix(rest)
+    elif key == "build-matrix":
+        if len(rest) > 1:
+            _fail("usage: config.py list build-matrix")
+        _cmd_build_matrix()
+    elif key == "targets":
+        _cmd_list_targets(rest[1:])
+    else:
+        return False
+    return True
+
+
 def _dispatch_key(command: str, rest: list[str]) -> None:
     """Dispatch one `get` or `list` over a dotted key path to its own output.
 
@@ -1281,17 +1488,7 @@ def _dispatch_key(command: str, rest: list[str]) -> None:
         rest: the command line arguments after the subcommand.
 
     """
-    if rest and rest[0] == "run-matrix":
-        if command != "list":
-            _fail("'run-matrix' is a list, not a scalar key")
-        _cmd_list_run_matrix(rest)
-        return
-    if rest and rest[0] == "build-matrix":
-        if command != "list":
-            _fail("'build-matrix' is a list, not a scalar key")
-        if len(rest) > 1:
-            _fail("usage: config.py list build-matrix")
-        _cmd_build_matrix()
+    if _dispatch_list_key(command, rest):
         return
     if len(rest) != 1:
         _fail(f"usage: config.py {command} <dotted.key>")

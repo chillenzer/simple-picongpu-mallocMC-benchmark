@@ -122,6 +122,14 @@
       }
     }
   ],
+  "targets": [
+    { "commit": "default", "algorithm": "FlatterScatter", "config": "default" },
+    { "commit": "default", "algorithm": "ScatterAlloc", "config": "default" },
+    { "commit": "default", "algorithm": "ScatterAlloc", "config": "16MiB-page" },
+    { "commit": "default", "algorithm": "ScatterAlloc", "config": "tuned-hash" },
+    { "commit": "default", "algorithm": "ScatterAlloc", "config": "hash-from-page" },
+    { "commit": "default", "algorithm": "Gallatin", "config": "default" }
+  ],
   "build": {
     "cxx_flags": "-DBOOST_DISABLE_CURRENT_LOCATION",
     "extra_cmake_flags": [
