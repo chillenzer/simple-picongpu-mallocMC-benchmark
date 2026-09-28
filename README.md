@@ -450,8 +450,8 @@ editing; `make check` / `python3 config.py list run-matrix` /
 
 The `commits`, `algorithms` and `configs` entries are *definitions*: they
 only take effect where a `targets` row references them. Adding one without
-a matching `targets` row changes nothing (a commit or algorithm referenced
-by no row is an error, a config by no row only a warning).
+a matching `targets` row changes nothing (a commit referenced by no row is
+an error, an algorithm or config by no row only a warning).
 
 - **Delay combinations**: edit the `delays` section of `config.json`
   (`baseline`, `arms.values`, `arms.initial`, `joint.values`; the grid

@@ -1313,10 +1313,11 @@ def _check_targets(data: dict, errors: list[str]) -> None:
     Every commit, algorithm and config a row names must be defined (in
     `commits`, `algorithms`, and `configs.<algorithm>` respectively);
     a duplicate triple is an error. A commit defined but named by no
-    row is an error too (a pin that never builds), while a config
-    defined under `configs.<algorithm>` but named by no row is only a
-    warning (a catalog of variants you have not scheduled yet is
-    legitimate; it is printed only for an otherwise valid config).
+    row is an error too (a pin that never builds). An algorithm, or a
+    config under `configs.<algorithm>`, defined but named by no row is
+    only a warning: a catalog of variants you have not scheduled yet is
+    legitimate (warnings are printed only for an otherwise valid
+    config).
 
     Args:
         data: the parsed configuration.
@@ -1351,7 +1352,14 @@ def _check_targets(data: dict, errors: list[str]) -> None:
 
     if not errors:
         references = {(triple[1], triple[2]) for triple in triples}
-        for warning in _dead_config_warnings(data, references):
+        referenced_algorithms = {triple[1] for triple in triples}
+        warnings = [
+            f"algorithms: '{algorithm}' is defined but no target references it"
+            for algorithm in algorithms
+            if algorithm not in referenced_algorithms
+        ]
+        warnings.extend(_dead_config_warnings(data, references))
+        for warning in warnings:
             print(f"config.json: warning: {warning}", file=sys.stderr)
 
 
