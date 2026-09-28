@@ -129,18 +129,28 @@ ladder plus a joint grid is near-degenerate for the fit.
   allocator is rendered from — *Changing what is benchmarked*)
 - **Commits**: the `commits` section of `config.json` names each
   independent dependency pair — a PIConGPU checkout plus a mallocMC
-  checkout — by a logical name (e.g. `default`). The Cartesian matrix
-  spans every commit (`make build` always builds all of them;
-  `make runs COMMIT=<name>` runs one) cross every example, algorithm,
-  config, and delay combination. With a single commit the logical name
-  is `default` and the harness behaves as before.
+  checkout — by a logical name (e.g. `default`). A commit is a
+  *definition*: it is built and run only where a `targets` row names it.
+- **Targets**: the required top-level `targets` list of `config.json` is
+  the benchmark matrix — an ordered list of
+  `{commit, algorithm, config}` rows, each one (commit, algorithm,
+  config) triple that is built and run. There is no implicit product:
+  the harness builds exactly these rows, and the examples and the delay
+  sweep are orthogonal multipliers on top of them (a row is built once
+  per example and swept over the configured delay combinations). The old
+  `commits x examples x algorithms x configs` product is gone.
+  `python3 config.py list targets [commit=X] [algorithm=Y] [config=Z]`
+  prints the rows (the filters are optional and ANDed). With a single
+  commit the rows name `default` and the harness behaves as before.
 - **Configs**: the `configs` section of `config.json` names, per
   algorithm, the allocator variants to benchmark. Each config is a set
   of scalar heap parameters (the `heap` object) plus, for algorithms
   that expose a separate hash template slot, a named hash profile (the
   `hash.profile` name, a header under `param/<Algorithm>/profiles/`).
   The `default` config reproduces the allocator's shipped parameters,
-  so a single-commit, single-config benchmark is unchanged. `ScatterAlloc`
+  so a single-commit, single-config benchmark is unchanged. A variant is
+  only built if a `targets` row names it; a config defined but referenced
+  by no row is a warning, not a build. `ScatterAlloc`
   ships three non-default variants (`16MiB-page`, `tuned-hash`, and
   `hash-from-page`, the latter demonstrating a hash derived from the
   heap parameters) for the cross-config comparison figure.
@@ -159,12 +169,12 @@ ladder plus a joint grid is near-degenerate for the fit.
   benchmarked* — and the fit/absorption figures are skipped, the
   zero-delay baselines plus the two comparison figures (*Analysis*)
   being the primary output.
-- **Cost**: per machine per repetition, (commits x 2 examples x 3
-  algorithms x 4 configs) x the phase's combinations; with one commit
-  and one config that is the old 2 examples x 3 algorithms x 17
-  initial-phase combinations = 102 runs, or x 25 arms-phase
-  combinations = 150 runs. Each (example, algorithm, config) is one
-  build, so the config count multiplies the build count too.
+- **Cost**: per machine per repetition,
+  `|targets| × |examples| × the phase's combinations`. The build count is
+  `|targets| × |examples|` (each target row is one build per example), and
+  the delay sweep multiplies only the run count. With the shipped 6 targets
+  and 2 examples that is 12 build dirs, or 12 x 17 initial-phase
+  combinations = 204 runs, or x 25 arms-phase combinations = 300 runs.
 - **Examples**: `KelvinHelmholtz` (3D, grid sizes 128^3, 256x128x128,
   256x128x256, 1500 steps) and `FoilLCT` (2D, 256x1280 cells, 2000 steps);
   their command lines are the `flag_lines` of the `examples` objects in
@@ -249,10 +259,15 @@ The Makefile variables:
 | `REPEATS`       | full-sweep repetitions of `make runs` (default 1)                  |
 | `REP`           | restrict the invocation to one repetition (the slurm case)         |
 | `PHASE`         | `initial` (the fast first scan) or `arms` (the full ladder, the default); the run stamps make the phases incremental |
-| `COMMIT`        | restrict the run targets to one commit (a name of `config.json`'s `commits`); `make build` always builds every commit |
+| `COMMIT`        | restrict the build/run targets to the `targets` rows of one commit (a name of `config.json`'s `commits`) |
+| `ALGO`          | restrict the build/run targets to the `targets` rows of one algorithm |
+| `CFG`           | restrict the build/run targets to the `targets` rows of one config |
 
-1. Build all commits, examples, and algorithms (slow the first time: one
-   full PIConGPU build per commit, example, algorithm, and config):
+`COMMIT`, `ALGO` and `CFG` are filters over the `targets` rows and may be
+combined (any subset, ANDed); with none of them every row is selected.
+
+1. Build the `targets` rows, once per example (slow the first time: one
+   full PIConGPU build per target row and example):
 
     ```
     make build PROFILE=profiles/hal.sh PARAM_DIR=param
@@ -285,25 +300,26 @@ The Makefile variables:
       (gcc/cmake/nvcc) are unchanged (`build/.profile-env`,
       `build/.toolchain` and `build/.build-flags` record these); otherwise
       `pic-build` runs incrementally. `make -j` builds the independent
-      (commit, example, algorithm, config) quadruples in parallel; the
-      default is serial.
+      target rows × examples in parallel; the default is serial.
 
     `make clean` removes `build/`, `figures/`, `output/results.h5`,
     `ro-crate-metadata.json` and `ro-crate.crate.zip`, `make distclean`
     removes `src/` as well; neither touches the run stamps (finished runs
     stay finished after a rebuild). Alternatively delete just
     a single `build/<Commit>/<Ex>/<Algo>/<cfg>/` folder, or only its
-    `.input-stamp`, to rebuild one quadruple.
+    `.input-stamp`, to rebuild one target row for one example.
 
 2. Run the benchmarks (the sweep, once per repetition):
 
     ```
-    make runs MACHINE=hal                    # arms phase, REPEATS=1 (the defaults), all commits
+    make runs MACHINE=hal                    # arms phase, REPEATS=1 (the defaults), all target rows
     make runs MACHINE=hal PHASE=initial      # the fast first scan (17 combinations)
     make runs MACHINE=hal REPEATS=3          # three full-sweep repetitions
     make runs MACHINE=rosi-v100 REPEATS=3 REP=2   # only repetition 2 (one slurm job)
     make runs MACHINE=hal COMMIT=<name>      # only that commit (a name in config.json)
-    make full MACHINE=hal                    # build, then run (PHASE and COMMIT pass through)
+    make runs MACHINE=hal ALGO=<name>        # only that algorithm
+    make runs MACHINE=hal CFG=<name>         # only that config
+    make full MACHINE=hal                    # build, then run (PHASE, COMMIT, ALGO and CFG pass through)
     make clean-runs [MACHINE=hal] [COMMIT=<name>]  # forget finished runs (re-runs add a vintage)
     make sweep-status MACHINE=hal            # which runs are stamped (arms phase)
     ```
@@ -418,18 +434,24 @@ line, and `analysis/run_logs.py` reads them back.
 ## Changing what is benchmarked
 
 Most of it is now in `config.json` (run `python3 config.py check` after
-editing; `make check` / `python3 config.py list run-matrix` show what
-would be done). The table of knobs is:
+editing; `make check` / `python3 config.py list run-matrix` /
+`list targets` show what would be done). The table of knobs is:
 
 | Goal | Edit |
 |---|---|
+| Which (commit, algorithm, config) triples are built/run | the required `targets` list in `config.json` (one `{commit, algorithm, config}` row per triple) |
 | Change a heap number (`pageSize`, …) | `configs.<Algo>.<cfg>.heap.<field>` in `config.json` |
 | Switch to another hash scheme | `configs.<Algo>.<cfg>.hash.profile` (a name → `param/<Algo>/profiles/<name>.hpp`) |
 | Hash derived from heap parameters | point `hash.profile` at a header that uses `T_HeapConfig` (e.g. `HashFromHeap`); no extra key |
 | Tune a hash constant | edit a number in `param/<Algo>/profiles/Hash*.hpp` (or add a new header) |
-| New PIConGPU / mallocMC version sweep | append a commit entry to `commits` |
+| New PIConGPU / mallocMC version sweep | append a commit entry to `commits` and add `targets` row(s) for the (algorithm, config) it changes |
 | New grid / steps / flags | edit the `flag_lines` of the example in `config.json` |
-| New allocation policy | append to `algorithms` + create `param/<Algorithm>/` (a `.in` template + optional `profiles/`) |
+| New allocation policy | append to `algorithms`, add `targets` rows, + create `param/<Algorithm>/` (a `.in` template + optional `profiles/`) |
+
+The `commits`, `algorithms` and `configs` entries are *definitions*: they
+only take effect where a `targets` row references them. Adding one without
+a matching `targets` row changes nothing (a commit or algorithm referenced
+by no row is an error, a config by no row only a warning).
 
 - **Delay combinations**: edit the `delays` section of `config.json`
   (`baseline`, `arms.values`, `arms.initial`, `joint.values`; the grid
@@ -494,14 +516,17 @@ would be done). The table of knobs is:
   logical name is what the runs, logs, and the analysis tables carry
   (`run.commit` in the metadata, `dep_commit` in results; the short PIConGPU
   hash appears in the log file name and in the `commits-` figure labels).
-  The two names may be mixed freely in a single run matrix: the full
-  cross product `commits × examples × algorithms × configs × (malloc,
-  free)` runs, with `make build` always building every commit and `COMMIT=`
-  in `run` / `full` / `clean-runs` / `sweep-status` restricting a single
-  commit's runs.
+  The commit is a *definition*: add `targets` rows naming it to actually
+  build and run it. Several commits may be mixed freely in one `targets`
+  list — each row builds once per example and sweeps the delay
+  combinations `(malloc, free)` — with `COMMIT=` (and `ALGO=` / `CFG=`) in
+  `run` / `full` / `clean-runs` / `sweep-status` restricting the
+  invocation to the matching target rows.
 - **New config variant**: add a name under `configs.<Algorithm>` in
   `config.json` (a `heap` object of the algorithm's scalars and, where the
-  algorithm exposes a hash template slot, a `hash.profile` name). For a
+  algorithm exposes a hash template slot, a `hash.profile` name), **and
+  add a `targets` row naming it** — a config with no matching row is not
+  built (`python3 config.py check` prints a warning for it). For a
   new hash formula, add `param/<Algorithm>/profiles/<Profile>.hpp`
   (header with the standard `SPDX` header) and reference its name in
   `hash.profile`; for a fixed-constant hash variant, a profile header is
@@ -520,11 +545,13 @@ would be done). The table of knobs is:
   an implemented extension point.
 - **New example**: add it to `examples` in `config.json` (its name and
   `flag_lines`), and optionally `param/<Example>/*.param` for per-example
-  parameter overlays.
-- **New algorithm**: add it to `algorithms` in `config.json` and provide
+  parameter overlays. Examples multiply orthogonally, so no `targets` row
+  is needed — every existing row is built once per example.
+- **New algorithm**: add it to `algorithms` in `config.json`, provide
   `param/<Algorithm>/mallocMC.param.in` (the template) plus a `default`
   entry under `configs.<Algorithm>` (and the `profiles/` headers the
-  template references).
+  template references), **and add `targets` rows naming it** — an
+  algorithm with no matching row is not built.
 
 **What the analysis needs of a setup** (otherwise the table comes out
 empty):
@@ -544,7 +571,9 @@ empty):
   builds: the `examples` (name plus serialized-able `flag_lines`) and
   `algorithms` lists, the `commits` (per-commit PIConGPU/mallocMC pins), the
   `configs` (per-algorithm allocator variants: heap scalars and hash-profile
-  names), the `delays` sweep (optional; absent = baseline-only), the build
+  names), the required `targets` list (the ordered
+  `{commit, algorithm, config}` rows that are actually built and run), the
+  `delays` sweep (optional; absent = baseline-only), the build
   flags, the per-machine `machines` table (*What is benchmarked*), the
   `microbench` table, and the optional `people` table (login to name and
   ORCID iD; the harness uses it to identify the run's operator in the
@@ -553,7 +582,13 @@ empty):
 - `config.py` — the python3 bridge the harness uses to read `config.json`
   (`get` / `list` lookups) and to validate it (`check` also validates the
   `configs` against each algorithm's `param/<Algorithm>/mallocMC.param.in`
-  template and the referenced `profiles/` headers). The same module is the
+  template and the referenced `profiles/` headers). Besides the `commits` /
+  `examples` / `algorithms` / `configs <Algorithm>` listings, it resolves
+  the benchmark matrix: `list targets [commit=X] [algorithm=Y] [config=Z]`
+  prints one `<commit> <algorithm> <config>` row per target row (the
+  filters are optional and ANDed) and `list build-matrix` prints one
+  `build/<commit>/<Ex>/<Algo>/<cfg>` per target row × example. The same
+  module is the
   sole authority for the two rendered views: `flag-lines <Example>` prints
   the serialized command lines of the example (the source of the run-stamp
   fingerprint and of `logmeta.py`'s metadata) and `render-param
@@ -564,7 +599,8 @@ empty):
 - `Makefile` — the build harness, the run orchestrator, and the analysis
   driver: it clones each commit's PIConGPU and mallocMC and, from
   `config.json` (validated up front), prepares one input directory per
-  (commit, example, algorithm, config) quadruple — rendering
+  `targets` row × example (a (commit, example, algorithm, config)
+  quadruple) — rendering
   `param/<Algorithm>/mallocMC.param` from the `param/<Algorithm>/
   mallocMC.param.in` template and the config's scalars, copying the
   algorithm's `profiles/` in, and overlaying any `param/<Example>/*.param`
@@ -573,8 +609,9 @@ empty):
   are documented in *Running the benchmark* and *Analysis*; `make
   rocrate` / `make crate-zip` in *RO-Crate*; `make check` prints the
   resolved configuration (the commits and their short hashes, the per-
-  algorithm configs, the build-matrix count, and the run-matrix lines — or
-  the baseline-only line when the delay arms are empty) and stops. The
+  algorithm configs, the builds count — the `targets` rows × examples — and
+  the run-matrix lines — or the baseline-only line when the delay arms are
+  empty) and stops. The
   target comments in the header mirror this README.
 - `run_folder.sh` — runs one already-built example folder, once per flag
   line; takes `folder`, `profile`, optional fourth (malloc delay, default
@@ -601,8 +638,8 @@ empty):
   rosi-a100): log the environment, load the machine's modules (setup), and
   run `make build` / `make runs MACHINE=<machine>` with the machine's
   profile from the `machines` table in `config.json` (the sweep invocation
-  values `REPEATS`, `REP`, `PHASE` and `COMMIT` pass through as environment
-  variables; see *Running the benchmark*).
+  values `REPEATS`, `REP`, `PHASE`, `COMMIT`, `ALGO` and `CFG` pass through
+  as environment variables; see *Running the benchmark*).
 - `profiles/` — HPC environment profiles (module/spack setup, `PIC_BACKEND`,
   `PICSRC`). One per machine.
 - `param/` — parameter files overlaying the example defaults, plus the
@@ -714,9 +751,9 @@ empty):
 - `analysis/plot_microbench_misc.py` — the microbenchmark diagnostic figures
   (the allocator utilisation and the allocation-graph figures; from the
   suite's raw CSVs under `microbenchmarks/data/`).
-- `build/` — created by the Makefile; one CMake project per (commit,
-  example, algorithm, config), and the per-commit `src/` dependency
-  checkouts.
+- `build/` — created by the Makefile; one CMake project per `targets` row
+  × example (a (commit, example, algorithm, config) quadruple), and the
+  per-commit `src/` dependency checkouts.
 
 ## Analysis
 
@@ -1036,8 +1073,9 @@ repository as one research object:
 - **The harness as a workflow** (the RO-Crate *Workflows and scripts*
   conventions; the metadata requirements of the Workflow RO-Crate profile):
   the `Makefile` is the main workflow, the shell/python scripts its steps,
-   `MACHINE`/`PROFILE`/`PARAM_DIR`/`REPEATS`/`REP`/`PHASE`/`COMMIT` its input
-   parameters, the run logs, `results.h5` and the figures its outputs.
+   `MACHINE`/`PROFILE`/`PARAM_DIR`/`REPEATS`/`REP`/`PHASE`/`COMMIT`/`ALGO`/`CFG`
+   its input parameters, the run logs, `results.h5` and the figures its
+   outputs.
  - **The runs as provenance** (the Process Run profile): one `CreateAction`
    per grid-run log, reading the log's self-describing metadata line —
    instrument the binary used (sha256, build facts, the PIConGPU/mallocMC
