@@ -10,20 +10,24 @@
 #    per (commit, example, algorithm, config) (pic-create template + a
 #    picongpu/param/mallocMC.param rendered from config.json's
 #    configs.<Algorithm>.<config> + parameter overlay) and builds each one
-#    (pic-build). What to build (commits, examples, algorithms, the allocator
-#    configs, build flags) is read from config.json through config.py and
-#    validated up front:
+#    (pic-build). What to build (the explicit targets list of
+#    {commit, algorithm, config} rows, the examples, the build flags) is read
+#    from config.json through config.py and validated up front: the matrix is
+#    the targets list crossed with the examples (the delay sweep is
+#    orthogonal).
 #
 #      make build PROFILE=profiles/hal.sh PARAM_DIR=param   # clone + inputs + builds
 #      make check                                           # resolved configuration
 #
 # 2. The benchmark run orchestrator (rewritten from run_all.sh): sweeps one
-#    full repetition of one sweep phase (examples x algorithms x the phase's
-#    (malloc, free) delay combinations, the `delays` section of config.json)
-#    per invocation, one (combination, repetition) at a time:
+#    full repetition of one sweep phase (the targets list x examples, each
+#    through the phase's (malloc, free) delay combinations, the `delays`
+#    section of config.json) per invocation, one (combination, repetition) at
+#    a time:
 #
 #      make runs MACHINE=hal                          # full (arms) sweep
 #      make runs MACHINE=hal PHASE=initial            # fast first scan
+#      make runs MACHINE=hal COMMIT=... ALGO=... CFG=...  # one target subset
 #      make runs MACHINE=rosi-v100 REPEATS=3 REP=2    # one repetition (= one slurm job)
 #      make full MACHINE=hal                          # build, then run
 #      make clean-runs [MACHINE=hal]                  # forget finished runs
@@ -33,7 +37,7 @@
 #    delays.arms.initial subset) and `arms` (the default: the full arm ladder
 #    plus the joint grid when one is configured). The phases are incremental:
 #    an `arms` sweep after an `initial` one re-runs only the new combinations.
-#    Each finished (example, algorithm, combination, repetition) writes a
+#    Each finished (target, example, combination, repetition) writes a
 #    stamp under run-stamps/, which makes an interrupted run series (one
 #    `make runs` invocation) resumable.
 #    The stamps depend only on the example's flag-lines fingerprint
@@ -109,7 +113,7 @@
 # prerequisites change (the dependency pins, the parameter overlay files,
 # the build flags, the profile content, the toolchain versions). Like
 # setup.sh, `make build` without -j runs the targets serially;
-# `make build -j` builds the independent (example, algorithm) pairs in
+# `make build -j` builds the independent (target, example) pairs in
 # parallel. The run targets are serial by construction (one GPU): `runs`
 # fans out to one sub-make per (combination, repetition) stamp in sweep
 # order, and a stamp that is already up to date is skipped.
@@ -140,13 +144,9 @@ endif
 EXAMPLES   := $(shell $(PY) config.py list examples)
 ALGORITHMS := $(shell $(PY) config.py list algorithms)
 
-# The configs of each algorithm, one `CONFIGS_OF_<algo>` line per algorithm
-# (in config order). These are what the build/run matrix is expanded with:
-# a build is one (commit, example, algorithm, config) quadruple.
-define CONFIGS_OF
-CONFIGS_OF_$(1) := $(shell $(PY) config.py list configs $(1))
-endef
-$(foreach a,$(ALGORITHMS),$(eval $(call CONFIGS_OF,$(a))))
+# The build/run matrix itself is the explicit targets list (below); ALGORITHMS
+# and the per-algorithm `config.py list configs` lookups only feed `make
+# check`'s informational output now.
 
 # One commit is one {name, {picongpu, mallocmc} deps} pair from config.json;
 # the harness keeps one PIConGPU checkout per commit (and the mallocMC fork
@@ -156,6 +156,21 @@ $(foreach a,$(ALGORITHMS),$(eval $(call CONFIGS_OF,$(a))))
 # by mallocMC::Allocator::alloc as busy-waits on the device global timer. We
 # pin our fork, not picongpu's own mallocMC copy.)
 COMMITS := $(shell $(PY) config.py list commits)
+
+# The benchmark matrix itself: an explicit, ordered list of targets
+# (commit, algorithm, config) rows from config.json. The examples are an
+# orthogonal multiplier, so a build is one (target, example) pair, i.e. one
+# (commit, example, algorithm, config) quadruple per build directory.
+#
+# config.py prints one row per line, but a `$(shell)` result is whitespace
+# folded, which would lose the row grouping. The `tr` rewrites each row's
+# three space-separated fields to `<commit>/<algorithm>/<config>` (no field
+# contains a space or a slash), so the list stays one word per row here and
+# the consumers split the fields back out with `$(subst /,$(space),...)`.
+TARGETS := $(shell $(PY) config.py list targets | tr ' ' '/')
+
+# The number of explicit target rows (one word per row after the `tr` above).
+TARGET_COUNT := $(words $(TARGETS))
 
 # Per-commit dependency pins, resolved from config.json (paths defaulted to
 # src/<commit>/picongpu[...]). Each value is a self-contained shell call
@@ -296,12 +311,13 @@ endif
 	legacy-results legacy-verify microbench-results microbench-verify microbench-audit \
 	rocrate crate-zip sweep-status
 
-# --- per (commit, example, algorithm) harness targets -----------------------
+# --- per (target, example) harness targets ----------------------------------
 
 # The (commit, example, algorithm, config) quadruples, one
-# "<c>/<e>/<a>/<cfg>" per build dir. The build dir is build/<c>/<e>/<a>/<cfg>
-# and the binary build/<c>/<e>/<a>/<cfg>/bin/picongpu.
-QUADS      := $(foreach c,$(COMMITS),$(foreach e,$(EXAMPLES),$(foreach a,$(ALGORITHMS),$(foreach g,$(CONFIGS_OF_$(a)),$(c)/$(e)/$(a)/$(g)))))
+# "<c>/<e>/<a>/<cfg>" per build dir: every explicit target (commit,
+# algorithm, config) row crossed with every example. The build dir is
+# build/<c>/<e>/<a>/<cfg> and the binary build/<c>/<e>/<a>/<cfg>/bin/picongpu.
+QUADS      := $(foreach t,$(TARGETS),$(foreach e,$(EXAMPLES),$(word 1,$(subst /,$(space),$(t)))/$(e)/$(word 2,$(subst /,$(space),$(t)))/$(word 3,$(subst /,$(space),$(t)))))
 BUILD_DIRS := $(addprefix build/,$(QUADS))
 BINARIES   := $(addsuffix /bin/picongpu,$(BUILD_DIRS))
 
@@ -362,13 +378,13 @@ $(foreach t,$(QUADS),$(eval $(call pair_rules,$(word 1,$(subst /,$(space),$(t)))
 
 # --- run stamps: one per (combination, repetition) --------------------------
 #
-# A run is one (commit, example, algorithm) build through one (malloc delay,
-# free delay) combination: the example's whole flag lines once (the
-# structured flag_lines of config.json), with the combination's delays in
-# the environment. The sweep order is commit, then example, then algorithm,
-# then repetition, and within a repetition the combination order of
-# `config.py list run-matrix`, so every repetition is a full sweep and when
-# REPEATS is finished, every build has finished it.
+# A run is one (commit, example, algorithm, config) build through one
+# (malloc delay, free delay) combination: the example's whole flag lines once
+# (the structured flag_lines of config.json), with the combination's delays in
+# the environment. The sweep order is target, then example, then repetition,
+# and within a repetition the combination order of `config.py list run-matrix`,
+# so every repetition is a full sweep and when REPEATS is finished, every build
+# has finished it.
 #
 # The stamp is the record that the run happened (its content is the
 # run's log paths, one per line, i.e. the paths of its current vintage),
@@ -385,23 +401,32 @@ $(foreach t,$(QUADS),$(eval $(call pair_rules,$(word 1,$(subst /,$(space),$(t)))
 # explicit target per (combination, repetition).
 REPS := $(strip $(shell seq 1 '$(REPEATS)' 2>/dev/null))
 
-# COMMIT restricts a `runs`/`full`/`sweep-status`/`clean-runs` invocation to
-# one commit (the slurm case: parallelise the commits across nodes; the
-# single-commit case is the default). Like MACHINE, it is an invocation
-# value, not a configuration key.
+# COMMIT, ALGO and CFG restrict a `runs`/`full`/`sweep-status`/`clean-runs`
+# invocation to the targets matching all of the set filters (the slurm case:
+# parallelise the matrix across nodes; the unfiltered case is the default).
+# Like MACHINE, they are invocation values, not configuration keys: a stray
+# exported value must not stand in for them. The filters are ANDed; each must
+# name a value present in the config targets list.
 ifeq ($(origin COMMIT),environment)
 COMMIT =
 endif
+ifeq ($(origin ALGO),environment)
+ALGO =
+endif
+ifeq ($(origin CFG),environment)
+CFG =
+endif
 COMMIT ?=
+ALGO   ?=
+CFG    ?=
+RUN_TARGETS := $(shell $(PY) config.py list targets $(if $(strip $(COMMIT)),commit=$(COMMIT)) $(if $(strip $(ALGO)),algorithm=$(ALGO)) $(if $(strip $(CFG)),config=$(CFG)) | tr ' ' '/')
 ifneq ($(filter runs full sweep-status clean-runs,$(MAKECMDGOALS)),)
-  ifneq ($(strip $(COMMIT)),)
-    ifeq ($(filter $(COMMIT),$(COMMITS)),$(COMMIT))
-    else
-      $(error specify COMMIT=<name> from the config commits list, e.g. make runs MACHINE=hal COMMIT=default (got '$(COMMIT)'))
+  ifneq ($(strip $(COMMIT)$(ALGO)$(CFG)),)
+    ifeq ($(strip $(RUN_TARGETS)),)
+      $(error no config target matches COMMIT='$(COMMIT)' ALGO='$(ALGO)' CFG='$(CFG)'; specify names from the config targets list, e.g. make runs MACHINE=hal COMMIT=default)
     endif
   endif
 endif
-RUN_COMMITS := $(if $(strip $(COMMIT)),$(strip $(COMMIT)),$(COMMITS))
 
 # $1 = commit, $2 = example, $3 = algorithm, $4 = config, $5 = malloc delay
 # (ns), $6 = free delay (ns), $7 = repetition number. The recipe carries no
@@ -413,7 +438,7 @@ run-stamps/$(MACHINE)/$(1)/$(2)/$(3)/$(4)/$(5)_$(6)/rep-$(7).stamp: build/flag-l
 	@bash run_stamp.sh "$(MACHINE)" "$(REPEATS)" "$(1)" "$(2)" "$(3)" "$(4)" "$(5)" "$(6)" "$(7)"
 endef
 
-$(foreach c,$(RUN_COMMITS),$(foreach e,$(EXAMPLES),$(foreach a,$(ALGORITHMS),$(foreach g,$(CONFIGS_OF_$(a)),$(foreach m,$(COMBOS),$(foreach r,$(REPS),$(eval $(call run_stamp_rules,$(c),$(e),$(a),$(g),$(firstword $(subst _, ,$(m))),$(lastword $(subst _, ,$(m))),$(r)))))))))
+$(foreach t,$(RUN_TARGETS),$(foreach e,$(EXAMPLES),$(foreach m,$(COMBOS),$(foreach r,$(REPS),$(eval $(call run_stamp_rules,$(word 1,$(subst /,$(space),$(t))),$(e),$(word 2,$(subst /,$(space),$(t))),$(word 3,$(subst /,$(space),$(t))),$(firstword $(subst _, ,$(m))),$(lastword $(subst _, ,$(m))),$(r)))))))
 
 # --- run targets -------------------------------------------------------------
 
@@ -422,7 +447,7 @@ RUN_REPS := $(REPS)
 else
 RUN_REPS := $(REP)
 endif
-RUN_STAMPS := $(foreach c,$(RUN_COMMITS),$(foreach e,$(EXAMPLES),$(foreach a,$(ALGORITHMS),$(foreach g,$(CONFIGS_OF_$(a)),$(foreach i,$(RUN_REPS),$(addprefix run-stamps/$(MACHINE)/$(c)/$(e)/$(a)/$(g)/,$(addsuffix /rep-$(i).stamp,$(COMBOS))))))))
+RUN_STAMPS := $(foreach t,$(RUN_TARGETS),$(foreach e,$(EXAMPLES),$(foreach i,$(RUN_REPS),$(addprefix run-stamps/$(MACHINE)/$(word 1,$(subst /,$(space),$(t)))/$(e)/$(word 2,$(subst /,$(space),$(t)))/$(word 3,$(subst /,$(space),$(t)))/, $(addsuffix /rep-$(i).stamp, $(COMBOS))))))
 
 # The fan-out: one sub-make per (combination, repetition) stamp, in sweep
 # order, serially (one GPU; -j cannot parallelize a single recipe). A stamp
@@ -525,7 +550,8 @@ check:
 	    "$$(python3 config.py list run-matrix arms | wc -l | tr -d ' ')" \
 	    "$$(python3 config.py list run-matrix arms | tr '\n' ' ' | sed 's/ *$$//')"
 	fi
-	@printf 'builds:     %s (commit/example/algorithm/config quadruples)\n' "$(words $(BINARIES))"
+	@printf 'targets:    %s (commit/algorithm/config rows)\n' "$(TARGET_COUNT)"
+	@printf 'builds:     %s (targets x examples build dirs)\n' "$(words $(BINARIES))"
 	@for c in $(COMMITS); do
 	  printf 'commit %-14s picongpu %s @ %s\n' "$$c" "$$(python3 config.py commit $$c picongpu path)" "$$(printf '%.8s' $$(python3 config.py commit $$c picongpu hash))"
 	  printf '             mallocmc %s @ %s\n' "$$(python3 config.py commit $$c mallocmc path)" "$$(printf '%.8s' $$(python3 config.py commit $$c mallocmc hash))"
